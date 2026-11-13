@@ -3,6 +3,14 @@
   "nativeBytes": true,
   "assets": [
     {
+      "url": "/assets/runner/aqueduct-night-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 3700834,
+      "sha256": "aea41ed64121e2a2d7799d67b96a8161497a8d9120a4f7dbd122c2b853095199"
+    },
+    {
       "url": "/assets/runner/aqueduct-scene-v1.png",
       "width": 1086,
       "height": 1448,
@@ -35,6 +43,14 @@
       "sha256": "f5cf133ad3b4eeb91a5425aa20418a5cf323d552cb2b92f6fa4733a741491cc8"
     },
     {
+      "url": "/assets/runner/mine-night-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 4171938,
+      "sha256": "095947a85f23d4e2678bcee5596df0d24f3d166fca519a2ab224222399498013"
+    },
+    {
       "url": "/assets/runner/mine-scene-v1.png",
       "width": 1086,
       "height": 1448,
@@ -57,6 +73,14 @@
       "pngColorType": 6,
       "bytes": 1782508,
       "sha256": "99c69f2a9e08dffbeca51a3ab2c5696945c9d712e2e0dc270aed11767dd73f78"
+    },
+    {
+      "url": "/assets/runner/temple-night-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 4105278,
+      "sha256": "786bbce0a2e10df4081cf24f4fdc4609176b8fb8067e13f9f28d75bb68dd7625"
     },
     {
       "url": "/assets/runner/temple-scene-v1.png",
