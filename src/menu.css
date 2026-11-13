@@ -81,3 +81,4 @@
 .help-modes section { padding:10px 0; border-bottom:1px solid #537c5933; }.help-modes h3 { font-size:14px; margin:4px 0 8px; }.help-modes p { font-size:12px; line-height:1.8; color:var(--ink-soft); margin:0; }
 .celebration-card .game-button { margin-top:12px; }
 .mode-hot{position:absolute;top:16px;right:16px;z-index:2;padding:5px 12px;border:1px solid #ffc09a8c;border-radius:4px;background:#b73e28;color:#fff0cf;font:900 13px/1.2 system-ui,sans-serif;letter-spacing:1.5px;box-shadow:0 3px 15px #17090488}
+.mode-runner{border-color:#d6cc87aa}.mode-runner .mode-art{object-position:50% center}.mode-runner::after{background:linear-gradient(180deg,transparent 15%,#153e3c33 45%,#102d34f5 90%)}.mode-runner .mode-content strong{color:#f9dfa1}

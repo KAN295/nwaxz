@@ -2,6 +2,7 @@ import "./style.css";
 import "./menu.css";
 import type { EscapeGame } from "./escape/game.ts";
 import type { VersusClient } from "./versus/client.ts";
+import type { RunnerGame } from "./runner/game.ts";
 import { version } from "../package.json";
 import { createGameUpdater } from "./updates.ts";
 import { preloadGame, readPreloadStatus } from "./preload.ts";
@@ -33,10 +34,11 @@ let saveReady = false;
 let mode: GameMode = "normal";
 let escapeGame: EscapeGame | undefined;
 let versusClient: VersusClient | undefined;
+let runnerGame: RunnerGame | undefined;
 let game: BathGame | undefined,
   selected = 0,
   chapter = 1,
-  screen: "loading" | "preparing" | "home" | "baths" | "levels" | "play" | "escape" | "versus" = "loading";
+  screen: "loading" | "preparing" | "home" | "baths" | "levels" | "play" | "escape" | "versus" | "runner" = "loading";
 let preparationId = 0;
 let offlineReady = false,
   updateAvailable = false,
@@ -109,9 +111,10 @@ function toast(message: string) {
 }
 function leaveGame() {
   preparationId++;
+  runnerGame?.destroy(); runnerGame = undefined;
   versusClient?.destroy(); versusClient = undefined;
   escapeGame?.destroy(); escapeGame = undefined;
-  document.body.classList.remove("escape-theme", "hub-theme", "versus-theme", "halloween-theme", "infernal-theme");
+  document.body.classList.remove("escape-theme", "hub-theme", "versus-theme", "runner-theme", "halloween-theme", "infernal-theme");
   audio.setSettings(settings);
   game?.destroy();
   game = undefined;
@@ -147,6 +150,7 @@ function renderHub(page: "home" | "baths") {
   ] : [
     { id: "bath", title: "浴场模式", name: "泡泡浴场 · 午夜浴场", caption: "挖土 · 引水", art: "/assets/scenes/bath-cover-v2.webp" },
     { id: "extreme", title: "逃生模式", name: "下水道逃生", caption: "搜寻 · 躲藏", art: "/assets/scenes/escape-cover-v1.webp", hot: true },
+    { id: "runner", title: "奶蛙逃亡", name: "水渠无尽跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png" },
     { id: "pvp", title: "奶娃峡谷", name: "3v3 · 阵容预演", caption: "两岸 · 争流", art: "/assets/scenes/versus-cover-v1.png" },
   ];
   chrome(`<main class="game-hub screen-enter" data-hub-page="${page}" aria-label="${page === "home" ? "游戏主界面" : "选择浴场"}"><header class="hub-header"><div class="hub-heading">${page === "baths" ? buttonIcon("back", "返回模式选择", "hub-back") : ""}<h1>${page === "home" ? "奶蛙<span>爱洗澡</span>" : "浴场<span>模式</span>"}</h1></div>${buttonIcon("settings", "设置", "settings")}</header>
@@ -161,10 +165,30 @@ function renderHub(page: "home" | "baths") {
   } else {
     $("#bath").onclick = renderBaths;
     $("#extreme").onclick = () => void enterEscape();
+    $("#runner").onclick = () => void enterRunner();
     $("#pvp").onclick = () => void enterVersus();
   }
   $("#settings").onclick = () => openSettings(); $("#update").onclick = applyUpdate;
   queueMicrotask(() => gameUpdater.apply());
+}
+async function enterRunner() {
+  leaveGame(); screen = "runner";
+  const request = preparationId;
+  document.body.classList.remove("horror-theme");
+  document.body.classList.add("runner-theme");
+  audio.setMode("normal");
+  chrome('<main class="escape-entry-screen"><div class="escape-entry-status" role="status"><small>奶蛙逃亡</small><p>正在寻找水渠出口…</p></div><button id="runner-return" class="escape-entry-back">返回首页</button></main>');
+  $("#runner-return").onclick = renderHome;
+  try {
+    const { RunnerGame } = await import("./runner/game.ts");
+    if (screen !== "runner" || preparationId !== request) return;
+    runnerGame = new RunnerGame(app, audio, settings, renderHome);
+  } catch {
+    if (screen !== "runner" || preparationId !== request) return;
+    chrome('<main class="escape-entry-screen"><div class="escape-entry-status" role="status"><p>水渠未能载入，请检查网络后重试。</p><button id="runner-retry" class="escape-entry-back">重试</button></div><button id="runner-return" class="escape-entry-back">返回首页</button></main>');
+    $("#runner-retry").onclick = () => void enterRunner();
+    $("#runner-return").onclick = renderHome;
+  }
 }
 async function enterVersus() {
   leaveGame(); screen = "versus";

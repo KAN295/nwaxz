@@ -1,0 +1,30 @@
+{
+  "generator": "built-in image_gen.imagegen",
+  "nativeBytes": true,
+  "assets": [
+    {
+      "url": "/assets/runner/aqueduct-scene-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 3818826,
+      "sha256": "46cc963504323b26d732b2777d0a0cbdb42cb86f7f885c7d35d21fb1dd8ccc91"
+    },
+    {
+      "url": "/assets/runner/obstacles-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "pngColorType": 6,
+      "bytes": 1437687,
+      "sha256": "0a150e9f95926f8595551fc17c9f9fe5b6c000a0cc39d8c3add025be2a328252"
+    },
+    {
+      "url": "/assets/runner/wet-stone-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "pngColorType": 2,
+      "bytes": 4018312,
+      "sha256": "0207f9dc006bfb91a85d7d8fbc3b3b7f36cb08dde9c7e5898a9eafcfa6c41d0b"
+    }
+  ]
+}

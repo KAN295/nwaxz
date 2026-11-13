@@ -1,6 +1,6 @@
 {
   "name": "nwaxz",
-  "version": "0.31.1",
+  "version": "0.32.0",
   "private": true,
   "type": "module",
   "license": "UNLICENSED",
@@ -13,7 +13,7 @@
     "dev:server": "node --watch server/index.mjs",
     "build": "tsc --noEmit && vite build && node --test ops/pwa.test.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/api.test.mjs server/game.test.mjs server/progress.test.mjs server/hazards.test.mjs server/garden.test.mjs server/workshop.test.mjs server/presentation.test.mjs server/horror.test.mjs server/escape.test.mjs server/escape-hunt.test.mjs server/perception.test.mjs server/hunt-acceptance.test.mjs server/escape-expansion.test.mjs server/escape-models.test.mjs server/escape-scene.test.mjs server/frog-facing.test.mjs server/directional-art.test.mjs server/escape-map.test.mjs server/escape-save.test.mjs server/abilities.test.mjs server/basement-abilities-world.test.mjs server/basement-map.test.mjs server/basement-scene.test.mjs server/basement-play.test.mjs server/interference.test.mjs server/noise-investigation.test.mjs server/hiding-memory.test.mjs server/ward-world.test.mjs server/coop-service.test.mjs server/coop-http.test.mjs server/peer-art.test.mjs server/coop-play.test.mjs server/coop-rules.test.mjs server/coop-socket.test.mjs server/coop-movement.test.mjs server/social.test.mjs server/social-http.test.mjs server/hunter-performance.test.mjs server/runtime-package.test.mjs server/versus-client.test.mjs server/native-preload.test.mjs server/seasonal-baths.test.mjs server/startup-policy.test.mjs",
+    "test": "node --test server/api.test.mjs server/game.test.mjs server/progress.test.mjs server/hazards.test.mjs server/garden.test.mjs server/workshop.test.mjs server/presentation.test.mjs server/horror.test.mjs server/escape.test.mjs server/escape-hunt.test.mjs server/perception.test.mjs server/hunt-acceptance.test.mjs server/escape-expansion.test.mjs server/escape-models.test.mjs server/escape-scene.test.mjs server/frog-facing.test.mjs server/directional-art.test.mjs server/escape-map.test.mjs server/escape-save.test.mjs server/abilities.test.mjs server/basement-abilities-world.test.mjs server/basement-map.test.mjs server/basement-scene.test.mjs server/basement-play.test.mjs server/interference.test.mjs server/noise-investigation.test.mjs server/hiding-memory.test.mjs server/ward-world.test.mjs server/coop-service.test.mjs server/coop-http.test.mjs server/peer-art.test.mjs server/coop-play.test.mjs server/coop-rules.test.mjs server/coop-socket.test.mjs server/coop-movement.test.mjs server/social.test.mjs server/social-http.test.mjs server/hunter-performance.test.mjs server/runtime-package.test.mjs server/versus-client.test.mjs server/native-preload.test.mjs server/seasonal-baths.test.mjs server/startup-policy.test.mjs server/runner.test.mjs",
     "check": "pnpm test && pnpm build",
     "start": "node server/index.mjs",
     "smoke": "node ops/smoke.mjs"
