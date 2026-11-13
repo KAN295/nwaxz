@@ -150,7 +150,7 @@ function renderHub(page: "home" | "baths") {
   ] : [
     { id: "bath", title: "浴场模式", name: "泡泡浴场 · 午夜浴场", caption: "挖土 · 引水", art: "/assets/scenes/bath-cover-v2.webp" },
     { id: "extreme", title: "逃生模式", name: "下水道逃生", caption: "搜寻 · 躲藏", art: "/assets/scenes/escape-cover-v1.webp", hot: true },
-    { id: "runner", title: "奶蛙逃亡", name: "水渠无尽跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png" },
+    { id: "runner", title: "奶蛙逃亡", name: "无限跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png" },
     { id: "pvp", title: "奶娃峡谷", name: "3v3 · 阵容预演", caption: "两岸 · 争流", art: "/assets/scenes/versus-cover-v1.png" },
   ];
   chrome(`<main class="game-hub screen-enter" data-hub-page="${page}" aria-label="${page === "home" ? "游戏主界面" : "选择浴场"}"><header class="hub-header"><div class="hub-heading">${page === "baths" ? buttonIcon("back", "返回模式选择", "hub-back") : ""}<h1>${page === "home" ? "奶蛙<span>爱洗澡</span>" : "浴场<span>模式</span>"}</h1></div>${buttonIcon("settings", "设置", "settings")}</header>

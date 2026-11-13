@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
-import { RunnerWorld, readRunRecord } from '../src/runner/world.ts';
+import { RunnerWorld, readRunRecord, isRunObstacle } from '../src/runner/world.ts';
+import {dogPose} from '../src/runner/animation.ts';
 
 function run(world, seconds) { for (let i = 0; i < Math.round(seconds * 120); i++) world.advance(1 / 120); }
 function collision(kind) {
@@ -20,15 +21,15 @@ test('lane bounds and smooth lane transitions are enforced', () => {
   const w = new RunnerWorld(); w.start(); for (let i=0;i<5;i++) w.action('left'); assert.equal(w.lane,0);
   run(w,.3); assert.ok(w.position < .01); for(let i=0;i<5;i++) w.action('right'); assert.equal(w.lane,2);
 });
-test('blocks and gaps kill a grounded runner but a timed jump clears either', () => {
+test('a box causes a recoverable stumble, a gap ends the run, and jumping clears either', () => {
   for (const kind of ['block','gap']) {
-    const grounded = collision(kind); run(grounded,.5); assert.equal(grounded.phase,'lost');
+    const grounded = collision(kind); run(grounded,.5); assert.equal(grounded.phase,kind==='gap'?'lost':'running'); if(kind==='block')assert.ok(grounded.danger>0);
     const jumping = collision(kind); jumping.action('jump'); run(jumping,.5); assert.equal(jumping.phase,'running');
   }
 });
 test('beams require sliding; jumping cannot clear an overhead beam', () => {
   const slide=collision('beam'); slide.action('slide'); run(slide,.5); assert.equal(slide.phase,'running');
-  const jump=collision('beam'); jump.action('jump'); run(jump,.5); assert.equal(jump.phase,'lost');
+  const jump=collision('beam'); jump.action('jump'); run(jump,.5); assert.equal(jump.phase,'running');assert.ok(jump.danger>0);
 });
 test('coins collect once, and a safe lane avoids obstacles', () => {
   const coin=collision('coin'); run(coin,.6); assert.equal(coin.coins,1);
@@ -47,24 +48,24 @@ test('long frame clamps and fixed ticks prevent hidden-tab fast forward and tunn
 });
 test('seeded routes have a safe lane, no hazards around corners and bounded memory', () => {
   for(let seed=1;seed<=40;seed++) {
-    const w=new RunnerWorld(seed); w.start(); w.endless=true;
+    const w=new RunnerWorld(seed,'endless'); w.start();
     for(let tick=0;tick<18000 && w.phase==='running';tick++) {
       const turn=w.approachingTurn;
       if(turn && turn.z-w.distance<=15) w.action(turn.direction);
-      const hazard=w.items.find(item=>item.kind!=='coin' && item.z>w.distance && item.z-w.distance<12);
+      const hazard=w.items.find(item=>isRunObstacle(item.kind) && item.z>w.distance && item.z-w.distance<12);
       if(hazard) { const safe=(hazard.lane+1)%3; if(w.lane<safe) w.action('right'); else if(w.lane>safe) w.action('left'); }
-      for(const item of w.items.filter(i=>i.kind!=='coin')) assert.ok(Math.min(item.z%180,180-item.z%180)>30);
+      for(const item of w.items.filter(i=>isRunObstacle(i.kind))) assert.ok(Math.min(item.z%180,180-item.z%180)>30);
       w.advance(1/120);
     }
     assert.equal(w.phase,'running',`seed ${seed} has an unplayable route: ${w.reason}`);
-    assert.ok(w.distance>3000); assert.ok(w.items.length<35); assert.ok(w.turns.length<=2);
+    assert.ok(w.distance>3000); assert.ok(w.items.length<45); assert.ok(w.turns.length<=2);
   }
 });
 test('1000m milestone stops for the celebration and endless continuation retains score', () => {
   const w=new RunnerWorld(); w.start();
   for(let tick=0;tick<15000 && w.phase==='running';tick++) {
     const turn=w.approachingTurn; if(turn && turn.z-w.distance<=15) w.action(turn.direction);
-    const obstacle=w.items.find(i=>i.kind!=='coin' && i.z>w.distance && i.z-w.distance<12);
+    const obstacle=w.items.find(i=>isRunObstacle(i.kind) && i.z>w.distance && i.z-w.distance<12);
     if(obstacle) { const safe=(obstacle.lane+1)%3; if(w.lane<safe) w.action('right'); else if(w.lane>safe) w.action('left'); }
     w.advance(1/120);
   }
@@ -77,7 +78,7 @@ test('record parser rejects corrupt, old or non-finite records without touching 
 });
 test('generated realistic scenery, stone and transparent props retain their native PNG bytes', () => {
   const manifest=JSON.parse(fs.readFileSync(new URL('../public/assets/runner/manifest.json',import.meta.url),'utf8'));
-  assert.equal(manifest.nativeBytes,true);assert.equal(manifest.assets.length,3);
+  assert.equal(manifest.nativeBytes,true);assert.equal(manifest.assets.length,6);
   for(const asset of manifest.assets) {
     const bytes=fs.readFileSync(new URL('../public'+asset.url,import.meta.url));
     assert.equal(bytes.readUInt32BE(16),asset.width);assert.equal(bytes.readUInt32BE(20),asset.height);
@@ -85,4 +86,41 @@ test('generated realistic scenery, stone and transparent props retain their nati
     assert.equal(createHash('sha256').update(bytes).digest('hex'),asset.sha256);
   }
   assert.equal(manifest.assets.find(a=>a.url.endsWith('obstacles-v1.png')).pngColorType,6);
+});
+test('a second stumble during pursuit is fatal; clean running lets the pursuer fall back', () => {
+  const w=collision('block');run(w,.5);assert.ok(w.danger>0);assert.equal(w.phase,'running');
+  run(w,1.5);w.items=[{id:2,z:w.distance+5,lane:1,kind:'beam',done:false}];run(w,.6);
+  assert.equal(w.phase,'lost');assert.match(w.reason,/恐怖奶蛙/);
+  const recovery=collision('block');run(recovery,.5);recovery.items=[];run(recovery,9);assert.equal(recovery.danger,0);assert.equal(recovery.phase,'running');
+});
+test('magnet collects coins across lanes and shield absorbs exactly one hit', () => {
+  const w=collision('magnet');w.items=[{id:1,z:1,lane:1,kind:'magnet',done:false},{id:2,z:8,lane:0,kind:'coin',done:false}];run(w,.2);
+  assert.equal(w.coins,1);assert.ok(w.magnet>9);
+  const shield=collision('shield');run(shield,.5);assert.ok(shield.shield>0);
+  shield.items=[{id:3,z:shield.distance+4,lane:1,kind:'gap',done:false}];run(shield,.5);
+  assert.equal(shield.phase,'running');assert.equal(shield.shield,0);assert.equal(shield.danger,0);
+});
+test('boost speeds up, clears hazards, turns automatically and then expires', () => {
+  const w=collision('boost');w.turns=[{z:25,direction:'right',taken:false}];
+  w.items.push({id:2,z:15,lane:1,kind:'gap',done:false});run(w,1.5);
+  assert.equal(w.phase,'running');assert.equal(w.turnCount,1);assert.ok(w.speed>18);
+  w.items=[];run(w,4);assert.equal(w.boost,0);
+});
+test('coin streak increases coin score and expires after four seconds without a coin', () => {
+  const w=collision('coin');w.items=Array.from({length:10},(_,id)=>({id,z:1,lane:1,kind:'coin',done:false}));run(w,.2);
+  assert.equal(w.coins,10);assert.equal(w.multiplier,2);assert.equal(w.coinScore,550);
+  run(w,4.1);assert.equal(w.multiplier,1);
+});
+test('infinite mode starts without the 1000m stop and every effect freezes on pause', () => {
+  const w=new RunnerWorld(9,'endless');assert.ok(w.endless);w.start();w.magnet=8;w.shield=12;w.boost=4;w.danger=6;
+  w.pause();const state=JSON.stringify(w);run(w,20);assert.equal(JSON.stringify(w),state);
+  w.resume();run(w,.1);assert.ok(w.magnet<8);assert.ok(w.shield<12);
+});
+test('dog gallop uses eight distinct frames, real jump/crouch poses and a frozen clock', () => {
+  const w=new RunnerWorld();w.start();const frames=new Set();
+  for(let i=0;i<70;i++){w.advance(1/120);const pose=dogPose(w,false);assert.equal(pose.sheet,'run');frames.add(pose.frame);}
+  assert.equal(frames.size,8);w.action('jump');assert.deepEqual(dogPose(w,false),{sheet:'actions',frame:1});
+  run(w,.8);assert.equal(dogPose(w,false).frame,2);run(w,.2);w.action('slide');assert.equal(dogPose(w,false).frame,3);
+  w.pause();const gait=w.gait;run(w,4);assert.equal(w.gait,gait);
+  const still=new RunnerWorld();still.start();assert.deepEqual(dogPose(still,true),{sheet:'actions',frame:0});
 });

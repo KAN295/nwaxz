@@ -2,10 +2,12 @@ import "./runner.css";
 import { loadImage } from "../loading.ts";
 import type { Settings } from "../settings.ts";
 import type { AudioManager } from "../audio.ts";
-import { RunnerWorld, RUN_RECORD_KEY, readRunRecord, type RunAction, type RunPhase } from "./world.ts";
+import { dogPose } from "./animation.ts";
+import { RunnerWorld, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, readRunRecord, type RunAction, type RunPhase, type RunMode } from "./world.ts";
 
 export class RunnerGame {
-  private world = new RunnerWorld(crypto.getRandomValues(new Uint32Array(1))[0]);
+  private world = new RunnerWorld(crypto.getRandomValues(new Uint32Array(1))[0], "endless");
+  private chosenMode: RunMode = "endless";
   private record = readRunRecord(null);
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -15,6 +17,9 @@ export class RunnerGame {
   private destroyed = false;
   private ready = false;
   private runArt?: HTMLImageElement;
+  private actionArt?: HTMLImageElement;
+  private chaserArt?: HTMLImageElement;
+  private powerArt?: HTMLImageElement;
   private laughArt?: HTMLImageElement;
   private scenery?: HTMLImageElement;
   private stone?: HTMLImageElement;
@@ -30,15 +35,21 @@ export class RunnerGame {
   private meter: HTMLElement;
   private coin: HTMLElement;
   private turn: HTMLElement;
+  private effects: HTMLElement;
+  private warning: HTMLElement;
+  private score: HTMLElement;
   constructor(private root: HTMLElement, private audio: AudioManager, private settings: Settings, private exit: () => void) {
-    try { this.record = readRunRecord(localStorage.getItem(RUN_RECORD_KEY)); } catch { this.recordError = true; }
-    root.innerHTML = `<main class="runner-screen" aria-label="奶蛙逃亡"><canvas class="runner-canvas" aria-label="三轨水渠跑道，使用方向键或滑动操作"></canvas><header class="runner-header"><button data-run="exit" aria-label="返回模式选择">‹ <span>返回</span></button><div><small>水渠尽头，自有天光</small><h1>奶蛙逃亡</h1></div><button data-run="pause" aria-label="暂停跑酷">Ⅱ</button></header><div class="runner-hud"><div><span>逃亡距离</span><strong id="run-distance">0<small>米</small></strong></div><div><span>泡泡币</span><strong id="run-coins">0</strong></div></div><p class="runner-turn" role="status" aria-live="polite" hidden></p><section class="runner-panel" aria-live="polite"></section><nav class="runner-controls" aria-label="跑酷操作"><button data-run="left" aria-label="左换道或左转">←</button><button data-run="jump" aria-label="跳跃">↑<small>跳跃</small></button><button data-run="slide" aria-label="滑铲">↓<small>滑铲</small></button><button data-run="right" aria-label="右换道或右转">→</button></nav><footer class="runner-footnote">左右换道 · 上跳下滑 · 弯道跟随箭头转向</footer></main>`;
+    this.loadRecord();
+    root.innerHTML = `<main class="runner-screen" aria-label="奶蛙逃亡"><canvas class="runner-canvas" aria-label="三轨水渠跑道，使用方向键或滑动操作"></canvas><header class="runner-header"><button data-run="exit" aria-label="返回模式选择">‹ <span>返回</span></button><div><h1>奶蛙逃亡</h1></div><button data-run="pause" aria-label="暂停跑酷">Ⅱ</button></header><div class="runner-hud"><div><span>得分</span><strong id="run-score">0</strong></div><div><span>距离</span><strong id="run-distance">0<small>米</small></strong></div><div><span>金币</span><strong id="run-coins">0</strong></div></div><p class="runner-turn" role="status" aria-live="polite" hidden></p><div class="runner-effects" aria-label="道具效果"></div><p class="runner-warning" role="status" hidden></p><section class="runner-panel" aria-live="polite"></section><nav class="runner-controls" aria-label="跑酷操作"><button data-run="left" aria-label="左换道或左转">←</button><button data-run="jump" aria-label="跳跃">↑<small>跳跃</small></button><button data-run="slide" aria-label="滑铲">↓<small>滑铲</small></button><button data-run="right" aria-label="右换道或右转">→</button></nav><footer class="runner-footnote">← → 换道　↑ 跳跃　↓ 下滑</footer></main>`;
     this.canvas = root.querySelector("canvas")!;
     this.ctx = this.canvas.getContext("2d")!;
     this.overlay = root.querySelector(".runner-panel")!;
     this.meter = root.querySelector("#run-distance")!;
     this.coin = root.querySelector("#run-coins")!;
     this.turn = root.querySelector(".runner-turn")!;
+    this.effects = root.querySelector(".runner-effects")!;
+    this.warning = root.querySelector(".runner-warning")!;
+    this.score = root.querySelector("#run-score")!;
     const signal = this.abort.signal;
     root.addEventListener("click", this.onClick, { signal });
     document.addEventListener("keydown", this.onKey, { signal });
@@ -66,16 +77,18 @@ export class RunnerGame {
   private async loadArt() {
     this.error = ""; this.showPanel();
     try {
-      const [run, laugh, scenery, stone, props] = await Promise.all([
-        loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"), loadImage("/assets/character/milk-frog-atlas.webp"),
+      const [run, laugh, scenery, stone, props, actions, chaser, power] = await Promise.all([
+        loadImage("/assets/runner/milk-dog-run-v2.png"), loadImage("/assets/character/milk-frog-atlas.webp"),
         loadImage("/assets/runner/aqueduct-scene-v1.png"), loadImage("/assets/runner/wet-stone-v1.png"), loadImage("/assets/runner/obstacles-v1.png"),
+        loadImage("/assets/runner/milk-dog-actions-v2.png"), loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"), loadImage("/assets/runner/powerups-v1.png"),
       ]);
       if (this.destroyed) return;
       this.runArt = run; this.laughArt = laugh; this.scenery = scenery; this.stone = stone; this.props = props;
+      this.actionArt = actions; this.chaserArt = chaser; this.powerArt = power;
       this.ready = true; this.uiPhase = "ready"; this.showPanel();
     } catch {
       if (this.destroyed) return;
-      this.error = "奶蛙还没准备好，请检查网络后重试。"; this.showPanel();
+      this.error = "加载失败，请重试。"; this.showPanel();
     }
   }
   private onClick = (event: Event) => {
@@ -83,10 +96,16 @@ export class RunnerGame {
     if (!button) return;
     const action = button.dataset.run;
     if (action === "exit") { this.exit(); return; }
+    if (action === "help") { this.overlay.innerHTML = `<div class="runner-card"><h2>玩法说明</h2><div class="runner-guide"><span>← →<b>换道 / 转弯</b></span><span>↑<b>跳跃</b></span><span>↓<b>下滑</b></span></div><p>电脑：方向键或 WASD，空格跳跃，Esc 暂停。<br>手机：滑动屏幕，或点下方按钮。</p><p>磁铁：自动吸取附近金币。<br>护盾：挡住一次撞击或掉落。<br>冲刺：加速前进，自动避障和转弯。</p><p>连续收币可提高金币分数，最高5倍。<br>撞到木箱或横梁后，8秒内再撞一次会被抓。<br>断桥要跳过，弯道按箭头转。</p><button data-run="help-back" class="primary">返回</button></div>`; return; }
+    if (action === "help-back") { this.showPanel(); return; }
     if (action === "retry-art") { void this.loadArt(); return; }
+    if (action === "mode-endless" || action === "mode-challenge") {
+      this.chosenMode = action === "mode-endless" ? "endless" : "challenge";
+      this.world = new RunnerWorld(crypto.getRandomValues(new Uint32Array(1))[0], this.chosenMode); this.loadRecord(); this.showPanel(); return;
+    }
     if (action === "start" && this.ready) { this.world.start(); this.audio.setPlaying(true); }
-    else if (action === "restart") { this.turnAt = -10; this.world = new RunnerWorld(crypto.getRandomValues(new Uint32Array(1))[0]); this.world.start(); this.audio.setPlaying(true); }
-    else if (action === "continue") { this.world.continue(); this.audio.setPlaying(true); }
+    else if (action === "restart") { this.turnAt = -10; this.world = new RunnerWorld(crypto.getRandomValues(new Uint32Array(1))[0], this.chosenMode); this.world.start(); this.audio.setPlaying(true); }
+    else if (action === "continue") { this.chosenMode = "endless"; this.loadRecord(); this.world.continue(); this.audio.setPlaying(true); }
     else if (action === "resume") { this.world.resume(); this.audio.setPlaying(true); }
     else if (action === "pause") { this.pause(); return; }
     else if (["left", "right", "jump", "slide"].includes(action ?? "")) { this.act(action as RunAction); return; }
@@ -128,12 +147,20 @@ export class RunnerGame {
     this.root.querySelector("main")!.dataset.phase = this.ready ? w.phase : "loading";
     this.meter.innerHTML = `${Math.floor(w.distance)}<small>米</small>`;
     this.coin.textContent = String(w.coins);
+    this.score.textContent = String(w.score);
+    const active = ([['magnet','磁铁'],['shield','护盾'],['boost','冲刺']] as const).filter(([key])=>w[key]>0);
+    const effectMarkup = active.map(([key,name])=>`<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i>${name} ${Math.ceil(w[key])}秒</span>`).join('') + (w.multiplier>1 ? `<span class="runner-combo">金币 ×${w.multiplier}</span>` : '');
+    if(this.effects.innerHTML !== effectMarkup) this.effects.innerHTML = effectMarkup;
+    this.effects.hidden = w.phase !== "running";
+    this.warning.hidden = w.phase !== "running" || (w.danger === 0 && w.elapsed > 3);
+    const warning = w.danger > 0 ? "小心！它追上来了" : "快跑！恐怖奶蛙追来了";
+    if(this.warning.textContent !== warning) this.warning.textContent = warning;
     const turn = w.approachingTurn;
     const remaining = turn ? turn.z - w.distance : Infinity;
     const show = w.phase === "running" && remaining < 65;
     this.turn.hidden = !show;
     if (show) {
-      const text = `${turn!.direction === "left" ? "← 左转" : "右转 →"} · ${remaining <= 16 ? "现在转向！" : `${Math.ceil(remaining)}米后进入转弯区`}`;
+      const text = `${turn!.direction === "left" ? "← 左转" : "右转 →"} · ${remaining <= 16 ? "现在转！" : `${Math.ceil(remaining)}米`}`;
       if (this.turn.textContent !== text) this.turn.textContent = text;
       this.turn.classList.toggle("now", remaining <= 16);
     }
@@ -142,13 +169,18 @@ export class RunnerGame {
       this.uiPhase = w.phase; this.showPanel();
     }
   }
+  private loadRecord() {
+    this.record = readRunRecord(null);
+    try { this.record = readRunRecord(localStorage.getItem(this.chosenMode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY)); }
+    catch { this.recordError = true; }
+  }
   private save() {
     const w = this.world;
     this.record = { version: 1, distance: Math.max(this.record.distance, Math.floor(w.distance)), coins: Math.max(this.record.coins, w.coins), score: Math.max(this.record.score, w.score) };
     try {
-      const stored = readRunRecord(localStorage.getItem(RUN_RECORD_KEY));
+      const stored = readRunRecord(localStorage.getItem(this.chosenMode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY));
       this.record = { version: 1, distance: Math.max(this.record.distance, stored.distance, Math.floor(w.distance)), coins: Math.max(this.record.coins, stored.coins, w.coins), score: Math.max(this.record.score, stored.score, w.score) };
-      localStorage.setItem(RUN_RECORD_KEY, JSON.stringify(this.record));
+      localStorage.setItem(this.chosenMode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY, JSON.stringify(this.record));
     } catch { this.recordError = true; }
   }
   private showPanel() {
@@ -156,17 +188,17 @@ export class RunnerGame {
     this.overlay.hidden = this.ready && w.phase === "running";
     if (this.overlay.hidden) return;
     const button = (action: string, text: string, secondary = false) => `<button data-run="${action}" class="${secondary ? "secondary" : "primary"}">${text}</button>`;
-    if (!this.ready) { this.overlay.innerHTML = `<div class="runner-card"><small>奶蛙逃亡</small><h2>${this.error ? "再等奶蛙一下" : "正在准备水渠…"}</h2><p>${this.error || "载入角色后即可出发"}</p>${this.error ? button("retry-art", "重试") : ""}${button("exit", "返回模式选择", true)}</div>`; return; }
+    if (!this.ready) { this.overlay.innerHTML = `<div class="runner-card"><h2>${this.error ? "加载失败" : "加载中…"}</h2>${this.error ? `<p>${this.error}</p>${button("retry-art", "重试")}` : ""}${button("exit", "返回", true)}</div>`; return; }
     if (w.phase === "ready") {
-      this.overlay.innerHTML = `<div class="runner-card"><small>全新跑酷冒险 / WATERWAY RUN</small><h2>一跃，逃向天光。</h2><p>穿过古老浴场的三轨水渠。<br>先跑出 <b>1000 米</b>，再挑战无尽旅程。</p><div class="runner-guide"><span>← →<b>换道 / 转弯</b></span><span>↑<b>跳过木箱与断桥</b></span><span>↓<b>滑过横梁</b></span></div><p class="runner-tip">手机滑动或点下方按钮；电脑使用方向键 / WASD。<br>弯道亮起金色提示时，按箭头方向转弯。Esc / P 暂停。</p><div class="runner-record">本机最佳 <b>${this.record.distance} 米</b> · ${this.record.score} 分</div>${button("start", "开始逃亡 →")}${button("exit", "返回模式选择", true)}${this.storageNotice()}</div>`;
+      this.overlay.innerHTML = `<div class="runner-card"><h2>奶蛙逃亡</h2><div class="runner-roster"><div><canvas width="140" height="110" data-portrait="dog" aria-label="玩家奶狗"></canvas><b>奶狗</b><small>你</small></div><span aria-hidden="true">VS</span><div><canvas width="140" height="110" data-portrait="chaser" aria-label="追赶者恐怖奶蛙"></canvas><b>恐怖奶蛙</b><small>追赶者</small></div></div><div class="runner-mode-select" aria-label="选择玩法"><button data-run="mode-endless" aria-pressed="${this.chosenMode === "endless"}">无限模式</button><button data-run="mode-challenge" aria-pressed="${this.chosenMode === "challenge"}">千米挑战</button></div><p>${this.chosenMode === "endless" ? "跑得越远，得分越高。" : "跑满1000米。"}</p><p class="runner-tip">左右换道，上跳下滑。<br>捡道具，躲开障碍，别被抓住。</p><div class="runner-record">最高分 <b>${this.record.score}</b>　最远 ${this.record.distance} 米</div>${button("start", "开始游戏")}${button("help", "玩法说明", true)}${button("exit", "返回", true)}${this.storageNotice()}</div>`;
     } else if (w.phase === "paused") {
-      this.overlay.innerHTML = `<div class="runner-card"><small>喘口气，水渠会等你</small><h2>已暂停</h2><p>距离、机关和计时已停止。</p>${button("resume", "继续逃亡")}${button("restart", "重新出发", true)}${button("exit", "返回模式选择", true)}</div>`;
+      this.overlay.innerHTML = `<div class="runner-card"><h2>暂停</h2>${button("resume", "继续")}${button("restart", "重新开始", true)}${button("exit", "主菜单", true)}</div>`;
     } else {
-      this.overlay.innerHTML = `<div class="runner-card runner-result ${w.phase === "won" ? "runner-victory" : ""}"><small>${w.phase === "won" ? "千米逃亡 · 成功" : "这趟旅程，到这里"}</small><h2>${w.phase === "won" ? "笑着跑出浴场！" : "再跳远一点"}</h2>${w.phase === "won" ? '<canvas class="runner-laugh" width="320" height="240" aria-label="奶蛙捧腹大笑庆祝"></canvas>' : `<p>${w.reason}</p>`}<div class="runner-result-stats"><span><b>${Math.floor(w.distance)}</b>米</span><span><b>${w.coins}</b>泡泡币</span><span><b>${w.score}</b>分</span></div><p>本机最远 ${this.record.distance} 米 · 最高 ${this.record.score} 分</p>${w.phase === "won" ? button("continue", "继续 · 无尽逃亡") : ""}${button("restart", "重新出发", w.phase === "won")}${button("exit", "返回模式选择", true)}${this.storageNotice()}</div>`;
+      this.overlay.innerHTML = `<div class="runner-card runner-result"><h2>${w.phase === "won" ? "挑战完成" : "游戏结束"}</h2>${w.phase === "won" ? '<div class="runner-celebrate"><canvas class="runner-dog-win" width="160" height="140" aria-label="奶狗庆祝"></canvas><canvas class="runner-laugh" width="160" height="140" aria-label="奶蛙捧腹大笑庆祝"></canvas></div>' : `<p>${w.reason}</p>`}<div class="runner-result-stats"><span><b>${w.score}</b>得分</span><span><b>${Math.floor(w.distance)}</b>距离</span><span><b>${w.coins}</b>金币</span></div><p>最高分 ${this.record.score}　最远 ${this.record.distance} 米</p>${w.phase === "won" ? button("continue", "继续无限模式") : ""}${button("restart", "再跑一次", w.phase === "won")}${button("exit", "主菜单", true)}${this.storageNotice()}</div>`;
     }
     this.overlay.querySelector<HTMLButtonElement>(".primary")?.focus({ preventScroll: true });
   }
-  private storageNotice() { return this.recordError ? '<p class="runner-tip" role="status">浏览器存储不可用，本次纪录仅保留在当前页面。</p>' : ""; }
+  private storageNotice() { return this.recordError ? '<p class="runner-tip" role="status">纪录未能保存。</p>' : ""; }
   private draw(time: number) {
     const c = this.ctx, width = this.canvas.width, height = this.canvas.height;
     c.setTransform(width / 600, 0, 0, height / 800, 0, 0);
@@ -208,31 +240,58 @@ export class RunnerGame {
     for (const item of [...this.world.items].sort((a,b)=>b.z-a.z)) {
       if (item.done || item.z < this.world.distance-2) continue;
       const p = project(item.lane,item.z-this.world.distance), s = p.s;
-      const frame = item.kind === "block" ? 0 : item.kind === "beam" ? 1 : item.kind === "gap" ? 2 : 3;
-      const w = item.kind === "coin" ? 72 : item.kind === "gap" ? 188 : item.kind === "beam" ? 182 : 136;
-      const h = item.kind === "coin" ? 72 : item.kind === "gap" ? 95 : item.kind === "beam" ? 185 : 136;
-      const lift = item.kind === "coin" ? 62 : item.kind === "gap" ? 65 : h*.95;
-      c.drawImage(this.props,(frame%2)*propCell,Math.floor(frame/2)*propCell,propCell,propCell,p.x-w*s/2,p.y-lift*s,w*s,h*s);
+      const isPower = item.kind === "magnet" || item.kind === "shield" || item.kind === "boost";
+      const image = isPower ? this.powerArt! : this.props;
+      const cell = isPower ? image.width/2 : propCell;
+      const frame = isPower ? item.kind === "magnet" ? 0 : item.kind === "shield" ? 1 : 2 : item.kind === "block" ? 0 : item.kind === "beam" ? 1 : item.kind === "gap" ? 2 : 3;
+      const w = isPower ? 90 : item.kind === "coin" ? 72 : item.kind === "gap" ? 188 : item.kind === "beam" ? 182 : 136;
+      const h = isPower ? 90 : item.kind === "coin" ? 72 : item.kind === "gap" ? 95 : item.kind === "beam" ? 185 : 136;
+      const lift = isPower ? 85 : item.kind === "coin" ? 62 : item.kind === "gap" ? 65 : h*.95;
+      c.drawImage(image,(frame%2)*cell,Math.floor(frame/2)*cell,cell,cell,p.x-w*s/2,p.y-lift*s,w*s,h*s);
     }
-    if (this.runArt) {
-      const x = 300 + (this.world.position - 1) * 165, jump = this.world.jumpHeight * 115;
-      c.fillStyle = "#062b3566"; c.beginPath(); c.ellipse(x,746,52*(1-this.world.jumpHeight*.35),12,0,0,Math.PI*2); c.fill();
-      const moving = this.world.phase === "running" && !this.settings.reducedMotion;
-      const cell = this.runArt.width / 4;
-      const row = 1 + (moving && Math.floor(this.world.elapsed * 9) % 2 ? 2 : 0);
-      const bob = moving ? Math.sin(this.world.elapsed * 18) * 4 : 0;
-      const h = this.world.slide > 0 ? 85 : 154;
-      c.drawImage(this.runArt,0,row*cell,cell,cell,x-82*aspect,752-h-jump+bob,164*aspect,h);
+    if (this.runArt && this.actionArt) {
+      const w = this.world, x = 300+(w.position-1)*165, jump = w.jumpHeight*115;
+      c.fillStyle = "#062b3566"; c.beginPath(); c.ellipse(x,746,56*(1-w.jumpHeight*.35),10,0,0,Math.PI*2); c.fill();
+      let pose = dogPose(w,this.settings.reducedMotion);
+      if(turning>=0 && turning<.4 && w.phase === "running" && !w.jump && !w.slide) pose = {sheet:"actions",frame:this.turnDirection<0?6:7};
+      const image = pose.sheet === "run" ? this.runArt : this.actionArt;
+      const cellW = image.width/4, cellH = image.height/2, size = 176;
+      c.drawImage(image,(pose.frame%4)*cellW,Math.floor(pose.frame/4)*cellH,cellW,cellH,x-size*aspect/2,752-size*.88-jump,size*aspect,size);
+      if(w.shield>0 && this.powerArt){
+        const cell=this.powerArt.width/2;c.globalAlpha=.3;
+        c.drawImage(this.powerArt,cell,cell,cell,cell,x-106*aspect,752-190-jump,212*aspect,212);c.globalAlpha=1;
+      }
+      // The pursuer stays behind the dog, closing in only during the opening or after a stumble.
+      if(this.chaserArt && w.phase !== "ready" && w.phase !== "won"){
+        const close = w.phase === "lost" ? 1 : Math.max(w.danger/8,Math.max(0,1-w.elapsed/3));
+        if(close>0){
+          const cell=this.chaserArt.width/4, size=190+close*65;
+          const row=!this.settings.reducedMotion&&Math.floor(w.elapsed*9)%2?2:0;
+          const enemyX=Math.max(80,Math.min(520,x+135));
+          c.drawImage(this.chaserArt,0,row*cell,cell,cell,enemyX-size*aspect/2,980-close*160-size,size*aspect,size);
+        }
+      }
     }
     c.restore();
     c.setTransform(1,0,0,1,0,0);
+    const portrait = (selector: string, image: HTMLImageElement | undefined, frame: number, columns: number, rows: number) => {
+      const canvas=this.overlay.querySelector<HTMLCanvasElement>(selector);if(!canvas||!image)return;
+      const ctx=canvas.getContext("2d")!,cw=image.width/columns,ch=image.height/rows;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(image,(frame%columns)*cw,Math.floor(frame/columns)*ch,cw,ch,(canvas.width-canvas.height)/2,0,canvas.height,canvas.height);
+    };
+    portrait('[data-portrait="dog"]',this.actionArt,4,4,2);
+    portrait('[data-portrait="chaser"]',this.chaserArt,0,4,4);
+    portrait('.runner-dog-win',this.actionArt,4,4,2);
     const laugh = this.overlay.querySelector<HTMLCanvasElement>(".runner-laugh");
-    if (laugh && this.laughArt) {
-      const lc = laugh.getContext("2d")!; lc.clearRect(0,0,320,240);
-      const pulse = this.settings.reducedMotion ? 0 : Math.sin(time * 12) * 2;
-      lc.drawImage(this.laughArt,1024,512,512,512,40,0,240,240+pulse);
+    if(laugh && this.laughArt){
+      const lc=laugh.getContext("2d")!,size=laugh.height;
+      const pulse=this.settings.reducedMotion?0:Math.sin(time*12)*1.5;
+      lc.clearRect(0,0,laugh.width,laugh.height);
+      lc.drawImage(this.laughArt,1024,512,512,512,(laugh.width-size)/2,0,size,size+pulse);
     }
   }
+
   destroy() {
     if (this.destroyed) return;
     if (this.world.phase === "running" || this.world.phase === "paused") this.save();

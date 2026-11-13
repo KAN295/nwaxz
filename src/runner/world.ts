@@ -1,8 +1,12 @@
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "paused" | "won" | "lost";
-export type RunItem = { id: number; z: number; lane: number; kind: "coin" | "block" | "gap" | "beam"; done: boolean };
+export type RunMode = "challenge" | "endless";
+export type RunItemKind = "coin" | "block" | "gap" | "beam" | "magnet" | "shield" | "boost";
+export const isRunObstacle = (kind: RunItemKind) => kind === "block" || kind === "gap" || kind === "beam";
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean };
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
+export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 export function readRunRecord(raw: string | null): RunRecord {
   const empty: RunRecord = { version: 1, distance: 0, coins: 0, score: 0 };
@@ -21,6 +25,7 @@ export class RunnerWorld {
   phase: RunPhase = "ready";
   distance = 0;
   elapsed = 0;
+  gait = 0;
   lane = 1;
   position = 1;
   coins = 0;
@@ -31,14 +36,26 @@ export class RunnerWorld {
   items: RunItem[] = [];
   turns: RunTurn[] = [];
   turnCount = 0;
+  magnet = 0;
+  shield = 0;
+  boost = 0;
+  danger = 0;
+  stumble = 0;
+  streak = 0;
+  coinScore = 0;
+  private streakTimer = 0;
+  private grace = 0;
+  private rows = 0;
+  private powerSequence = 0;
   private accumulator = 0;
   private nextRow = 44;
   private nextTurn = 180;
   private sequence = 0;
   private seed: number;
-  constructor(seed = 1) { this.seed = seed >>> 0; this.populate(); }
-  get speed() { return Math.min(28, 12 + this.distance / 140); }
-  get score() { return Math.floor(this.distance) * 10 + this.coins * 50; }
+  constructor(seed = 1, mode: RunMode = "challenge") { this.seed = seed >>> 0; this.endless = mode === "endless"; this.populate(); }
+  get speed() { return Math.min(28, 12 + this.distance / 140) * (this.boost > 0 ? 1.5 : this.stumble > 0 ? .65 : 1); }
+  get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
+  get score() { return Math.floor(this.distance) * 10 + this.coinScore; }
   get jumpHeight() { return this.jump > 0 ? Math.sin(Math.PI * (1 - this.jump / .95)) : 0; }
   get approachingTurn() { return this.turns.find(turn => !turn.taken && turn.z >= this.distance - 1); }
   start() { if (this.phase === "ready") this.phase = "running"; }
@@ -49,7 +66,7 @@ export class RunnerWorld {
     if (this.phase !== "running") return;
     const turn = this.approachingTurn;
     if ((action === "left" || action === "right") && turn && turn.z - this.distance <= 16) {
-      if (action !== turn.direction) { this.fail("弯道方向错了，再试一次！"); return; }
+      if (action !== turn.direction && this.boost === 0) { this.fail("转错方向"); return; }
       turn.taken = true; this.turnCount++; this.lane = 1; this.position = 1;
       return;
     }
@@ -68,19 +85,41 @@ export class RunnerWorld {
   }
   private step(dt: number) {
     this.elapsed += dt;
+    this.gait += dt * Math.min(3.7, 1.9 + this.speed / 22);
     this.distance += this.speed * dt;
     this.position += (this.lane - this.position) * Math.min(1, dt * 18);
     this.jump = Math.max(0, this.jump - dt); this.slide = Math.max(0, this.slide - dt);
+    for (const key of ["magnet", "shield", "boost", "danger", "stumble", "grace", "streakTimer"] as const) this[key] = Math.max(0,this[key]-dt);
+    if (this.streakTimer === 0) this.streak = 0;
+    const corner = this.approachingTurn;
+    if (this.boost > 0 && corner && corner.z-this.distance <= 16) this.action(corner.direction);
     for (const item of this.items) {
-      if (item.done || Math.abs(item.z - this.distance) > .9) continue;
-      if (Math.abs(item.lane - this.position) > .42) continue;
+      if (item.done) continue;
+      const close = Math.abs(item.z-this.distance) <= .9;
+      const sameLane = Math.abs(item.lane-this.position) <= .42;
+      const attracted = item.kind === "coin" && this.magnet > 0 && item.z >= this.distance-.9 && item.z <= this.distance+12;
+      if (!attracted && (!close || !sameLane)) continue;
       if (item.kind === "coin") {
-        if (this.jumpHeight < .45 && this.slide === 0) { item.done = true; this.coins++; }
+        if (attracted || (this.jumpHeight < .45 && this.slide === 0) || this.boost > 0) {
+          item.done = true; this.coins++; this.streak++; this.streakTimer = 4; this.coinScore += 50*this.multiplier;
+        }
+      } else if (item.kind === "magnet" || item.kind === "shield" || item.kind === "boost") {
+        item.done = true;
+        this[item.kind] = item.kind === "shield" ? 20 : item.kind === "magnet" ? 10 : 5;
+        if (item.kind === "boost") { this.danger = 0; this.stumble = 0; }
+      } else if (this.boost > 0 || this.grace > 0) {
+        item.done = true;
       } else if ((item.kind === "beam" && this.slide > 0) || (item.kind !== "beam" && this.jumpHeight > .4)) {
         item.done = true;
-      } else { this.fail(item.kind === "gap" ? "掉进了断开的水渠。试试向上跳！" : item.kind === "beam" ? "碰到横梁了。试试向下滑铲！" : "撞到木箱了。换道或跳过去！"); return; }
+      } else {
+        item.done = true;
+        if (this.shield > 0) { this.shield = 0; this.grace = 1.25; }
+        else if (item.kind === "gap") { this.fail("掉下去了"); return; }
+        else if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了"); return; }
+        else { this.danger = 8; this.stumble = 1; this.grace = 1.25; this.streak = 0; this.streakTimer = 0; }
+      }
     }
-    if (this.turns.some(turn => !turn.taken && this.distance > turn.z)) { this.fail("错过了弯道。看见提示后，在转弯区左右转向！"); return; }
+    if (this.turns.some(turn => !turn.taken && this.distance > turn.z)) { this.fail("错过转弯"); return; }
     if (!this.endless && this.distance >= 1000) { this.distance = 1000; this.phase = "won"; }
     this.items = this.items.filter(item => item.z > this.distance - 8);
     this.turns = this.turns.filter(turn => turn.z > this.distance - 20);
@@ -95,12 +134,16 @@ export class RunnerWorld {
     while (this.nextRow < this.distance + 140) {
       const z = this.nextRow;
       // Reserve clear approach and recovery zones around every corner and the milestone.
-      if (Math.min(z % 180, 180 - z % 180) > 30 && (z < 970 || z > 1030)) {
+      if (Math.min(z % 180, 180 - z % 180) > 30 && (this.endless || z < 970 || z > 1030)) {
         const lane = Math.floor(this.random() * 3);
         const kind = (["block", "gap", "beam"] as const)[Math.floor(this.random() * 3)];
         this.items.push({ id: this.sequence++, z, lane, kind, done: false });
         const safe = (lane + 1 + Math.floor(this.random() * 2)) % 3;
         for (let i = 0; i < 3; i++) this.items.push({ id: this.sequence++, z: z + i * 2.8, lane: safe, kind: "coin", done: false });
+        if (++this.rows % 4 === 0) {
+          const power = (["shield", "magnet", "boost"] as const)[this.powerSequence++ % 3];
+          this.items.push({ id: this.sequence++, z: z+9, lane: safe, kind: power, done: false });
+        }
       }
       this.nextRow += 22;
     }
