@@ -11,6 +11,14 @@
       "sha256": "46cc963504323b26d732b2777d0a0cbdb42cb86f7f885c7d35d21fb1dd8ccc91"
     },
     {
+      "url": "/assets/runner/mandatory-obstacles-v1.png",
+      "width": 1261,
+      "height": 1247,
+      "pngColorType": 6,
+      "bytes": 1550501,
+      "sha256": "1a92f72ab7c2eb16a3630d5e01dc6a7d0d617f88711be5b08d361cb7254b5d8b"
+    },
+    {
       "url": "/assets/runner/milk-dog-actions-v2.png",
       "width": 1774,
       "height": 887,
@@ -27,6 +35,14 @@
       "sha256": "f5cf133ad3b4eeb91a5425aa20418a5cf323d552cb2b92f6fa4733a741491cc8"
     },
     {
+      "url": "/assets/runner/mine-scene-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 3623010,
+      "sha256": "d9770b6e47f8be7f78f62b36f4f0f544c571adfffce73bb698ab778161960256"
+    },
+    {
       "url": "/assets/runner/obstacles-v1.png",
       "width": 1254,
       "height": 1254,
@@ -41,6 +57,14 @@
       "pngColorType": 6,
       "bytes": 1782508,
       "sha256": "99c69f2a9e08dffbeca51a3ab2c5696945c9d712e2e0dc270aed11767dd73f78"
+    },
+    {
+      "url": "/assets/runner/temple-scene-v1.png",
+      "width": 1086,
+      "height": 1448,
+      "pngColorType": 2,
+      "bytes": 3869436,
+      "sha256": "39325c22ae58464cbdaa558c90083fd12a8f5b50b71f5521aad74fadd1f9b307"
     },
     {
       "url": "/assets/runner/wet-stone-v1.png",

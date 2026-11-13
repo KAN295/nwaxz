@@ -14,6 +14,9 @@ try {
  await page.goto(base); await page.locator('#runner').click();
  await page.getByRole('button',{name:'开始游戏'}).waitFor();
  await page.screenshot({path:fileURLToPath(new URL('desktop-ready.png',out))});
+ await page.getByRole('button',{name:'遗迹长廊',exact:true}).click();await page.waitForTimeout(100);assert.equal(await page.locator('#runner-scene').textContent(),'遗迹长廊');await page.screenshot({path:fileURLToPath(new URL('temple-ready.png',out))});
+ await page.getByRole('button',{name:'矿洞轨道',exact:true}).click();await page.waitForTimeout(100);assert.equal(await page.locator('#runner-scene').textContent(),'矿洞轨道');await page.screenshot({path:fileURLToPath(new URL('mine-ready.png',out))});
+ await page.getByRole('button',{name:'峡谷水渠',exact:true}).click();
  await page.getByRole('button',{name:'开始游戏'}).click(); await page.waitForTimeout(500);
  await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowUp');
  await page.keyboard.press('Escape'); await page.getByRole('heading',{name:'暂停',exact:true}).waitFor();
@@ -35,8 +38,9 @@ try {
   const w=window.qaGame.world;
   for(let i=0;i<16000&&w.phase==='running';i++){
    const t=w.approachingTurn;if(t&&t.z-w.distance<=15)w.action(t.direction);
-   const o=w.items.find(i=>['block','gap','beam'].includes(i.kind)&&i.z>w.distance&&i.z-w.distance<12);
-   if(o){const lane=(o.lane+1)%3;if(w.lane<lane)w.action('right');else if(w.lane>lane)w.action('left');}
+   const o=w.items.filter(i=>['block','gap','beam'].includes(i.kind)&&!i.done&&i.z>w.distance-1).sort((a,b)=>a.z-b.z)[0];
+   if(o?.span===3){if(o.z-w.distance<w.speed*(o.kind==='beam'?.24:.42))w.action(o.kind==='beam'?'slide':'jump');}
+   else if(o&&o.z-w.distance<Math.max(14,w.speed*.6)){const blocked=w.items.filter(i=>['block','gap','beam'].includes(i.kind)&&Math.abs(i.z-o.z)<.01).map(i=>i.lane);const lane=[0,1,2].find(l=>!blocked.includes(l));if(w.lane<lane)w.action('right');else if(w.lane>lane)w.action('left');}
    w.advance(1/120);
   }
  });
@@ -53,6 +57,14 @@ try {
  await page.evaluate(()=>{const w=window.qaGame.world;window.qaTurns=w.turnCount;w.turns=[{z:w.distance+10,direction:'right',taken:false}];});await page.waitForTimeout(200);
  assert.equal(await page.evaluate(()=>window.qaGame.world.turnCount),await page.evaluate(()=>window.qaTurns+1));
  await page.screenshot({path:fileURLToPath(new URL('desktop-powerups.png',out))});
+ await page.evaluate(()=>{const w=window.qaGame.world;w.boost=0;w.shield=0;w.danger=0;w.jump=0;w.slide=0;w.turns=[];w.items=[{id:9999,z:w.distance+10,lane:1,kind:'beam',span:3,done:false}];});
+ await page.locator('.runner-action-cue:not([hidden])').waitFor();assert.match(await page.locator('.runner-action-cue').textContent(),/下滑/);await page.screenshot({path:fileURLToPath(new URL('mandatory-gate.png',out))});
+ await page.keyboard.press('ArrowDown');await page.waitForTimeout(1000);assert.equal(await page.evaluate(()=>window.qaGame.world.phase),'running');
+ await page.evaluate(()=>{const w=window.qaGame.world;w.items=[];w.turns=[{z:w.distance+35,direction:'left',taken:false}];});
+ await page.locator('.runner-turn:not([hidden])').waitFor();assert.match(await page.locator('.runner-turn').textContent(),/左转/);await page.screenshot({path:fileURLToPath(new URL('turn-warning.png',out))});
+ await page.evaluate(()=>{const w=window.qaGame.world;w.turns[0].z=w.distance+12;});await page.waitForTimeout(50);await page.keyboard.press('ArrowLeft');await page.waitForTimeout(100);await page.screenshot({path:fileURLToPath(new URL('turn-camera.png',out))});assert.equal(await page.locator('.runner-screen.runner-turning').count(),1);
+ await page.evaluate(()=>{const w=window.qaGame.world;w.items=[];w.turns=[];w.danger=8;w.hitAt=w.elapsed;});await page.waitForTimeout(100);await page.screenshot({path:fileURLToPath(new URL('rear-chase.png',out))});
+
  await page.evaluate(()=>window.dispatchEvent(new Event('blur'))); await page.getByRole('heading',{name:'暂停',exact:true}).waitFor();
  await page.evaluate(()=>window.qaGame.destroy()); await context.close();
  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,deviceScaleFactor:2});
@@ -74,6 +86,6 @@ try {
  await p.getByRole('button',{name:'暂停跑酷'}).click();await p.getByRole('heading',{name:'暂停',exact:true}).waitFor();
  await p.setViewportSize({width:844,height:390});await p.screenshot({path:fileURLToPath(new URL('mobile-landscape.png',out))});
  assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth),844);
- assert.deepEqual(errors,[]); console.log('PASS desktop/mobile entry, keyboard, touch, pause, blur, dog/chaser identity, powerups, auto-turn, 1000m laugh, endless, collision, restart, persistence; page errors: 0');
+ assert.deepEqual(errors,[]); console.log('PASS desktop/mobile entry, keyboard, touch, pause, blur, three scenes, full-width gate, rear chase, stronger turn cue/camera, dog/chaser identity, powerups, auto-turn, 1000m laugh, endless, collision, restart, persistence; page errors: 0');
  await fs.writeFile(new URL('result.json',out),JSON.stringify({passed:true,errors},null,2));
 } finally {await browser.close();}

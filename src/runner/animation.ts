@@ -1,5 +1,9 @@
 import type { RunnerWorld } from "./world.ts";
 
+export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number {
+  return 4 + (!reducedMotion && Math.floor(world.gait*2)%2 ? 8 : 0);
+}
+
 /** The eight drawings are successive canine support/suspension phases, not a bobbed still. */
 export function dogPose(world: RunnerWorld, reducedMotion: boolean): { sheet: "run" | "actions"; frame: number } {
   if (world.phase === "lost") return { sheet: "actions", frame: 5 };

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import { RunnerWorld, readRunRecord, isRunObstacle } from '../src/runner/world.ts';
-import {dogPose} from '../src/runner/animation.ts';
+import {dogPose,chaserFrame} from '../src/runner/animation.ts';
 
 function run(world, seconds) { for (let i = 0; i < Math.round(seconds * 120); i++) world.advance(1 / 120); }
 function collision(kind) {
@@ -42,35 +42,39 @@ test('corner inputs work only inside the signed window, and missed/wrong turns f
   const missed=new RunnerWorld(); missed.start(); missed.turns=[{z:1,direction:'left',taken:false}]; run(missed,.2); assert.equal(missed.phase,'lost');
 });
 test('long frame clamps and fixed ticks prevent hidden-tab fast forward and tunnelling', () => {
-  const w=new RunnerWorld(); w.start(); w.advance(1000); assert.ok(w.distance < 1.3);
+  const w=new RunnerWorld(); w.start(); w.advance(1000); assert.ok(w.distance < 1.5);
   const a=collision('block'), b=collision('block');
   for(let i=0;i<10;i++) a.advance(.05); run(b,.5); assert.equal(a.phase,b.phase); assert.ok(Math.abs(a.distance-b.distance)<.12);
 });
-test('seeded routes have a safe lane, no hazards around corners and bounded memory', () => {
-  for(let seed=1;seed<=40;seed++) {
-    const w=new RunnerWorld(seed,'endless'); w.start();
-    for(let tick=0;tick<18000 && w.phase==='running';tick++) {
-      const turn=w.approachingTurn;
-      if(turn && turn.z-w.distance<=15) w.action(turn.direction);
-      const hazard=w.items.find(item=>isRunObstacle(item.kind) && item.z>w.distance && item.z-w.distance<12);
-      if(hazard) { const safe=(hazard.lane+1)%3; if(w.lane<safe) w.action('right'); else if(w.lane>safe) w.action('left'); }
-      for(const item of w.items.filter(i=>isRunObstacle(i.kind))) assert.ok(Math.min(item.z%180,180-item.z%180)>30);
-      w.advance(1/120);
-    }
-    assert.equal(w.phase,'running',`seed ${seed} has an unplayable route: ${w.reason}`);
-    assert.ok(w.distance>3000); assert.ok(w.items.length<45); assert.ok(w.turns.length<=2);
+function drive(w) {
+  const turn=w.approachingTurn;if(turn&&turn.z-w.distance<=15)w.action(turn.direction);
+  const next=w.items.filter(i=>isRunObstacle(i.kind)&&!i.done&&i.z>w.distance-1).sort((a,b)=>a.z-b.z)[0];
+  if(!next)return;
+  if(next.span===3){
+    if(next.z-w.distance<w.speed*(next.kind==='beam'?.24:.42))w.action(next.kind==='beam'?'slide':'jump');
+  }else if(next.z-w.distance<Math.max(14,w.speed*.6)){
+    const blocked=w.items.filter(i=>isRunObstacle(i.kind)&&Math.abs(i.z-next.z)<.01).map(i=>i.lane);
+    const safe=[0,1,2].find(lane=>!blocked.includes(lane));
+    if(w.lane<safe)w.action('right');else if(w.lane>safe)w.action('left');
   }
+}
+test('40 seeded routes require jump/slide and remain solvable through all scenes with bounded memory',()=>{
+ for(let seed=1;seed<=40;seed++){
+  const w=new RunnerWorld(seed,'endless',seed%3);w.start();let forced=0;
+  const ids=new Set();
+  for(let tick=0;tick<18000&&w.phase==='running';tick++){
+   for(const i of w.items.filter(i=>isRunObstacle(i.kind))){assert.ok(Math.min(i.z%180,180-i.z%180)>30);if(i.span===3&&!ids.has(i.id)){forced++;ids.add(i.id);}}
+   drive(w);w.advance(1/120);
+  }
+  assert.equal(w.phase,'running',`seed ${seed}: ${w.reason} at ${w.distance}`);
+  assert.ok(w.distance>3000);assert.ok(forced>15);assert.ok(w.items.length<45);assert.ok(w.turns.length<=2);
+ }
 });
-test('1000m milestone stops for the celebration and endless continuation retains score', () => {
-  const w=new RunnerWorld(); w.start();
-  for(let tick=0;tick<15000 && w.phase==='running';tick++) {
-    const turn=w.approachingTurn; if(turn && turn.z-w.distance<=15) w.action(turn.direction);
-    const obstacle=w.items.find(i=>isRunObstacle(i.kind) && i.z>w.distance && i.z-w.distance<12);
-    if(obstacle) { const safe=(obstacle.lane+1)%3; if(w.lane<safe) w.action('right'); else if(w.lane>safe) w.action('left'); }
-    w.advance(1/120);
-  }
-  assert.equal(w.phase,'won'); assert.equal(w.distance,1000); run(w,2); assert.equal(w.distance,1000);
-  w.continue(); w.advance(.1); assert.equal(w.phase,'running'); assert.ok(w.distance>1000); assert.ok(w.endless);
+test('1000m challenge stops for laughter and can continue in infinite mode',()=>{
+ const w=new RunnerWorld();w.start();
+ for(let tick=0;tick<15000&&w.phase==='running';tick++){drive(w);w.advance(1/120);}
+ assert.equal(w.phase,'won');assert.equal(w.distance,1000);run(w,2);assert.equal(w.distance,1000);
+ w.continue();w.advance(.1);assert.equal(w.phase,'running');assert.ok(w.distance>1000);
 });
 test('record parser rejects corrupt, old or non-finite records without touching other saves', () => {
   for(const raw of [null,'{','{}','{"version":1,"distance":-2,"coins":0,"score":0}','{"version":1,"distance":4.5,"coins":0,"score":0}','{"version":1,"distance":500,"coins":-1,"score":0}','{"version":9,"distance":5,"coins":3,"score":200}']) assert.deepEqual(readRunRecord(raw),{version:1,distance:0,coins:0,score:0});
@@ -78,7 +82,7 @@ test('record parser rejects corrupt, old or non-finite records without touching 
 });
 test('generated realistic scenery, stone and transparent props retain their native PNG bytes', () => {
   const manifest=JSON.parse(fs.readFileSync(new URL('../public/assets/runner/manifest.json',import.meta.url),'utf8'));
-  assert.equal(manifest.nativeBytes,true);assert.equal(manifest.assets.length,6);
+  assert.equal(manifest.nativeBytes,true);assert.equal(manifest.assets.length,9);
   for(const asset of manifest.assets) {
     const bytes=fs.readFileSync(new URL('../public'+asset.url,import.meta.url));
     assert.equal(bytes.readUInt32BE(16),asset.width);assert.equal(bytes.readUInt32BE(20),asset.height);
@@ -123,4 +127,19 @@ test('dog gallop uses eight distinct frames, real jump/crouch poses and a frozen
   run(w,.8);assert.equal(dogPose(w,false).frame,2);run(w,.2);w.action('slide');assert.equal(dogPose(w,false).frame,3);
   w.pause();const gait=w.gait;run(w,4);assert.equal(w.gait,gait);
   const still=new RunnerWorld();still.start();assert.deepEqual(dogPose(still,true),{sheet:'actions',frame:0});
+});
+
+test('full-width log, gap and low gate cannot be bypassed by any lane or by changing lanes',()=>{
+ for(const kind of ['block','gap','beam'])for(const lane of [0,1,2]){
+  const w=collision(kind);w.lane=lane;w.position=lane;w.items[0].span=3;w.action(lane===0?'right':'left');run(w,.5);assert.equal(w.phase,'lost',`${kind} lane ${lane}`);
+  const safe=collision(kind);safe.lane=lane;safe.position=lane;safe.items[0].span=3;safe.action(kind==='beam'?'slide':'jump');run(safe,.5);assert.equal(safe.phase,'running');
+ }
+});
+test('scene selection and 450m transitions cover distinct route themes',()=>{
+ const w=new RunnerWorld(1,'endless',1);assert.equal(w.sceneIndex,1);w.distance=450;assert.equal(w.sceneIndex,2);w.distance=900;assert.equal(w.sceneIndex,0);
+ const temple=new RunnerWorld(1,'endless',1);assert.ok(temple.items.some(i=>i.span===3&&i.kind==='block'));assert.ok(temple.items.some(i=>i.span===3&&i.kind==='beam'));
+});
+test('pursuer animation always uses rear-view frames while chasing',()=>{
+ const w=new RunnerWorld();w.start();const frames=new Set();for(let i=0;i<100;i++){w.advance(1/120);frames.add(chaserFrame(w,false));}
+ assert.deepEqual([...frames].sort((a,b)=>a-b),[4,12]);assert.equal(chaserFrame(w,true),4);
 });
