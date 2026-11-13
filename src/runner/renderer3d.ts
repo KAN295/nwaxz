@@ -67,7 +67,7 @@ export class RunnerRenderer3D {
     this.flame=this.material("flame-emission","#ffad3b");this.flame.emissiveColor.set(1,.28,.035);this.flame.alpha=.8;
     this.gold=this.material("collectible-brass","#f5cd57");this.gold.emissiveColor.set(.2,.12,.015);
     this.lampBulb=this.material("lamp-glass","#ffe3a0");this.lampBulb.emissiveColor.set(1,.7,.24);
-    this.dog=createRunnerSprite(this.scene,"runner-milk-dog-2d",3.4);
+    this.dog=createRunnerSprite(this.scene,"runner-milk-dog-2d",3.0);
     this.chaserSprite=createRunnerSprite(this.scene,"runner-milk-frog-2d",4.8);
     this.dog.frame("/assets/runner/milk-dog-actions-v2.png",0,4,2);
     this.chaserSprite.frame("/assets/character/haunted-frog-directions-walk-v1.webp",4,4,4);
