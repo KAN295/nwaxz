@@ -20,6 +20,7 @@ const POWER_INFO = {
   magnet: { name: "磁铁", text: "附近金币自动飞过来", time: 10 },
   shield: { name: "护盾", text: "可以挡住一次撞击", time: 20 },
   boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯", time: 5 },
+  spring: { name: "弹簧爪", text: "自动救回一次失误", time: 1 },
 } as const;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
@@ -51,6 +52,7 @@ export class RunnerGame {
     scene: HTMLElement; effects: HTMLElement; cue: HTMLElement; danger: HTMLElement; capture: HTMLElement; toast: HTMLElement;
   };
   private seenEvents = { power: 0, shield: 0 };
+  private seenWallHits = 0;
   private toastTimer = 0;
 
   constructor(private root: HTMLElement, private audio: AudioManager, private settings: Settings, private exit: () => void) {
@@ -281,6 +283,7 @@ export class RunnerGame {
 
     const effects = (["magnet", "shield", "boost"] as const).filter(key => w[key] > 0)
       .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / POWER_INFO[key].time * 100)}%"></u></span>`).join("")
+      + (w.springCharges > 0 ? `<span class="runner-effect runner-effect-spring"><i aria-hidden="true"></i><em>${POWER_INFO.spring.name}</em>1<u style="--left:100%"></u></span>` : "")
       + (w.multiplier > 1 ? `<span class="runner-combo">×${w.multiplier}</span>` : "");
     set(el.effects, effects);
     el.effects.hidden = w.phase !== "running";
@@ -294,6 +297,10 @@ export class RunnerGame {
       this.audio.effect("coin");
     }
     if (w.shieldSaves !== this.seenEvents.shield) { this.seenEvents.shield = w.shieldSaves; this.toast("<b>护盾</b>挡住了撞击！", "shield"); }
+    if (w.wallHits !== this.seenWallHits) {
+      this.seenWallHits = w.wallHits;
+      this.toast(w.springSaves > 0 && w.springCharges === 0 ? "<b>弹簧爪</b>把你弹回来了！" : `<b>${w.wallHitSide === "left" ? "左" : "右"}墙</b>撞了一下！`, w.springSaves > 0 && w.springCharges === 0 ? "spring" : "shield");
+    }
     el.capture.hidden = w.phase !== "caught";
     if (w.phase === "caught") set(el.capture.querySelector("strong")!, w.reason);
 

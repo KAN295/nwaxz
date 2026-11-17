@@ -30,13 +30,13 @@ const TILE = 4;
 const SLOTS = 44;
 const BEHIND = 16;
 const ROAD_HALF = LANE_WIDTH * 1.5 + .2;
-const DOG_SIZE = 2.1;
+const DOG_SIZE = 1.8;
 const FROG_SIZE = 2.4;
 const LAUGH_SIZE = 3.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
 const DOG_FEET = .39, FROG_FEET = .48, LAUGH_FEET = .43;
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
-const POWER_COLORS: Record<RunPowerKind, [string, string]> = { magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"] };
+const POWER_COLORS: Record<RunPowerKind, [string, string]> = { magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"], spring: ["#8af5ff", "#ffffff"] };
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
@@ -77,6 +77,9 @@ export class RunnerRenderer3D {
   private sparks: ParticleSystem;
   private magic: ParticleSystem;
   private seen = { coins: 0, power: 0, shield: 0, stumble: 0, turns: 0 };
+  private seenTrapFalls = 0;
+  private seenWallHits = 0;
+  private seenSpringSaves = 0;
   private flash = { shield: 0, power: 0 };
   private turnBlend = { x: 0, z: 0 };
   private camYaw = 0;
@@ -404,6 +407,14 @@ export class RunnerRenderer3D {
       for (const s of [-1, 1]) this.box("lip", r, [width, .2, .3], [0, -.08, s * 1.55], "stone-dark");
       for (const s of [-1, 1]) this.box("edge", r, [width - .2, .04, .12], [0, .02, s * 1.75], "warning");
     });
+    make("trap", r => {
+      this.box("trap-well", r, [1.9, 3.2, 2.2], [0, -1.45, 0], "pit");
+      for (const x of [-.72, -.24, .24, .72]) {
+        const plank = this.box("trap-fall-plank", r, [.43, .12, 1.9], [x, .08, 0], "wood");
+        plank.rotation.z = (x < 0 ? -1 : 1) * .08;
+      }
+      for (const z of [-1.05, 1.05]) this.box("trap-rim", r, [2.05, .16, .16], [0, .08, z], "warning");
+    });
     make("spikes", r => {
       this.box("plate", r, [2, .1, 1.6], [0, .05, 0], "metal");
       for (const x of [-.7, -.23, .23, .7]) for (const z of [-.45, .1, .6]) this.cylinder("spike", r, { diameterTop: 0, diameterBottom: .26, height: .7, tessellation: 6 }, [x, .42, z - .1], "rail");
@@ -422,7 +433,7 @@ export class RunnerRenderer3D {
     });
     make("coin", r => { const c = this.cylinder("coin", r, { diameter: .62, height: .1, tessellation: 18 }, [0, 0, 0], "gold"); c.rotation.x = Math.PI / 2; });
     const powers = this.texture("/assets/runner/powerups-v1.png");
-    (["magnet", "shield", "boost"] as const).forEach((kind, index) => {
+    (["magnet", "shield", "boost", "spring"] as const).forEach((kind, index) => {
       const texture = powers.clone(); texture.hasAlpha = true;
       texture.uScale = texture.vScale = .5; texture.uOffset = (index % 2) * .5; texture.vOffset = index < 2 ? .5 : 0;
       const m = new StandardMaterial(`runner-power-${kind}`, this.scene);
@@ -563,6 +574,7 @@ export class RunnerRenderer3D {
     this.lastWorld = world;
     this.lastTime = 0;
     this.seen = { coins: world.coins, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount };
+    this.seenTrapFalls = world.trapFalls; this.seenWallHits = world.wallHits; this.seenSpringSaves = world.springSaves;
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -652,8 +664,21 @@ export class RunnerRenderer3D {
       const p = this.place(item.z, item.span === 3 ? 0 : (item.lane - 1) * LANE_WIDTH);
       prop.position.set(p.x, 0, p.z); prop.rotation.y = p.heading;
       if (item.kind === "coin") { prop.position.y = item.y ?? .8; prop.rotation.y += t * 3 + item.id; if (item.pulled) prop.scaling.setAll(1.25); }
-      else if (item.kind === "magnet" || item.kind === "shield" || item.kind === "boost") { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
+      else if (item.kind === "magnet" || item.kind === "shield" || item.kind === "boost" || item.kind === "spring") { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") prop.scaling.y = 1 + Math.sin(t * 14 + item.id) * .12;
+      if (item.kind === "trap") {
+        const progress = Math.max(0, Math.min(1, item.done ? 1 : 1 - (item.z - world.distance) / 5));
+        const falling = item.done ? world.elapsed - world.hitAt < .42 : progress > 0;
+        if (progress > 0 && progress <= .48 && falling) {
+          const planks = prop.getChildMeshes().filter(mesh => mesh.name === "trap-fall-plank");
+          for (let i = 0; i < planks.length; i++) {
+            planks[i].position.y = .08 - progress * 2.8;
+            planks[i].rotation.z = (i < 2 ? -1 : 1) * (.08 + progress * 1.2);
+          }
+        } else if (progress > .48 || item.done && !falling) {
+          prop.getChildMeshes().filter(mesh => mesh.name === "trap-fall-plank").forEach(mesh => mesh.setEnabled(false));
+        }
+      }
     }
   }
 
@@ -667,6 +692,22 @@ export class RunnerRenderer3D {
     this.seen.shield = world.shieldSaves;
     if (world.stumbles > this.seen.stumble) this.burst(this.magic, new Vector3(player.x, .4, player.z), 30, ["#b8a07a", "#6d5a3e"]);
     this.seen.stumble = world.stumbles;
+    if (world.trapFalls > this.seenTrapFalls) {
+      this.burst(this.magic, new Vector3(player.x, .2, player.z), 55, ["#b8a07a", "#6d5a3e"]);
+      this.flash.power = .65;
+    }
+    this.seenTrapFalls = world.trapFalls;
+    if (world.wallHits > this.seenWallHits) {
+      const side = world.wallHitSide === "left" ? -1 : 1;
+      this.burst(this.magic, new Vector3(player.x + side * 1.35, .8 + world.jumpHeight, player.z), 42, ["#fff0bf", "#d18a37"]);
+      this.flash.shield = .45;
+    }
+    this.seenWallHits = world.wallHits;
+    if (world.springSaves > this.seenSpringSaves) {
+      this.burst(this.magic, at.add(new Vector3(0, .6, 0)), 110, ["#8af5ff", "#ffffff"]);
+      this.flash.shield = 1;
+    }
+    this.seenSpringSaves = world.springSaves;
     this.flash.power = Math.max(0, this.flash.power - dt * 2.5);
     this.flash.shield = Math.max(0, this.flash.shield - dt * 2);
 

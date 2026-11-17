@@ -52,6 +52,26 @@ test('a second stumble while chased is fatal; running clean lets the frog fall b
   const calm = place('block'); run(calm, .6); calm.items = []; run(calm, 9); assert.equal(calm.danger, 0); assert.equal(calm.phase, 'running');
 });
 
+test('a trap drops its floor planks and bumps the dog toward a safe lane', () => {
+  const w = place('trap'); run(w, .6);
+  assert.equal(w.phase, 'running'); assert.equal(w.trapFalls, 1); assert.ok(w.stumble > 0);
+  assert.notEqual(w.lane, 1); assert.ok(w.grace > 0);
+});
+
+test('a jump clears the trap without starting the fall event', () => {
+  const w = place('trap'); w.action('jump'); run(w, .6);
+  assert.equal(w.phase, 'running'); assert.equal(w.trapFalls, 0);
+  assert.equal(w.items[0].done, true); assert.equal(w.stumble, 0);
+});
+
+test('a spring claw saves once from a fatal obstacle and is consumed', () => {
+  const w = place('fire'); w.springCharges = 1; run(w, .6);
+  assert.equal(w.phase, 'running'); assert.equal(w.springSaves, 1); assert.equal(w.springCharges, 0);
+  assert.equal(w.wallHits, 1); assert.ok(w.danger > 0);
+  w.grace = 0; w.danger = 0; w.items = [{ id: 2, lane: w.lane, z: w.distance + 5, kind: 'fire', done: false }]; run(w, .6);
+  assert.equal(w.phase, 'caught');
+});
+
 test('whole-road obstacles need the right move from every lane', () => {
   for (const [kind, move] of [['block', 'jump'], ['gap', 'jump'], ['beam', 'slide']]) for (const lane of [0, 1, 2]) {
     const bad = place(kind, { span: 3 }); bad.lane = bad.position = lane; bad.action(lane === 0 ? 'right' : 'left'); run(bad, .6);
