@@ -3,7 +3,8 @@ import { isIP } from "node:net";
 import packageInfo from "../package.json" with { type: "json" };
 import { EscapeWorld } from "../src/escape/world.ts";
 
-const TICK_MS = 50, SNAPSHOT_MS = 125, GRACE_MS = 30_000, ROOM_TTL_MS = 30 * 60_000, EMPTY_LOBBY_TTL_MS = 2 * 60_000, TERMINAL_TTL_MS = 60_000;
+// Snapshots go out every tick (20 Hz); clients interpolate remote actors between them.
+const TICK_MS = 50, SNAPSHOT_MS = 50, GRACE_MS = 30_000, ROOM_TTL_MS = 30 * 60_000, EMPTY_LOBBY_TTL_MS = 2 * 60_000, TERMINAL_TTL_MS = 60_000;
 const HARD_ROOM_LIMIT = 8, MAX_STREAMS = 48, CODE_CHARS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 const validName = value => typeof value === "string" && value.trim().length > 0 && [...value.trim()].length <= 12 && !/[\u0000-\u001f\u007f]/u.test(value);

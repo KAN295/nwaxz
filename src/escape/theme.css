@@ -1,0 +1,195 @@
+/* Bundled game fonts: Noto Serif SC (SIL OFL 1.1, see public/assets/fonts/escape/OFL.txt),
+   subset to the characters the UI writes by ops/build_escape_font.py. Anything outside the
+   subset (e.g. player nicknames) falls back to the system serif in the same stack. */
+@font-face{font-family:"Escape Serif";src:url('/assets/fonts/escape/noto-serif-sc-bold-escape.woff2') format('woff2');font-weight:100 900;font-display:swap}
+@font-face{font-family:"Escape Title";src:url('/assets/fonts/escape/noto-serif-sc-black-title.woff2') format('woff2');font-weight:100 900;font-display:swap}
+
+/* Escape mode — one visual language: gothic storybook / old case file.
+   Dark umber backdrop, aged parchment sheets with ink type, double ink frames,
+   slanted red "seal" buttons, brass rings on round controls.
+   Loaded last so it wins over the older per-feature sheets. */
+.escape-shell,.escape-lobby{
+  --night:#15100d;--night-2:#221a15;--night-3:#2e241d;
+  --paper:#e9dcc0;--paper-2:#dccaa6;--paper-3:#c9b285;--paper-edge:#7a6040;
+  --ink:#2b2018;--ink-soft:#5b4a3a;--ink-faint:#8a7660;
+  --blood:#8b2a20;--blood-2:#a63a2c;--brass:#b8955a;--brass-2:#e2c48a;
+  --serif:"Escape Serif","Songti SC","STSong","Noto Serif SC","Source Han Serif SC","SimSun",serif;--title:"Escape Title",var(--serif);
+  --sans:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+  --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .3 0 0 0 0 .22 0 0 0 0 .12 0 0 0 .22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --paper-bg:var(--grain),radial-gradient(ellipse at 25% 15%,#f5ead2 0%,#e9dcc0 45%,#d6c299 100%);
+  --frame:0 0 0 1px var(--paper-edge),0 0 0 5px var(--paper),0 0 0 6px var(--paper-edge);
+}
+
+/* ---------- Shared pieces ---------- */
+/* Parchment sheet with a double ink frame. */
+.escape-shell .escape-card,.escape-lobby .lv-main-sheet{color:var(--ink);background:var(--paper-bg);border:0;border-radius:1px;box-shadow:inset 0 0 50px #7a5a3055,var(--frame),0 24px 60px #000c}
+/* Slanted red seal = primary action; paper tag = secondary. */
+.escape-shell .escape-card .escape-primary,.escape-shell .escape-primary,.escape-lobby .lv-primary{
+  position:relative;width:100%;min-height:48px;padding:10px 26px;border:0;border-radius:0;
+  clip-path:polygon(3% 0,100% 0,97% 100%,0 100%);
+  background:linear-gradient(#a63a2c,#7d241b);color:#f6ead2!important;
+  font:700 17px/1.2 var(--serif);letter-spacing:.2em;text-shadow:0 1px 0 #0006;box-shadow:none;transition:filter .15s,transform .15s}
+.escape-shell .escape-primary:hover:not(:disabled),.escape-lobby .lv-primary:hover:not(:disabled){filter:brightness(1.15);transform:translateX(2px)}
+.escape-shell .escape-card .escape-secondary,.escape-shell .escape-secondary,.escape-lobby .lv-secondary{
+  width:100%;min-height:46px;padding:9px 24px;border:1.5px solid var(--ink);border-radius:0;
+  clip-path:polygon(2% 0,100% 0,98% 100%,0 100%);
+  background:#f1e5cc;color:var(--ink)!important;font:600 16px/1.2 var(--serif);letter-spacing:.15em;box-shadow:none}
+.escape-shell .escape-secondary:hover:not(:disabled),.escape-lobby .lv-secondary:hover:not(:disabled){background:#fff3da}
+
+/* ---------- Panels: pause, capture, results ---------- */
+.escape-shell .escape-panel:not(.escape-lobby-panel){background:radial-gradient(ellipse at 50% 45%,#1a120ccc,#0b0806f2 75%);backdrop-filter:blur(3px) sepia(.4)}
+.escape-shell .escape-card{width:min(92vw,460px);padding:34px 36px 28px;text-align:left;transform:rotate(-.5deg)}
+.escape-shell .escape-card h1,.escape-shell .escape-card h2{margin:0 0 12px;font:700 32px/1.2 var(--serif);letter-spacing:.12em;color:var(--ink);text-shadow:none}
+.escape-shell .escape-card h1{font-size:38px}
+.escape-shell .escape-card p{color:var(--ink-soft);font-size:16px;line-height:1.75;letter-spacing:0}
+.escape-shell .escape-eyebrow{display:inline-block;margin:0 0 10px;padding:2px 10px;border:2px solid var(--blood);color:var(--blood);font:700 13px/1.4 var(--serif);letter-spacing:.3em;transform:rotate(-3deg);opacity:.9}
+.escape-shell .escape-card button{border-radius:0;text-shadow:none}
+.escape-shell .escape-links,.escape-shell .escape-setting-row{display:flex;flex-wrap:wrap;gap:6px 20px;margin-top:16px}
+.escape-shell .escape-links button,.escape-shell .escape-setting-row button{min-height:34px;padding:4px 0;border:0;border-bottom:1px dashed var(--ink-faint);background:none;color:var(--ink-soft);font:400 16px/1.2 var(--serif);clip-path:none}
+.escape-shell .escape-links button:hover,.escape-shell .escape-setting-row button:hover{color:var(--blood)}
+
+/* Pause: a case-file menu. */
+.escape-shell .escape-goal-line{margin:0 0 18px;padding:10px 14px;border-left:4px solid var(--blood);background:#0000000d;font:400 16px/1.6 var(--serif);color:var(--ink)}
+.escape-shell .escape-coop-note{margin:0 0 8px;font-size:14px;color:var(--ink-faint)}
+.escape-shell .escape-menu-list{display:flex;flex-direction:column;align-items:stretch;gap:2px}
+.escape-shell .escape-menu-list button:not(.escape-primary){width:100%;min-height:44px;padding:6px 4px;border:0;border-bottom:1px dashed #8a766066;background:none;clip-path:none;color:var(--ink);font:400 19px/1.3 var(--serif);letter-spacing:.15em;text-align:left;transition:color .15s,padding .15s}
+.escape-shell .escape-menu-list button:not(.escape-primary):hover,.escape-shell .escape-menu-list button:not(.escape-primary):focus-visible{color:var(--blood);padding-left:12px;outline:none}
+.escape-shell .escape-menu-list .escape-primary{margin-bottom:12px}
+.escape-shell .escape-menu-list .escape-menu-minor{margin-top:6px;border:0!important;font:400 14px/1.3 var(--sans)!important;letter-spacing:.05em!important;color:var(--ink-faint)!important}
+.escape-shell .escape-storage{margin:10px 0 0;font-size:14px;color:var(--ink-faint)}.escape-shell .escape-storage:empty{display:none}
+
+/* Results. */
+.escape-shell .escape-result-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin:18px 0;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
+.escape-shell .escape-result-stats span{display:grid;gap:2px;padding:12px 6px;background:none;font-size:14px;color:var(--ink-soft);text-align:center}
+.escape-shell .escape-result-stats span+span{border-left:1px dashed var(--ink-faint)}
+.escape-shell .escape-result-stats strong{font:700 24px/1.2 var(--serif);color:var(--ink)}
+.escape-shell .escape-record{font-size:14px;color:var(--ink-faint)}
+
+/* Capture: the laugh stays fully visible; the sheet is a torn strip at the bottom. */
+.escape-shell.capture-active .escape-panel{background:linear-gradient(#0000 55%,#0b0806e6)}
+.escape-shell.capture-active .escape-card{width:min(92vw,540px);padding:18px 26px;text-align:center;transform:rotate(.6deg)}
+.escape-shell.capture-active .escape-card h2{font-size:30px;letter-spacing:.35em;color:var(--blood)}
+.escape-shell.capture-active .escape-links{justify-content:center}
+
+/* ---------- HUD ---------- */
+/* Round controls: umber disc with a brass ring. */
+.escape-shell .escape-round{width:46px;height:46px;border:2px solid var(--brass);border-radius:50%;background:radial-gradient(circle at 40% 35%,#3a2d24,#1a130f);color:var(--paper);box-shadow:0 0 0 2px #0008,0 4px 10px #0009}
+.escape-shell .escape-round svg{stroke:var(--paper)}
+.escape-shell .escape-bag-button kbd{border-color:var(--brass);background:var(--night);color:var(--brass-2)}
+/* Location: a paper tag. */
+.escape-shell .escape-location{margin-left:6px;padding:6px 16px 6px 12px;background:var(--paper-bg);clip-path:polygon(0 0,100% 0,94% 100%,0 100%);color:var(--ink);text-shadow:none;font-family:var(--serif)}
+.escape-shell #escape-room{font-size:21px;letter-spacing:.15em;color:var(--ink)}
+.escape-shell #escape-night{font:600 13px/1.4 var(--sans);letter-spacing:.08em;color:var(--ink-soft)}
+.escape-shell #escape-lives svg{fill:var(--blood);stroke:var(--blood)}.escape-shell #escape-lives .lost svg{fill:none;stroke:var(--ink-faint)}
+/* Objective: a pinned note. */
+.escape-shell .escape-objective{position:absolute;z-index:3;top:calc(max(16px,env(safe-area-inset-top)) + 100px);left:22px;max-width:min(380px,40vw);margin:0;padding:10px 16px 12px;border:0;background:var(--paper-bg);box-shadow:inset 0 0 24px #7a5a3044,0 6px 16px #000a;transform:rotate(-1deg);font:600 16px/1.55 var(--serif);color:var(--ink);text-shadow:none;pointer-events:none}
+.escape-shell .escape-objective::before{content:"目标";display:table;margin:0 0 6px;padding:0 8px;border:1.5px solid var(--blood);color:var(--blood);font:700 12px/1.6 var(--serif);letter-spacing:.3em;transform:rotate(-3deg)}
+.escape-shell .escape-objective::after{content:"";position:absolute;top:-6px;left:50%;width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#d65a4a,#7d241b);box-shadow:0 2px 3px #0008}
+.escape-shell .escape-objective:empty,.menu-active>.escape-objective,.intro-active>.escape-objective,.capture-active>.escape-objective{display:none}
+/* Threat band. */
+.escape-shell .escape-hunt{border:1px solid #6b5138;border-radius:0;background:linear-gradient(#2a201aee,#181210ee);box-shadow:0 0 0 1px #000,0 8px 22px #000a;color:var(--paper)}
+.escape-shell .escape-hunt.critical{border-color:var(--blood-2);box-shadow:0 0 0 1px #000,0 0 26px #a63a2c66}
+.escape-shell #escape-exposure-label,.escape-shell #escape-hunt-state{font-family:var(--serif);color:var(--paper);letter-spacing:.12em}
+.escape-shell #escape-hunt-state{border:1px solid var(--brass);border-radius:0;background:#0000;color:var(--brass-2)}
+.escape-shell #escape-exposure-value{color:var(--paper);font-family:var(--serif)}
+.escape-shell #escape-hud-toggle,.escape-shell #escape-hud-help{border:1px solid #6b5138;border-radius:0;background:#0000;color:var(--paper)}
+/* Meters are drawn from the --fill percentage the HUD already sets, so they look the same in every browser. */
+.escape-shell meter[value]{-webkit-appearance:none;appearance:none;border:1px solid #6b5138;border-radius:0;background:linear-gradient(90deg,var(--bar,#b8483a) var(--fill,0%),#0009 var(--fill,0%))!important}
+.escape-shell meter::-webkit-meter-bar,.escape-shell meter::-webkit-meter-optimum-value,.escape-shell meter::-webkit-meter-suboptimum-value,.escape-shell meter::-webkit-meter-even-less-good-value{background:none}
+.escape-shell meter::-moz-meter-bar{background:none}
+.escape-shell .escape-meters meter{width:96px;height:8px}
+.escape-shell #escape-stamina{--bar:#8fa86a}
+.escape-shell #escape-battery{--bar:#d6b16a}
+.escape-shell #escape-effort{--bar:#b8483a}
+.escape-shell #escape-exposure{--bar:#c4493a}
+/* Body status. */
+.escape-shell .escape-meters{padding:10px 12px;background:linear-gradient(90deg,#15100dd9,#15100d00);color:var(--paper);font:600 14px/1.3 var(--serif);text-shadow:0 1px 2px #000}
+.escape-shell .escape-meters label{color:var(--paper)}.escape-shell .escape-meters svg{stroke:var(--brass-2)}
+.escape-shell .escape-meters b{color:var(--paper);font-family:var(--sans)}
+.escape-shell .escape-movement{padding:5px 14px;border:0;border-left:3px solid var(--brass);background:#15100dcc;font:600 15px/1.3 var(--serif);letter-spacing:.08em;color:var(--paper);text-shadow:none}
+/* Action buttons: umber discs with brass rings, key on a paper tag. */
+.escape-shell .escape-actions>button{border:2px solid var(--brass);border-radius:50%;background:radial-gradient(circle at 40% 35%,#3a2d24,#1a130f);color:var(--paper);box-shadow:0 0 0 2px #0009,0 6px 14px #000a}
+.escape-shell .escape-actions>button svg{stroke:var(--paper)}
+.escape-shell .escape-actions>button span{color:var(--paper);font-family:var(--serif);text-shadow:0 1px 2px #000}
+.escape-shell .escape-actions>button kbd,.escape-shell .escape-crystals button kbd{border:1px solid var(--paper-edge);border-radius:0;background:var(--paper);color:var(--ink);font:700 11px/1.3 var(--sans)}
+.escape-shell .escape-actions>button[aria-pressed=true],.escape-shell .escape-actions>button.active{border-color:var(--brass-2);box-shadow:0 0 0 2px #0009,0 0 16px #e2c48a88}
+/* Crystal buttons: slanted plates tinted by kind. */
+.escape-shell .escape-crystals button{border:1.5px solid var(--brass);border-radius:0;clip-path:polygon(6% 0,100% 0,94% 100%,0 100%);background:linear-gradient(#2e241dee,#1a130fee);color:var(--paper)}
+.escape-shell .escape-crystals button span{color:var(--paper);font-family:var(--serif)}
+.escape-shell .escape-crystals button b{color:var(--brass-2)!important;text-shadow:none!important}
+.escape-shell .escape-crystals button.active{background:linear-gradient(#3b5866ee,#1f3540ee);border-color:#9fd6ea}
+/* Interaction prompt and messages: paper strips. */
+.escape-shell .escape-interact{border:0;border-radius:0;clip-path:polygon(3% 0,100% 0,97% 100%,0 100%);background:var(--paper-bg);color:var(--ink);font:700 17px/1.4 var(--serif);letter-spacing:.06em;text-shadow:none;box-shadow:none}
+.escape-shell .escape-interact svg{stroke:var(--ink)}
+.escape-shell .escape-interact kbd{border:1px solid var(--ink);border-radius:0;background:none;color:var(--ink)}
+.escape-shell .escape-notice{padding:10px 30px;border:0;border-radius:0;background:var(--paper-bg);box-shadow:inset 0 0 20px #7a5a3044,0 8px 20px #000a;font:600 17px/1.6 var(--serif);letter-spacing:.05em;color:var(--ink);text-shadow:none;transform:rotate(-.4deg)}
+.escape-shell .escape-danger{padding:4px 18px;border:2px solid var(--blood-2);border-radius:0;background:#15100dcc;box-shadow:0 0 18px #a63a2c66;font:700 17px/1.4 var(--serif);letter-spacing:.3em;color:#ffd6cf;text-shadow:none}
+.escape-shell .escape-room-toast{padding:6px 30px;border:0;border-top:1px solid var(--brass);border-bottom:1px solid var(--brass);background:linear-gradient(90deg,#0000,#15100dcc 20%,#15100dcc 80%,#0000);font:700 28px/1.4 var(--serif);letter-spacing:.45em;color:var(--paper);text-shadow:none;box-shadow:none}
+.escape-shell .escape-mouse-hint{font:600 15px/1.4 var(--serif);letter-spacing:.08em;color:var(--paper);text-shadow:0 1px 3px #000}
+/* Inventory slots: small paper cards. */
+.escape-shell .escape-slot{border:1px solid var(--paper-edge);border-radius:0;background:#e9dcc055;box-shadow:0 3px 8px #0008}
+.escape-shell .escape-slot.owned{background:var(--paper-bg)}
+.escape-shell .escape-slot svg{stroke:var(--ink)}.escape-shell .escape-slot small{color:var(--ink-soft)}
+/* Minimap: a folded paper map in a brass frame. */
+.escape-shell .escape-map-button{border:0;background:none;box-shadow:none}
+.escape-shell #escape-minimap{border:3px solid var(--brass);border-radius:0;box-shadow:0 0 0 2px #000,0 10px 24px #000b;filter:sepia(.45) saturate(.75) contrast(1.05)}
+.escape-shell .escape-map-button small,.escape-shell #escape-map-room{display:inline-block;padding:1px 10px;background:var(--paper);color:var(--ink);font:700 14px/1.5 var(--serif);letter-spacing:.12em;text-shadow:none}
+/* Teammates: little portrait cards. */
+.escape-shell .escape-coop-teammate{border:1px solid var(--paper-edge);border-radius:0;background:var(--paper-bg);color:var(--ink);box-shadow:0 4px 10px #0009}
+.escape-shell .escape-coop-teammate small,.escape-shell .escape-coop-player-name{color:var(--ink)}
+.escape-shell .escape-coop-teammate.self{outline:2px solid var(--blood);outline-offset:-2px}
+
+/* ---------- Map (M): a large parchment sheet, map left, notes right ---------- */
+.escape-shell .escape-map-panel>.escape-card{width:min(96vw,1180px);max-height:94vh;padding:22px 24px;transform:rotate(-.2deg)}
+.escape-shell .escape-map-panel .escape-map-page{display:grid;grid-template-columns:auto minmax(220px,280px);grid-template-rows:auto auto auto 1fr auto;grid-template-areas:"canvas title" "canvas tabs" "canvas legend" "canvas current" "canvas close";gap:14px 26px;align-items:start}
+.escape-shell .escape-map-panel .escape-map-page>.escape-eyebrow{display:none}
+.escape-shell .escape-map-panel .escape-map-page>h2{grid-area:title;display:block;margin:0;padding-bottom:10px;border-bottom:2px solid var(--ink);font-size:30px;letter-spacing:.2em}
+.escape-shell .escape-map-panel .escape-coop-note{grid-area:current}
+.escape-shell .escape-map-panel #escape-floorplan{grid-area:canvas;display:block;width:min(78vh,62vw);height:auto;aspect-ratio:1;max-width:none;margin:0;border:6px solid #3a2d24;box-shadow:0 0 0 2px var(--brass),0 10px 26px #0008;background:#15100d}
+.escape-shell .escape-map-panel .escape-floor-tabs{grid-area:tabs;display:flex;flex-direction:column;gap:8px;width:100%}
+.escape-shell .escape-map-panel .escape-floor-tabs button{width:100%;min-height:46px;padding:0 16px;border:0;border-radius:0;clip-path:polygon(0 0,100% 0,94% 50%,100% 100%,0 100%);background:#c9b285;color:var(--ink);font:700 18px/1 var(--serif);letter-spacing:.2em;text-align:left}
+.escape-shell .escape-map-panel .escape-floor-tabs button[aria-pressed=true]{background:linear-gradient(#a63a2c,#7d241b);color:#f6ead2}
+.escape-shell .escape-map-panel .escape-map-legend{grid-area:legend;display:grid;grid-template-columns:auto 1fr;align-items:center;gap:10px 10px;margin:0;font:700 17px/1.2 var(--serif);color:var(--ink)}
+.escape-shell .escape-map-panel .escape-map-legend i{width:16px;height:16px;margin:0}
+.escape-shell .escape-map-panel #escape-map-current{grid-area:current;margin:0;padding:10px 12px;border-left:4px solid var(--blood);background:#0000000d;font:700 17px/1.5 var(--serif);color:var(--ink)}
+.escape-shell .escape-map-panel #escape-map-close{grid-area:close;margin:0}
+@media (max-aspect-ratio:1/1){
+  .escape-shell .escape-map-panel>.escape-card{padding:16px}
+  .escape-shell .escape-map-panel .escape-map-page{grid-template-columns:1fr;grid-template-areas:"title" "tabs" "canvas" "legend" "current" "close"}
+  .escape-shell .escape-map-panel .escape-floor-tabs{flex-direction:row}
+  .escape-shell .escape-map-panel #escape-floorplan{width:min(100%,62vh)}
+  .escape-shell .escape-map-panel .escape-map-legend{grid-template-columns:repeat(4,auto 1fr);font-size:15px}
+}
+
+/* ---------- In-game settings, help, notes and cinematics ---------- */
+.escape-shell .escape-card .escape-setting-row{display:grid;grid-template-columns:1fr;justify-content:stretch;gap:0;margin:14px 0 18px;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
+.escape-shell .escape-card .escape-setting-row label{display:flex;justify-content:space-between;align-items:center;padding:12px 4px;border-bottom:1px dashed #8a766088;font:700 18px var(--serif);color:var(--ink);flex-direction:row-reverse}
+.escape-shell .escape-card .escape-setting-row label:last-child{border-bottom:0}
+.escape-shell .escape-card .escape-setting-row input{width:20px;height:20px;accent-color:var(--blood)}
+.escape-shell .escape-card .escape-bindings{display:grid;grid-template-columns:1fr;gap:0;margin:8px 0;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
+.escape-shell .escape-card .escape-bindings>div{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px dashed #8a766066}
+.escape-shell .escape-card .escape-bindings dt{font:700 16px var(--serif);color:var(--ink)}
+.escape-shell .escape-card .escape-bindings dd{margin:0;padding:0 8px;border:1px solid #8a766066;background:#ffffff40;font:700 14px/1.6 var(--sans);color:var(--ink)}
+.escape-shell .escape-card .escape-help{margin:10px 0 0;padding-left:20px;color:var(--ink-soft);font-size:15px;line-height:1.8}
+.escape-shell .escape-card .escape-help li{color:var(--ink-soft)}
+.escape-shell .escape-note-title{font:700 26px/1.4 var(--serif);color:var(--ink);letter-spacing:.1em}
+.escape-shell .escape-note-content{font:400 19px/1.95 var(--serif);color:var(--ink)}
+.escape-shell .escape-note-close{min-height:40px;padding:6px 16px;border:1.5px solid var(--ink);border-radius:0;background:none;color:var(--ink);font:700 15px/1.2 var(--serif);letter-spacing:.1em;box-shadow:none}
+.escape-shell .escape-note-close:hover{background:var(--blood);border-color:var(--blood);color:var(--paper)}
+.escape-shell .cinematic-controls button{min-height:44px;min-width:76px;padding:8px 18px;border:1.5px solid var(--brass);border-radius:0;clip-path:polygon(6% 0,100% 0,94% 100%,0 100%);background:#15100dd9;color:var(--paper);font:700 16px/1.2 var(--serif);letter-spacing:.15em}
+.escape-shell .cinematic-controls button:hover{background:var(--blood);border-color:var(--blood-2)}
+.escape-shell .cinematic-status{font:600 14px var(--serif);color:var(--paper)}
+/* An old rule forces every eyebrow to 9px with !important; restore readable stamp labels. */
+.escape-shell .escape-card .escape-eyebrow{font-size:13px!important;color:var(--blood)!important;letter-spacing:.3em}
+
+/* ---------- Phones (portrait): keep the case-file HUD inside the screen ---------- */
+@media (max-width:720px) and (orientation:portrait){
+  .escape-shell .escape-location{max-width:calc(100vw - 290px);padding:4px 12px 4px 8px}
+  .escape-shell #escape-room{font-size:16px;letter-spacing:.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .escape-shell #escape-night{font-size:11px}
+  .escape-shell .escape-objective{top:calc(max(12px,env(safe-area-inset-top)) + 258px);left:10px;max-width:calc(100vw - 20px);padding:6px 12px 8px;font-size:14px;transform:none}
+  .escape-shell .escape-objective::after{display:none}
+  .escape-shell .escape-notice{left:12px!important;right:12px!important;max-width:none!important;transform:none!important;white-space:normal;text-align:center;font-size:15px}
+  .escape-shell .escape-interact{font-size:15px}
+  .escape-shell .escape-room-toast{font-size:22px;letter-spacing:.3em}
+}

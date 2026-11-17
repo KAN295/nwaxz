@@ -281,3 +281,9 @@
  .escape-shell:has(.escape-hunt.details-open) .escape-inventory{visibility:hidden}
  .escape-crystals button span{position:static;font-size:11px;line-height:12px}.escape-crystals button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}.crystal-icon{font-size:17px;transform:none}
 }
+
+/* ---- HUD clean-up ----------------------------------------------------------
+   Everything stays visible; only noise is removed. */
+.escape-slot:not(.owned) { opacity:.35; }
+.no-crystals .escape-crystals { opacity:.55; }
+.escape-coop-teammate.empty { display:none; }
