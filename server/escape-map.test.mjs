@@ -87,7 +87,7 @@ test("fallback canvas paints a textured map without top-level DOM requirements",
   const fills = calls.filter(([name]) => name === "fillRect");
   const compass = calls.filter(([name]) => name === "fillText").map(([, text]) => text);
   assert.ok(fills.length > 80, "fallback uses stone texture detail as well as tile fills");
-  assert.deepEqual(compass.filter(text=>['N','S','W','E'].includes(text)), ["N", "S", "W", "E"]);
+  assert.deepEqual(compass.filter(text=>['北','南','西','东'].includes(text)), ["北", "南", "西", "东"]);
   assert.ok(compass.includes('寝室')&&compass.includes('回声长廊'),'explored named areas have Chinese labels');
   assert.ok(!compass.includes('档案室'),'unexplored room names are not revealed');
 });

@@ -22,10 +22,17 @@ export function installEscapeModels(scene: Scene, props: AssetContainer, texture
   const powerMaterials = new Map<string, Material & { emissiveColor: Color3 }>();
   const crystals = new Map<string, ReturnType<typeof MeshBuilder.CreatePolyhedron>>();
   const crystalMaterials = new Map<string, ReturnType<typeof colorMaterial>>();
-  for (const [kind, color] of [["freeze", "#8be5ff"], ["reveal", "#e49aff"], ["ward", "#a5e0a2"]] as const) crystalMaterials.set(kind, colorMaterial(scene, `crystal-${kind}`, color, true));
+  // Small translucent shards with a soft inner glow, not flat self-lit blocks.
+  for (const [kind, color] of [["freeze", "#8be5ff"], ["reveal", "#e49aff"], ["ward", "#a5e0a2"]] as const) {
+    const material = colorMaterial(scene, `crystal-${kind}`, color, true);
+    material.emissiveColor = material.diffuseColor.scale(.38); material.alpha = .82;
+    material.specularColor.set(.9, .95, 1); material.specularPower = 48;
+    crystalMaterials.set(kind, material);
+  }
   for (const crystal of CRYSTALS) {
-    const mesh = MeshBuilder.CreatePolyhedron(`crystal:${crystal.id}`, { type: 1, size: .36 }, scene);
-    mesh.position.set(crystal.x * CELL, floorYAt(crystal) + .66, crystal.z * CELL); mesh.material = crystalMaterials.get(crystal.kind)!; mesh.isPickable = false;
+    const mesh = MeshBuilder.CreatePolyhedron(`crystal:${crystal.id}`, { type: 1, size: .13 }, scene);
+    mesh.scaling.set(.8, 1.7, .8);
+    mesh.position.set(crystal.x * CELL, floorYAt(crystal) + .42, crystal.z * CELL); mesh.material = crystalMaterials.get(crystal.kind)!; mesh.isPickable = false;
     crystals.set(crystal.id, mesh);
   }
   const lampColors: Record<string, string> = { "valve-cold": "#74b9ce", "valve-return": "#d2a655", "valve-vent": "#c6c8b6", "basement-sluice": "#875c53" };
@@ -110,7 +117,7 @@ export function installEscapeModels(scene: Scene, props: AssetContainer, texture
       for (const crystal of CRYSTALS) {
         const mesh = crystals.get(crystal.id)!;
         mesh.setEnabled(!d.hunt?.collected.includes(crystal.id));
-        mesh.rotation.y += dt * 1.2; mesh.position.y = floorYAt(crystal) + .66 + Math.sin(d.elapsed * 2.4 + crystal.x) * .055;
+        mesh.rotation.y += dt * 1.2; mesh.position.y = floorYAt(crystal) + .42 + Math.sin(d.elapsed * 2.4 + crystal.x) * .055;
       }
       if (caught !== captured) {
         captured = caught;

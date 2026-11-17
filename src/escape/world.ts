@@ -260,6 +260,24 @@ export class EscapeWorld {
     if (this.hearing.audible) return "脚步传得过去，蹲行或停下。";
     return "避开视线，放轻脚步。线索会叠加。";
   }
+  /** Plain-language next step along the escape chain, shown on the HUD so players are never lost. */
+  get nextGoal(): string {
+    const d = this.data, has = (item: Item) => d.inventory.includes(item), open = (door: string) => d.opened.includes(door);
+    if (!open("study")) return has("brass") ? "用黄铜钥匙打开长廊北侧的档案室" : "搜索寝室的床头抽屉，找钥匙";
+    if (!has("cellar")) return "搜索档案室里的档案抽屉";
+    if (!d.power) return has("fuse") ? "把保险丝装进配电室的配电箱" : "去西南边的洗衣间找保险丝";
+    if (!open("cellar")) return "用检修门钥匙打开东南的地下检修门";
+    if (!has("cutters")) return "搜索地下检修室的维修工具柜";
+    if (d.expansion?.enabled) {
+      if (!has("handwheel")) return "去旧更衣室的柜子里找生锈手轮";
+      if (d.expansion.valves.length < VALVE_ORDER.length) return "到锅炉房按顺序转阀门：冷水 → 回流 → 排气";
+    }
+    if (!d.drained) return "回地下检修室，转动深处的排水阀";
+    if (!has("relay")) return "下到负一楼，在储藏间抽屉找备用继电器";
+    if (!d.basement.power) return "到负一楼泵房装上继电器";
+    if (!d.basement.sluice) return "去负一楼集水池尽头打开污水闸";
+    return "回到最南边的铁网，用断线钳剪开逃出去";
+  }
   get objective(): string {
     const note = PROPS.find(p => p.id === this.data.notes.at(-1));
     return note ? '最近找到：' + note.name : '还没有找到纸条。';

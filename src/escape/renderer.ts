@@ -1,5 +1,7 @@
 import { Engine } from "@babylonjs/core/Engines/engine.js";
-import { Vector3, Color3 } from "@babylonjs/core/Maths/math.js";
+import { Vector3, Color3, Color4 } from "@babylonjs/core/Maths/math.js";
+import { DefaultRenderingPipeline } from "@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline.js";
+import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration.js";
 import { Viewport } from "@babylonjs/core/Maths/math.viewport.js";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture.js";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture.js";
@@ -38,6 +40,8 @@ export class EscapeRenderer {
   private map: EscapeMap;
   private peerActors?: PeerActorsRenderer;
   private surfaceTextures: Record<SurfaceKind, Texture>;
+  private film: DefaultRenderingPipeline;
+  private dread = 0;
   constructor(private canvas: HTMLCanvasElement, art: EscapeArt, private reduced: boolean) {
     this.engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false, powerPreference: "high-performance" }, false);
     this.view = createEscapeScene(this.engine);
@@ -52,8 +56,9 @@ export class EscapeRenderer {
     this.map = new EscapeMap(art.map);
     const beam = new DynamicTexture("soft-flashlight-optics", 128, this.view.scene, false);
     const bc = beam.getContext(), gradient = bc.createRadialGradient(64, 64, 0, 64, 64, 64);
-    gradient.addColorStop(0, "#ffffff"); gradient.addColorStop(.38, "#eeeeee");
-    gradient.addColorStop(.72, "#777777"); gradient.addColorStop(1, "#000000");
+    // A real torch has a hot centre and a long soft falloff, not a disc with an edge.
+    gradient.addColorStop(0, "#fffaf0"); gradient.addColorStop(.18, "#f2ede4"); gradient.addColorStop(.4, "#b9b4ab");
+    gradient.addColorStop(.62, "#5f5b55"); gradient.addColorStop(.82, "#1c1b19"); gradient.addColorStop(1, "#000000");
     bc.fillStyle = gradient; bc.fillRect(0, 0, 128, 128); beam.update(false);
     this.view.torch.projectionTexture = beam;
     for (const [name, kind] of [["painted-tile", "wall"], ["painted-door", "wood"], ["painted-floor", "floor"], ["painted-ceiling", "ceiling"], ["basement-tile", "basementWall"], ["basement-floor", "basementFloor"], ["basement-ceiling", "basementCeiling"], ["rusty-trim", "rustedIron"]] as const) {
@@ -75,6 +80,35 @@ export class EscapeRenderer {
     this.captureLight = new PointLight("capture-laugh-key", Vector3.Zero(), this.view.scene);
     this.captureLight.diffuse = new Color3(.92, .84, .64); this.captureLight.range = 8; this.captureLight.intensity = 10;
     this.captureLight.setEnabled(false);
+    this.film = this.createFilmLook();
+  }
+  /**
+   * Camera look: filmic tone mapping, vignette, grain and a touch of lens fringing.
+   * One merged image-processing pass plus FXAA and the fringe pass, so it stays cheap.
+   */
+  private createFilmLook() {
+    const film = new DefaultRenderingPipeline("escape-film", false, this.view.scene, [this.view.camera]);
+    film.fxaaEnabled = true;
+    film.imageProcessingEnabled = true;
+    const look = film.imageProcessing;
+    look.toneMappingEnabled = true; look.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+    look.exposure = 1.6; look.contrast = 1.12;
+    look.vignetteEnabled = true; look.vignetteWeight = 1.6; look.vignetteStretch = .5; look.vignetteCameraFov = .7;
+    look.vignetteColor = new Color4(0, 0, 0, 0);
+    film.grainEnabled = true; film.grain.intensity = 6; film.grain.animated = !this.reduced;
+    film.chromaticAberrationEnabled = true; film.chromaticAberration.aberrationAmount = 8; film.chromaticAberration.radialIntensity = 1.2;
+    return film;
+  }
+  /** Danger is felt through the lens: the vignette closes in and reddens, grain thickens. */
+  private updateFilm(world: EscapeWorld, dt: number) {
+    const d = world.data, chased = world.isPlayerChased, near = Math.hypot(d.hunter.x - d.player.x, d.hunter.z - d.player.z);
+    const target = chased ? 1 : near < 4 && d.phase === "playing" ? .45 : 0;
+    this.dread += (target - this.dread) * Math.min(1, dt * (target > this.dread ? 3 : 1.2));
+    const look = this.film.imageProcessing;
+    look.vignetteWeight = 1.6 + this.dread * 2.4;
+    look.vignetteColor.set(.28 * this.dread, 0, 0, 0);
+    this.film.grain.intensity = 6 + this.dread * 10;
+    this.film.chromaticAberration.aberrationAmount = 8 + this.dread * 22;
   }
   get usable() { return !this.disposed && !this.engine._gl?.isContextLost(); }
   setReducedMotion(reduced: boolean) { this.reduced = reduced; this.models?.actor.setReducedMotion(reduced); }
@@ -133,6 +167,7 @@ export class EscapeRenderer {
   draw(world: EscapeWorld, dt = 1 / 60) {
     if (this.disposed || !this.models) return;
     const d = world.data, caught = d.phase === "caught" || d.phase === "lost";
+    this.updateFilm(world, dt);
     const expanded = !!d.expansion?.enabled;
     if (expanded !== this.wasExpanded) { for (const shard of this.view.glassMeshes) shard.setEnabled(expanded); this.wasExpanded = expanded; }
     this.models.animate(world, dt);
