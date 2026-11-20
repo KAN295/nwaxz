@@ -85,6 +85,40 @@ test('alert applies exactly 1.5x to all three live sensor rates and survives pau
  assert.equal(memory.perceptionMultiplier,1.5);assert.equal(memory.data.hunter.state,'patrol','alert alone does not reveal a new position');
 });
 
+test('solo difficulty zero removes sight but a thrown stone still sends the model to its impact',()=>{
+ const w=hall(4);
+ w.data.hunter.angle=Math.PI;
+ assert.equal(w.vision.visible,true);
+ w.setHunterDifficulty(0);
+ assert.equal(w.vision.visible,false);
+ const impact={x:10.5,z:9.5};
+ w.noise(impact,20,0,'stone');
+ assert.equal(w.data.hunter.state,'investigate');
+ assert.deepEqual(w.target,impact);
+ assert.ok(w.drainEvents().some(event=>event.type==='hunter-think'));
+});
+
+test('max difficulty can choose to chase a long tracked sighting but still respects cover',()=>{
+ const w=hall(11);
+ w.data.hunter.angle=Math.PI;
+ w.target={...w.data.player};
+ assert.equal(w.vision.visible,false);
+ w.setHunterDifficulty(100);
+ assert.equal(w.vision.visible,true);
+ Object.assign(w.data.player,{x:11.5,z:3.5});
+ Object.assign(w.data.hunter,{x:11.5,z:10.5,angle:-Math.PI/2});
+ assert.equal(w.vision.visible,false,'closed study door blocks even maximum difficulty');
+ Object.assign(w.data.player,{x:3.5,z:9.5});
+ Object.assign(w.data.hunter,{x:14.5,z:9.5,angle:Math.PI});
+ w.advance(1/60);
+ assert.notEqual(w.data.hunter.state,'chase','a brief glimpse does not immediately lock on');
+ w.data.hunt.sight=76;
+ w.advance(1/60);
+ assert.ok(w.data.hunt.sight<100);
+ assert.equal(w.data.hunter.state,'chase');
+ assert.ok(w.drainEvents().some(event=>event.type==='hunter-think'));
+});
+
 test('sound, torch, sight and multiple sub-100 clues can all cause the same authoritative chase transition',()=>{
  const sound=hall(8),at={...sound.data.hunter};sound.noise(at,20,100);
  assert.equal(sound.data.hunter.state,'chase');assert.equal(sound.perception.total,100);near(sound.target.x,at.x);near(sound.target.z,at.z);

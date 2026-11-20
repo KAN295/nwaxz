@@ -22,6 +22,45 @@ test("patrol seeds differ, while a restored seed continues the same route", () =
   assert.ok(Math.abs(resumed.data.hunter.x - a.data.hunter.x) < .01 && Math.abs(resumed.data.hunter.z - a.data.hunter.z) < .01);
 });
 
+test("a confirmed moving sighting feeds one model search, independent of the concealed location", () => {
+  const world = new EscapeWorld(2041);
+  world.data.elapsed = 10;
+  Object.assign(world.data.hunter, { x: 3.5, z: 9.5, angle: 0, state: "chase" });
+  Object.assign(world.data.player, { x: 6.5, z: 9.5, angle: 0, light: false });
+  frames(world, .4, { forward: 1 });
+  const snapshot = world.snapshot();
+  assert.ok(snapshot.pursuit.searchClue?.heading.x > .99, "direction came from actually visible movement");
+  assert.deepEqual(EscapeWorld.restore(snapshot).snapshot(), snapshot);
+
+  const destinations = [];
+  for (const x of [11.5, 19.5]) {
+    const scenario = structuredClone(snapshot);
+    Object.assign(scenario.player, { x, z: 3.5 });
+    scenario.pursuit.unseen = 3.49;
+    const lost = EscapeWorld.restore(scenario);
+    assert.equal(lost.seesPlayer(), false);
+    lost.advance(1 / 60);
+    assert.equal(lost.data.hunter.state, 'search');
+    assert.notDeepEqual(lost.target, snapshot.pursuit.target);
+    assert.equal(lost.wall(lost.target.x, lost.target.z, true), 0);
+    assert.equal(lost.drainEvents().filter(event => event.type === 'hunter-think').length, 1);
+    assert.equal(lost.snapshot().pursuit.searchClue, undefined);
+    lost.advance(.15);
+    assert.equal(lost.drainEvents().some(event => event.type === 'hunter-think'), false);
+    destinations.push(lost.target);
+  }
+  assert.deepEqual(destinations[0], destinations[1], 'concealed coordinates do not affect the chosen probe');
+
+  const legacy = structuredClone(snapshot);
+  delete legacy.pursuit.searchClue;
+  legacy.pursuit.unseen = 3.49;
+  Object.assign(legacy.player, { x: 11.5, z: 3.5 });
+  const fallback = EscapeWorld.restore(legacy);
+  fallback.advance(1 / 60);
+  assert.equal(fallback.data.hunter.state, 'search');
+  assert.equal(fallback.drainEvents().some(event => event.type === 'hunter-think'), false, 'no confirmed direction leaves ordinary search in control');
+});
+
 test("walking effort follows actual displacement; rest recovers and panting emits bounded events", () => {
   const blocked = new EscapeWorld(1); Object.assign(blocked.data.player, { x: 1.3, z: 3.5, angle: Math.PI });
   frames(blocked, 3, { forward: 1 }); assert.equal(blocked.data.hunt.effort, 0);

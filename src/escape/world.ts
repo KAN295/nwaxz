@@ -3,6 +3,7 @@ import { BASEMENT_RECTANGLES, BASEMENT_ROOMS, BASEMENT_PROPS, BASEMENT_CRYSTALS,
 import { advanceAbilities, createAbilities, isAbilityState, type AbilityKind, type AbilityState } from "./abilities.ts";
 import { advanceInterference, createInterference, isInterferenceState, type InterferenceState } from "./interference.ts";
 import { isHunterPerformance, type HunterPerformance } from "./hunter-performance.ts";
+import { chooseHunterAction, chooseSearchProbe, DEFAULT_HUNTER_DIFFICULTY, hunterDifficulty, searchCandidates, type HunterAction, type HunterCue, type HunterOption, type SearchClue } from "./hunter-search-model.ts";
 export type Vec = { x: number; z: number };
 export type Item = "brass" | "cellar" | "fuse" | "cutters" | "handwheel" | "relay";
 export type EscapeInput = { forward?: number; strafe?: number; turn?: number; look?: number; sprint?: boolean };
@@ -112,10 +113,10 @@ export type EscapeSnapshot = {
   abilities: AbilityState;
   interference: InterferenceState;
   expansion?: { enabled: true; valves: string[] };
-  pursuit?: { target: Vec; seenHide?: string; unseen: number; wait: number; patrolIndex: number };
+  pursuit?: { target: Vec; seenHide?: string; unseen: number; wait: number; patrolIndex: number; searchClue?: SearchClue };
   hunt?: { version: 1; effort: number; panting: boolean; breathIn: number; glare: number; lightArmed: boolean; freeze: number; reveal: number; ward?: number; collected: string[]; freezeUsed: number; revealUsed: number; wardUsed?: number; rng: number; recent: number[]; noise?: number; sight?: number; exposure?: number; alert?: number; traces?: Partial<Record<Sense, Vec>>; focus?: Sense; listenIn?: number };
 };
-export type EscapeEvent = { type: "message" | "step" | "door" | "item" | "laugh" | "hunter-cast" | "caught" | "won" | "noise" | "breath" | "note"; text?: string; id?: string };
+export type EscapeEvent = { type: "message" | "step" | "door" | "item" | "laugh" | "hunter-cast" | "hunter-think" | "caught" | "won" | "noise" | "breath" | "note"; text?: string; id?: string };
 const dist = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.z - b.z);
 export const angleDelta = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 const initialOpen = ["bedroom", "infirmary", "laundry", "workshop"];
@@ -135,6 +136,9 @@ export class EscapeWorld {
   private patrolIndex = 0;
   private wait = 0;
   private unseen = 0;
+  private searchClue?: SearchClue;
+  private difficulty = DEFAULT_HUNTER_DIFFICULTY;
+  private decisions = new Map<HunterCue, { time: number; point: Vec; band: number; action: HunterAction }>();
   private footstep = 0;
   private glassArmed = HAZARDS.map(() => true);
   private hunterStep = 0;
@@ -188,6 +192,14 @@ export class EscapeWorld {
     if (this.data.player.sprinting) this.data.player.crouched = false;
   }
   get perceptionMultiplier() { return (this.data.hunt?.alert ?? 0) > 0 ? ALERT_MULTIPLIER : 1; }
+  setHunterDifficulty(value: number) {
+    const next = hunterDifficulty(value);
+    if (next !== this.difficulty) this.decisions.clear();
+    this.difficulty = next;
+  }
+  private get difficultyOffset() { return (this.difficulty - DEFAULT_HUNTER_DIFFICULTY) / 50; }
+  private get detectionGain() { return 1 + this.difficultyOffset * .45; }
+  private get soundRangeScale() { return 1 + this.difficultyOffset * .35; }
   private get chaseLockApplies() {
     return this.data.phase === "playing" && this.data.hunter.state === "chase"
       && (this.coopPlayerId === undefined || this.coopTargetId === this.coopPlayerId);
@@ -205,7 +217,7 @@ export class EscapeWorld {
   }
   get lightPerception() {
     const illuminated = this.illuminatesHunter();
-    return { illuminated, rate: illuminated && this.data.hunt!.freeze <= 0 ? 20 * this.perceptionMultiplier : 0 };
+    return { illuminated, rate: illuminated && this.data.hunt!.freeze <= 0 ? 20 * this.perceptionMultiplier * this.detectionGain : 0 };
   }
   get hunterDecision() {
     const d = this.data;
@@ -218,18 +230,18 @@ export class EscapeWorld {
   get vision() {
     const distance = dist(this.data.player, this.data.hunter) * 1.5, visible = this.seesPlayer();
     const base = distance <= 3 ? 60 : distance <= 7 ? 35 : 20;
-    return { visible, distance, rate: visible && this.data.hunt!.freeze <= 0 ? base * this.perceptionMultiplier : 0 };
+    return { visible, distance, rate: visible && this.data.hunt!.freeze <= 0 ? base * this.perceptionMultiplier * this.detectionGain : 0 };
   }
   /** The HUD and simulation share these exact audible ranges, attenuation and rates. */
   get hearing() {
     const d = this.data, distance = dist(d.player, d.hunter) * 1.5;
     const occluded = !this.lineOfSight(d.player, d.hunter);
-    const attenuation = occluded ? .7 : 1;
+    const attenuation = (occluded ? .7 : 1) * this.soundRangeScale;
     const motion = this.lastMovement === "still" ? undefined : HEARING[this.lastMovement];
     const breathing = !!d.hunt?.panting;
     const sources = [...(motion ? [motion] : []), ...(breathing ? [HEARING.breath] : [])];
     const range = Math.max(0, ...sources.map(s => s.range * attenuation));
-    const rate = d.hunt!.freeze > 0 ? 0 : Math.max(0, ...sources.map(s => s.rate * Math.max(0, 1 - distance / (s.range * attenuation)) ** 2)) * this.perceptionMultiplier;
+    const rate = d.hunt!.freeze > 0 ? 0 : Math.max(0, ...sources.map(s => s.rate * Math.max(0, 1 - distance / (s.range * attenuation)) ** 2)) * this.perceptionMultiplier * this.detectionGain;
     return { action: this.lastMovement, distance, range, rate, audible: rate > 0, breathing, occluded };
   }
   /** Current, unforced sensory evidence for the room coordinator. */
@@ -305,8 +317,10 @@ export class EscapeWorld {
   seesPlayer() {
     const d = this.data, p = d.player, h = d.hunter;
     if (d.hidden || d.elapsed < 4) return false;
-    const range = h.state === "chase" ? 13 : p.light ? 9 : p.crouched ? 3.8 : 6;
-    return dist(p, h) < range && Math.abs(angleDelta(Math.atan2(p.z - h.z, p.x - h.x), h.angle)) < 1.05 && this.clearSight(h, p);
+    const offset = this.difficultyOffset;
+    const range = (h.state === "chase" ? 13 : p.light ? 9 : p.crouched ? 3.8 : 6) * (1 + offset * (offset > 0 ? 1.15 : 1));
+    const cone = 1.05 + Math.max(0, offset) * .25;
+    return dist(p, h) < range && Math.abs(angleDelta(Math.atan2(p.z - h.z, p.x - h.x), h.angle)) < cone && this.clearSight(h, p);
   }
   private clearSight(a: Vec, b: Vec) {
     if (!this.lineOfSight(a, b)) return false;
@@ -357,17 +371,20 @@ export class EscapeWorld {
     hunt.listenIn = Math.max(0, (hunt.listenIn ?? 0) - dt);
     if (walked > .0001 && hearing.audible && hunt.listenIn <= 0) {
       hunt.listenIn = 1;
-      if (this.random() < Math.min(.75, hearing.rate / 48)) this.investigateSound(d.player);
+      const credible = this.random() < Math.min(.75, hearing.rate / 48);
+      if (personalOnly) { if (credible) this.investigateSound(d.player); }
+      else this.considerCue("footsteps", d.player, Math.min(1, hearing.rate / 48), credible);
     }
-    const illuminated = this.illuminatesHunter() && hunt.freeze <= 0;
+    const light = this.lightPerception;
+    const illuminated = light.rate > 0;
     hunt.noise = Math.max(0, Math.min(100, (hunt.noise ?? 0) + (hearing.rate > 0 ? hearing.rate : -12) * dt));
     hunt.sight = Math.max(0, Math.min(100, (hunt.sight ?? 0) + (vision.rate > 0 ? vision.rate : -25) * dt));
-    hunt.glare = Math.max(0, Math.min(100, hunt.glare + (illuminated ? 20 * this.perceptionMultiplier : -25) * dt));
+    hunt.glare = Math.max(0, Math.min(100, hunt.glare + (illuminated ? light.rate : -25) * dt));
     if (hunt.glare >= 99.999) { hunt.glare = 100; hunt.lightArmed = false; }
     if (!hunt.lightArmed && hunt.glare < 60) hunt.lightArmed = true;
     this.syncExposure({ ...(hearing.audible ? { noise: d.player } : {}), ...(vision.rate > 0 ? { sight: d.player } : {}), ...(illuminated ? { glare: d.player } : {}) });
   }
-  private syncExposure(sensed: Partial<Record<Sense, Vec>> = {}) {
+  private syncExposure(sensed: Partial<Record<Sense, Vec>> = {}, transientSound = false) {
     const d = this.data, hunt = d.hunt!;
     hunt.traces ??= {};
     for (const key of SENSES) if (sensed[key]) hunt.traces[key] = { x: sensed[key]!.x, z: sensed[key]!.z };
@@ -388,17 +405,53 @@ export class EscapeWorld {
       hunt.focus = source;
       if (risk.total === 100) { if (!cooperativePlayer) this.startChase(at); return; }
       if (d.hunter.state !== "chase") {
-        if (cooperativePlayer) return;
-        const next = this.reachableTarget(at);
-        if (d.hunter.state !== "investigate" || dist(this.target, next) > .6) this.pathTimer = 0;
-        d.hunter.state = "investigate"; this.target = next; this.wait = 4;
+        if (cooperativePlayer || transientSound) return;
+        const cue = source === "noise" ? "footsteps" : source!;
+        this.considerCue(cue, at, risk.contributions[source!].score / 100, true, risk.raw / 100);
       }
+    }
+    // A fresh sighting can be weighed before the existing full-exposure lock.
+    if (!cooperativePlayer && sensed.sight && d.hunter.state !== "chase" &&
+      (source !== "sight" || risk.total < ALERT_THRESHOLD)) {
+      this.considerCue("sight", sensed.sight, (hunt.sight ?? 0) / 100, false, risk.raw / 100);
+    }
+  }
+
+  private considerCue(cue: HunterCue, point: Vec, strength: number, credible: boolean, exposure = this.perception.raw / 100, distinct = false) {
+    const { hunter, hunt, elapsed } = this.data;
+    if (hunter.state === "chase" || hunt!.freeze > 0) return;
+    const earlyChase = cue === "sight" && exposure >= .96 - Math.max(0, this.difficultyOffset) * .29;
+    const band = Number(credible) + (earlyChase ? 2 + Math.floor(exposure * 50) : 0);
+    const recent = this.decisions.get(cue);
+    let action = recent?.action;
+    const decided = distinct || !recent || recent.band !== band ||
+      elapsed - recent.time >= 4 || (elapsed - recent.time >= 2 && dist(recent.point, point) >= 2);
+    if (decided) {
+      const options: HunterOption[] = [{ action: "continue" }, { action: "investigate", point }];
+      if (earlyChase) options.push({ action: "chase", point });
+      action = chooseHunterAction({ cue, strength, exposure, difficulty: this.difficulty, credible,
+        distance: Math.min(1, dist(hunter, point) / 24), occluded: cue !== "sight" && !this.lineOfSight(hunter, point) }, options)?.action;
+      if (!action) action = credible ? "investigate" : "continue";
+      this.decisions.set(cue, { time: elapsed, point: { x: point.x, z: point.z }, band, action });
+    }
+    if (action === "chase") {
+      hunt!.focus = "sight";
+      this.startChase(point);
+      this.events.push({ type: "hunter-think" });
+    } else if (action === "investigate") {
+      const next = this.reachableTarget(point);
+      if (hunter.state !== "investigate" || dist(this.target, next) > .6) this.pathTimer = 0;
+      if (decided && hunter.state !== "investigate") this.events.push({ type: "hunter-think" });
+      hunter.state = "investigate";
+      hunt!.focus = cue === "glare" || cue === "sight" ? cue : "noise";
+      this.target = next;
+      this.wait = 4;
     }
   }
   private startChase(at: Vec) {
     const d = this.data;
     const next = this.reachableTarget(at);
-    if (d.hunter.state !== "chase") { this.pathTimer = 0; this.events.push({ type: "laugh" }); this.say("它发现你了！"); }
+    if (d.hunter.state !== "chase") { this.searchClue = undefined; this.pathTimer = 0; this.events.push({ type: "laugh" }); this.say("它发现你了！"); }
     else if (dist(this.target, next) > .6) this.pathTimer = 0;
     d.hunter.state = "chase"; d.hunt!.exposure = 100;
     this.target = next; this.unseen = 0; this.wait = 0;
@@ -530,7 +583,10 @@ export class EscapeWorld {
         if (dist(this.target, next) > .6) this.pathTimer = 0;
         this.target = next; this.unseen = 0; this.wait = 0; hunt.focus = current.focus!;
       }
-    } else if (clue && !frozen && this.data.hunter.state !== "chase") {
+    }
+    // Keeping the previous player's context for pursuit and hiding must not
+    // prevent the hunter from investigating other players after the chase.
+    if (!sighting && clue && !frozen && this.data.hunter.state !== "chase") {
       const point = clue.currentCues![clue.focus!]!;
       this.data.hunter.state = "investigate"; this.target = this.reachableTarget(point); this.wait = 4; this.pathTimer = 0;
       hunt.alert = 6; hunt.focus = clue.focus;
@@ -611,7 +667,7 @@ export class EscapeWorld {
         if (distance > .85) this.glassArmed[index] = true;
         else if (distance < .34 && this.glassArmed[index]) {
           this.glassArmed[index] = false;
-          if (!p.crouched) { this.events.push({ type: "noise" }); this.noise(hazard, 18, 45); this.say("脚下的碎玻璃响了！"); }
+          if (!p.crouched) { this.events.push({ type: "noise" }); this.noise(hazard, 18, 45, "glass"); this.say("脚下的碎玻璃响了！"); }
         }
       });
     }
@@ -658,15 +714,50 @@ export class EscapeWorld {
     d.hunter.performance = { kind: "laugh", reason, until: Math.max(alreadyLaughing ? current.until : 0, d.elapsed + Math.min(3, duration)) };
     if (!alreadyLaughing) this.events.push({ type: "laugh" });
   }
+  private rememberSearchClue() {
+    const { player, hunter, elapsed } = this.data;
+    const point = { x: player.x, z: player.z };
+    const observer = { x: hunter.x, z: hunter.z };
+    const clue = this.searchClue;
+    if (!clue) { this.searchClue = { last: point, from: point, observer, movedAt: elapsed }; return; }
+    clue.last = point;
+    clue.observer = observer;
+    const moved = dist(clue.from, point);
+    if (moved >= 0.25) {
+      clue.heading = { x: (point.x - clue.from.x) / moved, z: (point.z - clue.from.z) / moved };
+      clue.from = point;
+      clue.movedAt = elapsed;
+    } else if (elapsed - clue.movedAt > 0.8) {
+      clue.heading = undefined;
+    }
+  }
+  private beginHunterSearch(cooperative: boolean) {
+    this.data.hunter.state = "search";
+    this.wait = 4;
+    const clue = this.searchClue;
+    this.searchClue = undefined;
+    if (cooperative || !clue?.heading || this.seenHide || this.unseen <= 0 || dist(this.target, clue.last) > 0.6) return;
+    // Only navigation geometry and confirmed sightings reach the model.
+    const candidates = searchCandidates(clue.last, clue.heading, clue.observer,
+      point => !this.wall(point.x, point.z, true) && !this.furniture(point.x, point.z, 0.23),
+      (observer, point) => dist(observer, point) < 13 && this.clearSight(observer, point));
+    const probe = chooseSearchProbe(candidates, this.difficulty);
+    if (!probe) return;
+    this.target = probe;
+    this.pathTimer = 0;
+    this.wait = 1.4;
+    this.events.push({ type: "hunter-think" });
+  }
   private updateHunter(dt: number, cooperative = false, cooperativeTargetActive = true, cooperativeCueActive = false) {
     const d = this.data, h = d.hunter;
     if (d.hunt!.freeze > 0) { if (h.performance) h.performance.until += dt; return; }
     if (h.performance && h.performance.until <= d.elapsed) delete h.performance;
     if (h.state === "chase" && (!cooperative || cooperativeTargetActive) && this.seesPlayer()) {
+      if (!cooperative) this.rememberSearchClue();
       this.target = { x: d.player.x, z: d.player.z }; this.unseen = 0; this.wait = 0;
     } else if (h.state === "chase" && (!cooperative || !cooperativeCueActive)) {
       this.unseen += dt;
-      if (this.unseen > 3.5) { h.state = "search"; this.wait = 4; }
+      if (this.unseen > 3.5) this.beginHunterSearch(cooperative);
     }
     if (d.hidden && this.seenHide) {
       const cabinet = PROPS.find(p => p.id === this.seenHide)!;
@@ -696,7 +787,10 @@ export class EscapeWorld {
         if (this.wait < 1.8) return;
         this.wait = 0; this.target = this.choosePatrolTarget(); this.pathTimer = 0;
       } else {
-        if (h.state === "chase") { h.state = "search"; this.wait = 4; }
+        if (h.state === "chase") {
+          this.beginHunterSearch(cooperative);
+          if (dist(h, this.target) >= .35) return;
+        }
         this.wait -= dt;
         if (this.wait > 0) { h.angle = angleDelta(h.angle + dt * .55, 0); return; }
         h.state = "patrol"; this.seenHide = undefined; this.target = this.choosePatrolTarget(); this.pathTimer = 0;
@@ -772,19 +866,21 @@ export class EscapeWorld {
     d.hunt!.focus = "noise";
     d.hunter.state = "investigate"; this.target = this.reachableTarget(at); this.wait = 4; this.pathTimer = 0;
   }
-  noise(at: Vec, range: number, score = 0) {
+  noise(at: Vec, range: number, score = 0, cue: "stone" | "glass" | "impact" = "impact") {
     const d = this.data, h = d.hunter;
-    const effectiveRange = range * (score === 0 || this.lineOfSight(h, at) ? 1 : .7);
+    const effectiveRange = range * (score === 0 || this.lineOfSight(h, at) ? 1 : .7) * this.soundRangeScale;
     const distance = dist(h, at);
     if (distance > effectiveRange || d.hunt!.freeze > 0) return;
     if (score > 0) {
-      d.hunt!.noise = Math.min(100, (d.hunt!.noise ?? 0) + score * Math.max(0, 1 - distance / effectiveRange) ** 2 * this.perceptionMultiplier);
-      this.syncExposure({ noise: at }); this.investigateSound(at); return;
+      d.hunt!.noise = Math.min(100, (d.hunt!.noise ?? 0) + score * Math.max(0, 1 - distance / effectiveRange) ** 2 * this.perceptionMultiplier * this.detectionGain);
+      this.syncExposure({ noise: at }, true);
+      if (this.coopPlayerId !== undefined) this.investigateSound(at);
+      else this.considerCue(cue, at, Math.max(0, 1 - distance / effectiveRange), true, this.perception.raw / 100, true);
+      return;
     }
     if (h.state === "chase") return;
     if (this.coopPlayerId !== undefined) { this.coopInvestigation = { x: at.x, z: at.z }; d.hunt!.focus = "noise"; return; }
-    d.hunt!.focus = "noise";
-    h.state = "investigate"; this.target = this.reachableTarget(at); this.wait = 4; this.pathTimer = 0;
+    this.considerCue(cue, at, Math.max(0, 1 - distance / effectiveRange), true, this.perception.raw / 100, true);
   }
   crystalCharges(kind: CrystalKind) {
     const hunt = this.data.hunt!;
@@ -812,7 +908,7 @@ export class EscapeWorld {
     this.data.stones--;
     const p = this.data.player, at = { x: p.x, z: p.z };
     for (let t = .4; t < 6; t += .2) { const next = { x: p.x + Math.cos(p.angle) * t, z: p.z + Math.sin(p.angle) * t }; if (this.wall(next.x, next.z)) break; Object.assign(at, next); }
-    this.noise(at, 16); this.events.push({ type: "noise" }); this.say("石子落地。");
+    this.noise(at, 16, 0, "stone"); this.events.push({ type: "noise" }); this.say("石子落地。");
   }
   nearest(): { id: string; label: string; position: Vec } | undefined {
     if (this.data.hidden) return { id: "leave-hide", label: "悄悄离开衣柜", position: this.data.player };
@@ -951,10 +1047,12 @@ export class EscapeWorld {
     const hunt = this.data.hunt!;
     Object.assign(hunt, { effort: 0, panting: false, breathIn: 0, glare: 0, lightArmed: true, freeze: 0, reveal: 0, ward: 0, noise: 0, sight: 0, exposure: 0, alert: 0, traces: {} });
     delete hunt.focus;
+    this.decisions.clear();
+    this.searchClue = undefined;
     this.lastMovement = "still";
   }
   snapshot(): EscapeSnapshot {
-    return JSON.parse(JSON.stringify({ ...this.data, pursuit: { target: this.target, seenHide: this.seenHide, unseen: this.unseen, wait: this.wait, patrolIndex: this.patrolIndex } }));
+    return JSON.parse(JSON.stringify({ ...this.data, pursuit: { target: this.target, seenHide: this.seenHide, unseen: this.unseen, wait: this.wait, patrolIndex: this.patrolIndex, searchClue: this.searchClue } }));
   }
   static restore(raw: unknown, cooperativeContext?: { playerId: string; targetId?: string }): EscapeWorld {
     if (!raw || typeof raw !== "object") throw new Error("逃生存档格式不正确");
@@ -1046,6 +1144,16 @@ export class EscapeWorld {
       if (!m.target || !number(m.target.x, .2, SIZE - .2) || !number(m.target.z, .2, HEIGHT - .2) || !number(m.unseen, 0, 86400) || !number(m.wait, -10, 86400)
         || !Number.isInteger(m.patrolIndex) || !number(m.patrolIndex, 0, (d.expansion?.enabled ? patrol.length : 6) - 1) || m.seenHide !== undefined && !PROPS.some(o => o.id === m.seenHide && o.kind === "wardrobe")) throw new Error("逃生存档格式不正确");
       world.target = { ...m.target }; world.seenHide = m.seenHide; world.unseen = m.unseen; world.wait = m.wait; world.patrolIndex = m.patrolIndex;
+      if (m.searchClue !== undefined) {
+        const clue = m.searchClue;
+        const validPoint = (point: Vec) => point && number(point.x, 0, SIZE) && number(point.z, 0, HEIGHT);
+        const heading = clue?.heading;
+        if (!clue || !validPoint(clue.last) || !validPoint(clue.from) || !validPoint(clue.observer) || !number(clue.movedAt, 0, d.elapsed)
+          || heading !== undefined && (!heading || !number(heading.x, -1, 1) || !number(heading.z, -1, 1) || Math.abs(Math.hypot(heading.x, heading.z) - 1) > 1e-6)) throw new Error("逃生存档格式不正确");
+        const copy = ({ x, z }: Vec) => ({ x, z });
+        world.searchClue = { last: copy(clue.last), from: copy(clue.from), observer: copy(clue.observer),
+          heading: heading && copy(heading), movedAt: clue.movedAt };
+      }
     }
     world.mapPosition = "";
     if (!d.explored) world.revealMap();

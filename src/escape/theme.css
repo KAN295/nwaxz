@@ -123,6 +123,23 @@
 .escape-shell .escape-interact svg{stroke:var(--ink)}
 .escape-shell .escape-interact kbd{border:1px solid var(--ink);border-radius:0;background:none;color:var(--ink)}
 .escape-shell .escape-notice{padding:10px 30px;border:0;border-radius:0;background:var(--paper-bg);box-shadow:inset 0 0 20px #7a5a3044,0 8px 20px #000a;font:600 17px/1.6 var(--serif);letter-spacing:.05em;color:var(--ink);text-shadow:none;transform:rotate(-.4deg)}
+.escape-shell .escape-notice.is-thinking {
+  width:max-content;
+  max-width:calc(100% - 24px);
+  left:50%;
+  transform:translateX(-50%);
+  border:1px solid #7ca88a;
+  border-radius:4px;
+  color:#e2f3dd;
+  background:#101b15ed;
+  box-shadow:0 6px 18px #0009;
+}
+.escape-notice.is-thinking::before {
+  content:"AI";
+  margin-right:10px;
+  color:#a9e3ac;
+  font:800 12px/1 system-ui,sans-serif;
+}
 .escape-shell .escape-danger{padding:4px 18px;border:2px solid var(--blood-2);border-radius:0;background:#15100dcc;box-shadow:0 0 18px #a63a2c66;font:700 17px/1.4 var(--serif);letter-spacing:.3em;color:#ffd6cf;text-shadow:none}
 .escape-shell .escape-room-toast{padding:6px 30px;border:0;border-top:1px solid var(--brass);border-bottom:1px solid var(--brass);background:linear-gradient(90deg,#0000,#15100dcc 20%,#15100dcc 80%,#0000);font:700 28px/1.4 var(--serif);letter-spacing:.45em;color:var(--paper);text-shadow:none;box-shadow:none}
 .escape-shell .escape-mouse-hint{font:600 15px/1.4 var(--serif);letter-spacing:.08em;color:var(--paper);text-shadow:0 1px 3px #000}
@@ -190,6 +207,7 @@
   .escape-shell .escape-objective{top:calc(max(12px,env(safe-area-inset-top)) + 258px);left:10px;max-width:calc(100vw - 20px);padding:6px 12px 8px;font-size:14px;transform:none}
   .escape-shell .escape-objective::after{display:none}
   .escape-shell .escape-notice{left:12px!important;right:12px!important;max-width:none!important;transform:none!important;white-space:normal;text-align:center;font-size:15px}
+  .escape-shell .escape-notice.is-thinking{left:50%!important;right:auto!important;max-width:calc(100% - 24px)!important;transform:translateX(-50%)!important}
   .escape-shell .escape-interact{font-size:15px}
   .escape-shell .escape-room-toast{font-size:22px;letter-spacing:.3em}
 }

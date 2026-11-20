@@ -130,6 +130,11 @@
 .escape-lobby .lv-setting-list label{display:flex;justify-content:space-between;align-items:center;padding:12px 4px;border-bottom:1px dashed #8a766088;font:700 17px var(--serif);color:var(--ink)}
 .escape-lobby .lv-setting-list label:last-child{border-bottom:0}
 .escape-lobby .lv-setting-list input{width:20px;height:20px;accent-color:var(--blood)}
+.lv-difficulty { display:grid; gap:4px; margin-bottom:18px; padding:10px 0 12px; border-block:1px solid #8a766088; }
+.lv-difficulty label { display:flex; justify-content:space-between; align-items:center; font-weight:700; }
+.lv-difficulty output { font-variant-numeric:tabular-nums; }
+.lv-difficulty input { width:100%; height:36px; margin:0; accent-color:#31634a; touch-action:pan-x; }
+.lv-difficulty small { color:inherit; }
 .escape-lobby .escape-bindings{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:0 18px;margin:0;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
 .escape-lobby .escape-bindings>div{display:flex;justify-content:space-between;gap:10px;padding:9px 2px;border-bottom:1px dashed #8a766066}
 .escape-lobby .escape-bindings dt{font:700 17px var(--serif);color:var(--ink)}.escape-lobby .escape-bindings dd{margin:0;padding:0 8px;border:1px solid #8a766066;background:#ffffff40;font:700 15px/1.6 var(--sans);color:var(--ink)}

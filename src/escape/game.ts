@@ -15,6 +15,7 @@ import { bagMarkup, type BagTab } from "./backpack.ts";
 import { AudioManager } from "../audio.ts";
 import type { Settings } from "../settings.ts";
 import { EscapeWorld, ITEM_NAMES, PROPS, type EscapeSnapshot } from "./world.ts";
+import { DEFAULT_HUNTER_DIFFICULTY, hunterDifficulty } from "./hunter-search-model.ts";
 import type { EscapeRenderer, EscapeArt } from "./renderer.ts";
 import { prepareEscape, returnPreparedEscape, takePreparedEscape } from "./preparation.ts";
 import { EscapeLook, type MouseLookMode } from "./look.ts";
@@ -31,6 +32,7 @@ import "./theme.css";
 export { prepareEscape } from "./preparation.ts";
 
 const SESSION = "nwaxz-escape-session-v1", RECORD = "nwaxz-escape-record-v1", SOUND = "nwaxz-escape-sound-v1";
+const HUNTER_DIFFICULTY = "nwaxz-escape-hunter-difficulty";
 const HUD = "nwaxz-escape-hud-v1";
 type Best = { version: 2; escapes: number; bestTimeMs: number; fewestCaptures: number; mostNotes: number };
 const time = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -67,6 +69,8 @@ export class EscapeGame {
   private heartbeatAt = 0;
   private lastNotice = "";
   private noticeUntil = 0;
+  private thinkingUntil = 0;
+  private soloDifficulty = DEFAULT_HUNTER_DIFFICULTY;
   private inventoryKey = "";
   private lastRoom = "";
   private roomCueUntil = -1;
@@ -116,6 +120,8 @@ export class EscapeGame {
   private readonly signal = this.controller.signal;
   constructor(private root: HTMLElement, private audio: AudioManager, private settings: Settings, private exit: () => void) {
     try {
+      const difficulty = localStorage.getItem(HUNTER_DIFFICULTY);
+      if (difficulty !== null && /^\d{1,3}$/.test(difficulty)) this.soloDifficulty = hunterDifficulty(Number(difficulty));
       const session = localStorage.getItem(SESSION);
       if (session) {
         try { this.saved = EscapeWorld.restore(JSON.parse(session)).snapshot(); }
@@ -220,7 +226,7 @@ export class EscapeGame {
     const room=this.coopSnapshot?.room??(this.coop?{code:this.coop.session.code,phase:'lobby' as const,leaderId:this.coop.session.leader?this.coop.session.playerId:'',players:[]}:undefined);
     const profile=this.social.identity??{uid:'—',name:'幸存者',avatar:0};
     const rootScreen=this.lobbyScreenStack[0]??this.lobbyScreen;
-    const model:LobbyModel={profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
+    const model:LobbyModel={profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
     this.lobbyDisposer?.();
     const operation=(fn:()=>Promise<unknown>,success:string)=>{void fn().then(()=>{this.socialMessage(success);return this.refreshSocialLobby();}).catch(error=>this.socialMessage(error instanceof Error?error.message:'操作失败'));};
     this.lobbyDisposer=renderLobbyView(this.$('#escape-panel'),model,{
@@ -228,6 +234,10 @@ export class EscapeGame {
       single:()=>{const open=()=>this.openLobbyScreen('solo');if(this.coop)void this.leaveCoop().then(open);else open();},controls:()=>this.openLobbyScreen('controls'),settings:()=>this.openLobbyScreen('settings'),
       back:()=>this.backLobbyScreen(),continueGame:()=>void this.start(true),newGame:()=>void this.start(false),exportSave:()=>this.exportSave(),importSave:()=>this.$<HTMLInputElement>('#escape-import').click(),
       music:enabled=>{this.music=enabled;this.saveSound();},sound:enabled=>{this.sound=enabled;this.saveSound();},
+      difficulty: value => {
+        this.soloDifficulty = hunterDifficulty(value);
+        try { localStorage.setItem(HUNTER_DIFFICULTY, String(this.soloDifficulty)); } catch { /* This session can still use the selected difficulty. */ }
+      },
       exit:()=>{if(this.coop)void this.leaveCoop().then(()=>this.exit());else this.exit();},
       create:input=>{void this.openSocialRoom('create',input);},join:(code,password)=>{void this.openSocialRoom('join',{code,password});},
       leave:()=>{void this.leaveCoop();},start:()=>{void this.coop?.startRoom().then(()=>this.startCoopGame()).catch(error=>this.socialMessage(error.message));},
@@ -381,6 +391,7 @@ export class EscapeGame {
     this.renderer.setReducedMotion(this.settings.reducedMotion);
   }
   private async start(resume: boolean) {
+    this.thinkingUntil = 0;
     const preparation = ++this.preparationSequence;
     this.save(); this.started = false; this.paused = true;
     this.audio.setMode("escape"); this.applySound(); void this.audio.unlock();
@@ -405,6 +416,7 @@ export class EscapeGame {
       }
       if (this.disposed || preparation !== this.preparationSequence) return;
       this.world = resume && this.saved ? EscapeWorld.restore(this.saved) : new EscapeWorld();
+      this.world.setHunterDifficulty(this.soloDifficulty);
       this.beginRoomCue();
       this.renderer.setReducedMotion(this.settings.reducedMotion);
       if (this.disposed || preparation !== this.preparationSequence) return;
@@ -718,6 +730,7 @@ export class EscapeGame {
       this.renderer?.draw(this.world, dt);
       const d = this.world.data;
       for (const event of this.world.drainEvents()) {
+        if (event.type === "hunter-think") this.thinkingUntil = d.elapsed + 2.5;
         if (event.type === "laugh" && d.phase === "playing") this.audio.haunt();
         if (["step", "door", "noise"].includes(event.type)) this.audio.effect(event.type as "step" | "door" | "noise");
         if (event.type === "item") this.audio.effect("coin");
@@ -770,8 +783,13 @@ export class EscapeGame {
       this.$("#escape-lives").innerHTML = Array.from({ length: lifeCap }, (_, i) => `<span class="${i < lifeCap - lives ? "lost" : ""}">${icon("heart")}</span>`).join("");
       this.$("#escape-lives").setAttribute("aria-label", `剩余${lives}次机会`);
     }
-    if (this.world.message !== this.lastNotice) { this.lastNotice = this.world.message; this.noticeUntil = performance.now() + 5000; this.$("#escape-notice").textContent = this.world.message; }
-    this.$("#escape-notice").hidden = performance.now() > this.noticeUntil;
+    const notice = this.$("#escape-notice");
+    if (this.world.message !== this.lastNotice) { this.lastNotice = this.world.message; this.noticeUntil = performance.now() + 5000; }
+    const thinking = !this.coopMode && this.world.data.elapsed < this.thinkingUntil;
+    const noticeText = thinking ? "奶娃正在思考…" : this.lastNotice;
+    if (notice.textContent !== noticeText) notice.textContent = noticeText;
+    notice.classList.toggle("is-thinking", thinking);
+    notice.hidden = !thinking && performance.now() > this.noticeUntil;
     const danger = d.hidden ? "已藏匿" : this.world.isPlayerChased ? "被发现了" : Math.hypot(d.hunter.x - d.player.x, d.hunter.z - d.player.z) < 4 ? "脚步正在靠近" : "";
     this.$("#escape-danger").textContent = danger;
     this.$("#escape-danger").hidden = !danger;

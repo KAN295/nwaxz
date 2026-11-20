@@ -1,4 +1,5 @@
 import type { CoopPlayer, CoopRoomView } from "./coop-protocol.ts";
+import { DEFAULT_HUNTER_DIFFICULTY } from "./hunter-search-model.ts";
 
 export type LobbyScreen = "home" | "servers" | "room" | "friends" | "profile" | "solo" | "settings" | "saves" | "controls" | "restart" | "closed";
 export type LobbyProfile = { uid: string; name: string; avatar: number };
@@ -25,6 +26,7 @@ export type LobbyModel = {
   hasSave?: boolean;
   music?: boolean;
   sound?: boolean;
+  soloDifficulty?: number;
   storageWarning?: string;
   touchControls?: boolean;
   expanded?: boolean;
@@ -45,6 +47,7 @@ export type LobbyActions = {
   importSave?():void;
   music?(enabled:boolean):void;
   sound?(enabled:boolean):void;
+  difficulty?(value: number): void;
   start(): void;
   avatar(id: number): void;
   rename(name: string): void;
@@ -96,11 +99,19 @@ export function renderLobbyView(container: HTMLElement, model: LobbyModel, actio
     else if(act==="avatar"){const v=Number(target.dataset.avatar);if(Number.isInteger(v))actions.avatar(v);}
   };
   const onChange=(event:Event)=>{const input=event.target as HTMLInputElement;if(input.id==='escape-menu-music')actions.music?.(input.checked);else if(input.id==='escape-menu-sound')actions.sound?.(input.checked);};
+  const onInput = (event: Event) => {
+    const input = event.target as HTMLInputElement;
+    if (input.id !== 'escape-solo-difficulty') return;
+    const output = container.querySelector<HTMLOutputElement>('#escape-difficulty-value');
+    if (output) output.value = input.value;
+    actions.difficulty?.(input.valueAsNumber);
+  };
   container.addEventListener("click",onClick);
   container.addEventListener("change",onChange);
+  container.addEventListener("input",onInput);
   function showJoin(code:string, locked:boolean){const root=container.querySelector<HTMLElement>(".lv-modal-root")!;root.innerHTML=`<div class="lv-scrim" data-dismiss><form class="lv-modal"><button type="button" class="lv-close" data-dismiss aria-label="关闭">×</button><div class="lv-eyebrow">加入房间</div><h2>${esc(code)}</h2>${locked?`<label>房间密码<input name="password" type="password" required autofocus></label>`:`<label>房间密码（如有）<input name="password" type="password" autofocus></label>`}<button class="lv-primary" type="submit">加入</button></form></div>`;const form=root.querySelector("form")!;form.addEventListener("submit",e=>{e.preventDefault();actions.join(code,String(new FormData(form).get("password")||"")||undefined);root.innerHTML="";});root.addEventListener("click",e=>{if((e.target as HTMLElement).hasAttribute("data-dismiss"))root.innerHTML="";},{once:true});}
   function showCreate(){const root=container.querySelector<HTMLElement>(".lv-modal-root")!;root.innerHTML=`<div class="lv-scrim" data-dismiss><form class="lv-modal"><button type="button" class="lv-close" data-dismiss aria-label="关闭">×</button><div class="lv-eyebrow">新建房间</div><h2>创建房间</h2><label>房间名称<input name="name" maxlength="12" placeholder="房间名称" required></label><label>访问权限<select name="visibility"><option value="public">公开</option><option value="private">密码房</option></select></label><label class="lv-password" hidden>房间密码<input name="password" maxlength="32" type="password" placeholder="设置加入密码"></label><button class="lv-primary" type="submit">创建并加入</button></form></div>`;const form=root.querySelector("form")!,visibilityField=form.querySelector<HTMLSelectElement>('select')!,password=form.querySelector<HTMLInputElement>('[name="password"]')!;visibilityField.addEventListener('change',()=>{const locked=visibilityField.value==='private';password.required=locked;password.closest<HTMLElement>('label')!.hidden=!locked;});form.addEventListener("submit",e=>{e.preventDefault();const fd=new FormData(form);const visibility=fd.get("visibility")==="private"?"private":"public";actions.create({name:String(fd.get("name")||"小队"),visibility,...(visibility==="private"?{password:String(fd.get("password")||"")}: {})});root.innerHTML="";});root.addEventListener("click",e=>{if((e.target as HTMLElement).hasAttribute("data-dismiss"))root.innerHTML="";},{once:true}); }
-  return () => { container.removeEventListener("click",onClick); container.removeEventListener("change",onChange);  container.innerHTML=""; };
+  return () => { container.removeEventListener("click",onClick); container.removeEventListener("change",onChange); container.removeEventListener("input",onInput); container.innerHTML=""; };
 }
 
 function homeMarkup(m:LobbyModel){return `<div class="lv-home-stage"><p class="lv-home-line">浴场的灯又灭了。别让它听见你。</p></div>${m.invitations.length?`<div class="lv-invites">${m.invitations.map(i=>`<div>${avatar(0)}<span><b>${esc(i.fromName)}</b> 邀请你加入 <strong>${esc(i.roomCode)}</strong></span><button class="lv-primary" data-action="accept-invite" data-code="${esc(i.roomCode)}">接受邀请</button></div>`).join("")}</div>`:""}`;}
@@ -113,7 +124,14 @@ function profileMarkup(m:LobbyModel){return `<div class="lv-profile"><div class=
 function screenTitle(screen:LobbyScreen){return ({home:"多人大厅",servers:"多人游戏",room:"房间",friends:"好友",profile:"角色",solo:"单人游戏",settings:"设置",saves:"存档",controls:"操作说明",restart:"重新开始",closed:"房间已关闭"} satisfies Record<LobbyScreen,string>)[screen];}
 function screenEyebrow(_screen:LobbyScreen,_root:LobbyScreen){return "";}
 function screenSubtitle(screen:LobbyScreen){return ({home:"",servers:"选择服务器或输入房间码。",room:"查看队员状态并开始游戏。",friends:"",profile:"",solo:"选择继续或开始新游戏。",settings:"声音设置",saves:"本机存档",controls:"",restart:"是否重新开始？当前进度会被重置。",closed:"当前房间已关闭。"} satisfies Record<LobbyScreen,string>)[screen];}
-function soloMarkup(m:LobbyModel){return `<div class="lv-window"><div class="lv-window-actions">${m.canResume?`<button class="lv-primary" id="escape-continue" data-action="continue">继续游戏</button>`:""}<button class="${m.canResume?"lv-secondary":"lv-primary"}" id="escape-new" data-action="new-game">新游戏</button><button class="lv-secondary" id="escape-intro-saves" data-screen="saves">存档</button><button class="lv-secondary" data-screen="settings">设置</button><button class="lv-quiet" id="escape-solo-back" data-action="back">返回</button></div></div>`;}
+function soloMarkup(m:LobbyModel) {
+  const difficulty = m.soloDifficulty ?? DEFAULT_HUNTER_DIFFICULTY;
+  return `<div class="lv-window"><div class="lv-difficulty">
+    <label for="escape-solo-difficulty">奶娃难度<output id="escape-difficulty-value" for="escape-solo-difficulty">${difficulty}</output></label>
+    <input id="escape-solo-difficulty" type="range" min="0" max="100" step="1" value="${difficulty}" aria-describedby="escape-difficulty-hint">
+    <small id="escape-difficulty-hint">0 失明 · 50 标准 · 100 敏锐</small>
+  </div><div class="lv-window-actions">${m.canResume?`<button class="lv-primary" id="escape-continue" data-action="continue">继续游戏</button>`:""}<button class="${m.canResume?"lv-secondary":"lv-primary"}" id="escape-new" data-action="new-game">新游戏</button><button class="lv-secondary" id="escape-intro-saves" data-screen="saves">存档</button><button class="lv-secondary" data-screen="settings">设置</button><button class="lv-quiet" id="escape-solo-back" data-action="back">返回</button></div></div>`;
+}
 function settingsMarkup(m:LobbyModel){return `<div class="lv-window"><div class="lv-setting-list"><label><span>音乐</span><input id="escape-menu-music" type="checkbox" ${m.music?"checked":""}></label><label><span>音效</span><input id="escape-menu-sound" type="checkbox" ${m.sound?"checked":""}></label></div><button class="lv-primary" id="escape-settings-back" data-action="back">返回</button></div>`;}
 function savesMarkup(m:LobbyModel){return `<div class="lv-window"><p>${m.hasSave?"已有逃生进度":"暂无逃生进度"}</p>${m.storageWarning?`<p class="lv-message">${esc(m.storageWarning)}</p>`:""}<button class="lv-primary" id="escape-save-export" data-action="save-export" ${m.hasSave?"":"disabled"}>备份存档</button><button class="lv-secondary" id="escape-intro-import" data-action="save-import">恢复存档</button><button class="lv-quiet" id="escape-saves-back" data-action="back">返回</button></div>`;}
 function controlsMarkup(m:LobbyModel){const controls=m.touchControls?[["移动","左侧摇杆"],["观察","滑动右侧画面"],["互动","靠近目标后点击手掌"],["奔跑","点击切换奔跑"],["蹲行","点击切换蹲行"],["冻结 / 显形 / 净化","屏幕晶体按钮"]]:[["移动","WASD / 方向键"],["观察","点击画面后移动鼠标"],["抬头 / 低头","PageUp / PageDown"],["互动","E / 空格"],["奔跑","Shift 切换"],["蹲行","C 切换"],["手电","F"],["石子 / 地图 / 背包","Q / M / B"],["暴露详情","Tab"],["冻结 / 显形 / 净化","1 / 2 / 3"],["暂停 / 释放鼠标","Esc"]];const tips=["被发现时拉开距离，躲进衣柜并保持安静。","被干扰时仪表不可信，绿晶能驱散杂讯。","找到钥匙和工具，打开下水道铁网。","冻住奶蛙能争取调整位置的机会；显形晶可查看奶蛙方向。",...(m.expanded?["旧更衣室里有缺失的手轮；锅炉房维修纸条记着泄压顺序。","走廊碎玻璃可以绕开或蹲行通过。"]:[]),"一直跑会积累疲劳并发出喘息声，停下休息可恢复。","手电照到奶蛙会让它更快发现你，移开光束警觉会下降。","被抓后进入下一夜，物品保留；第三次被抓则失败。"];return `<div class="lv-window"><dl class="escape-bindings">${controls.map(([label,value])=>`<div><dt>${label}</dt><dd>${value}</dd></div>`).join("")}</dl><ul class="escape-help">${tips.map(tip=>`<li>${tip}</li>`).join("")}</ul><div class="lv-window-actions"><button id="escape-help-settings" class="lv-secondary" data-screen="settings">设置</button><button id="escape-help-close" class="lv-primary" data-action="back">返回</button></div></div>`;}

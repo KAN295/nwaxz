@@ -35,6 +35,26 @@ test('authoritative proximity never captures a hidden teammate, including a witn
   assert.equal(world.data.phase, 'playing');
 });
 
+test('a fresh teammate clue can interrupt patrol after the hunter loses its previous target', () => {
+  const world = new EscapeWorld(78);
+  world.data.elapsed = 10;
+  Object.assign(world.data.hunter, { x: 3.5, z: 9.5, angle: 0 });
+  const firstSighting = { x: 13.5, z: 9.5 };
+  const previous = { id: 'previous', player: { ...world.data.player, ...firstSighting, light: false }, living: true, exposure: 100, currentExposure: 100 };
+  world.advanceEnemyAuthoritative(1 / 60, [{ ...previous, focus: 'sight', currentCues: { sight: firstSighting } }]);
+  assert.equal(world.data.hunter.state, 'chase');
+
+  const outOfSight = { ...previous, player: { ...previous.player, x: 11.5, z: 5.5 }, exposure: 0, currentExposure: 0 };
+  for (let i = 0; i < 1800 && world.data.hunter.state !== 'patrol'; i++) world.advanceEnemyAuthoritative(1 / 60, [outOfSight]);
+  assert.equal(world.data.hunter.state, 'patrol');
+
+  const sound = { x: 6.5, z: 9.5 };
+  const other = { id: 'other', player: { ...world.data.player, x: 5.5, z: 5.5 }, living: true, exposure: 55, currentExposure: 55, focus: 'noise', currentCues: { noise: sound } };
+  world.advanceEnemyAuthoritative(1 / 60, [outOfSight, other]);
+  assert.equal(world.data.hunter.state, 'investigate');
+  assert.deepEqual(world.target, sound, 'investigate the sensed position rather than the unseen teammate');
+});
+
 test('respawning chooses a clear ground-floor spawn away from a hunter camping the bedroom', t => {
   let now = 1_000_000;
   const service = new CoopService({ now: () => now, autoTick: false }); t.after(() => service.close());
