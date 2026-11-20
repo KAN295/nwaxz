@@ -1,5 +1,5 @@
 import type { Settings } from "../settings.ts";
-import { loadImage } from "../loading.ts";
+import { escapeAssetTimeout, loadImage } from "../loading.ts";
 import type { EscapeRenderer, EscapeArt } from "./renderer.ts";
 import { EscapeWorld } from "./world.ts";
 import { surfacePaths, type SurfaceImages } from "./material-assets.ts";
@@ -38,14 +38,14 @@ export async function prepareEscape(settings: Settings, onStage: (stage: string)
     onStage("正在铺好浴室地图…");
     let readySurfaces = 0;
     const surfaceEntries = Object.entries(surfacePaths);
+    const timeout = escapeAssetTimeout();
     const [surfaces, map, basement] = await Promise.all([
       Promise.all(surfaceEntries.map(async ([kind, path]) => {
-        // Native PNGs may wait for another image's bounded range slot first.
-        const image = await loadImage(path, 120000);
+        const image = await loadImage(path, timeout);
         onStage(`正在铺好浴室地图… ${++readySurfaces} / ${surfaceEntries.length}`);
         return [kind, image] as const;
       })).then(entries => Object.fromEntries(entries) as SurfaceImages),
-      loadImage("/assets/ui/escape-map-atlas-v1.webp"), loadImage("/assets/scenes/escape-basement-atlas-v1.webp"),
+      loadImage("/assets/ui/escape-map-atlas-v1.webp", timeout), loadImage("/assets/scenes/escape-basement-atlas-v1.webp", timeout),
     ]);
     const canvas = document.createElement("canvas"), art = { surfaces, map, basement };
     // Keep one mounted canvas: swapping a WebGL context to another canvas is impossible.

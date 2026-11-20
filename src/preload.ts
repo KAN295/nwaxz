@@ -1,4 +1,5 @@
 import { version } from "../package.json";
+import { DOWNLOAD_ATTEMPTS, DOWNLOAD_IDLE_MS } from "./native-preload.ts";
 
 export type PreloadScope = "startup" | "all";
 export type PreloadStatus = { version: string; done: number; total: number; loadedBytes: number; totalBytes: number; error: string };
@@ -47,7 +48,8 @@ export async function preloadGame(onProgress: (value: PreloadStatus) => void, re
       if (worker.state === "installed") worker.postMessage({ type: "SKIP_WAITING" });
       break;
     }
-    if (performance.now() - lastChange > 30000 && !document.hidden) throw new Error(navigator.onLine ? "下载暂时停住了，请重试。已经保存的资源会继续保留。" : "网络已断开，游戏尚未准备完整。联网后可以继续。");
+    const idleLimit = navigator.onLine ? DOWNLOAD_ATTEMPTS * DOWNLOAD_IDLE_MS + 15_000 : 5000;
+    if (performance.now() - lastChange > idleLimit && !document.hidden) throw new Error(navigator.onLine ? "下载暂时停住了，请重试。已经保存的资源会继续保留。" : "网络已断开，游戏尚未准备完整。联网后可以继续。");
     if (document.hidden) lastChange = performance.now();
     await new Promise(resolve => setTimeout(resolve, 300));
   }

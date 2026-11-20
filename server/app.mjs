@@ -46,11 +46,26 @@ export function createApp({ distDir, revision = "development", coopService, soci
     if (!distDir) return res.status(503).end();
     res.sendFile(path.join(distDir, "sw.js"), { cacheControl: false }, error => { if (error && !res.headersSent) res.status(503).end(); });
   });
-  if (distDir)
+  if (distDir) {
+    const inventory = path.join(distDir, "preload-manifest.json");
+    const fingerprints = new Map(fs.existsSync(inventory)
+      ? JSON.parse(fs.readFileSync(inventory, "utf8")).filter(entry => entry.revision).map(entry => [`/${entry.url}`, entry.revision])
+      : []);
+    app.get("/assets/*asset", (req, res, next) => {
+      if (req.query.nwaxz_v === undefined) { next(); return; }
+      // A request for retired bytes must never put the current file under the old cache key.
+      if (req.query.nwaxz_v !== fingerprints.get(req.path)) {
+        res.set("Cache-Control", "no-store").status(404).end();
+        return;
+      }
+      res.set("Cache-Control", "public, max-age=31536000, immutable, no-transform");
+      next();
+    });
     app.use(
       express.static(distDir, {
         dotfiles: "deny",
         setHeaders(res, filename) {
+          if (res.hasHeader("Cache-Control")) return;
           res.set(
             "Cache-Control",
             /[\\/]assets[\\/].+\.png$/.test(filename)
@@ -62,6 +77,7 @@ export function createApp({ distDir, revision = "development", coopService, soci
         },
       }),
     );
+  }
   app.use((_req, res) => res.status(404).send("Not found"));
   return app;
 }

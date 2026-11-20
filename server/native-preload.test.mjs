@@ -1,18 +1,102 @@
-import {test} from 'node:test';
-import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
-import {fetchNativeImage} from '../src/native-preload.ts';
-const bytes=Buffer.alloc(700003);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
-const integrity='sha256-'+createHash('sha256').update(bytes).digest('base64');
-const partial=(body,start,end,total=bytes.length)=>new Response(body,{status:206,headers:{'content-type':'image/png','content-range':`bytes ${start}-${end}/${total}`,'content-length':String(end-start+1),'cache-control':'no-cache, no-transform'}});
-test('native PNG range assembly preserves exact bytes, checks integrity, and returns one whole response',async()=>{
- const ranges=[],progress=[];const response=await fetchNativeImage('https://example.invalid/a.png',bytes.length,integrity,n=>progress.push(n),async(url,options)=>{const [,start,end]=/bytes=(\d+)-(\d+)/.exec(options.headers.Range).map(Number);ranges.push([start,end]);assert.equal(options.credentials,'same-origin');return partial(bytes.subarray(start,end+1),start,end)});
- assert.equal(response.status,200);assert.equal(response.headers.get('content-range'),null);assert.equal(response.headers.get('content-length'),String(bytes.length));assert.match(response.headers.get('cache-control'),/no-transform/);assert.deepEqual(Buffer.from(await response.arrayBuffer()),bytes);assert.deepEqual(ranges.sort((a,b)=>a[0]-b[0]),[[0,262143],[262144,524287],[524288,700002]]);assert.equal(progress.at(-1),bytes.length);
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { DOWNLOAD_IDLE_MS, fetchVerifiedAsset } from "../src/native-preload.ts";
+import { assetTransferURL } from "../src/preload-policy.ts";
+
+const bytes = Buffer.from(Array.from({ length: 700003 }, (_, i) => i % 251));
+const integrity = "sha256-" + createHash("sha256").update(bytes).digest("base64");
+const url = "https://example.invalid/assets/test.png";
+const headers = { "content-type": "image/png", "cache-control": "no-cache, no-transform" };
+const whole = body => new Response(body, { headers });
+const partial = (body, start, end) => new Response(body, {
+  status: 206,
+  headers: { ...headers, "content-range": `bytes ${start}-${end}/${bytes.length}` },
 });
-test('a server ignoring Range is accepted only if the complete original hash matches',async()=>{let requests=0;const r=await fetchNativeImage('x',bytes.length,integrity,()=>{},async()=>{requests++;return new Response(bytes,{headers:{'content-type':'image/png'}})});assert.equal(requests,1);assert.deepEqual(Buffer.from(await r.arrayBuffer()),bytes)});
-test('wrong ranges, truncated data, non-image responses and modified content fail before cache insertion',async()=>{
- const invalid=[()=>partial(bytes.subarray(0,262144),1,262144),()=>partial(bytes.subarray(0,100),0,262143),()=>new Response('error',{headers:{'content-type':'text/html'}}),()=>new Response(Buffer.alloc(bytes.length),{headers:{'content-type':'image/png'}})];
- for(const fetcher of invalid)await assert.rejects(()=>fetchNativeImage('x',bytes.length,integrity,()=>{},fetcher));
+const download = (fetcher, onProgress = () => {}) =>
+  fetchVerifiedAsset(url, bytes.length, integrity, onProgress, { fetcher, resumable: true, painting: true });
+
+test("healthy connections download a complete byte-identical PNG in one request", async () => {
+  let requests = 0;
+  const response = await download(async (requested, options) => {
+    requests++;
+    assert.equal(requested, url);
+    assert.equal(options.credentials, "same-origin");
+    assert.equal(options.cache, "default");
+    assert.equal(options.headers, undefined);
+    return whole(bytes);
+  });
+  assert.equal(requests, 1);
+  assert.equal(response.headers.get("content-range"), null);
+  assert.equal(response.headers.get("content-length"), String(bytes.length));
+  assert.match(response.headers.get("cache-control"), /no-transform/);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
 });
-test('invalid manifests are rejected without fetching',async()=>{for(const [size,hash]of [[0,integrity],[9*1024*1024,integrity],[bytes.length,'invalid']])await assert.rejects(()=>fetchNativeImage('x',size,hash,()=>{},async()=>{throw Error('must not fetch')}),/清单/)});
-test('a temporary request failure is retried once and progress counts only received bytes',async()=>{let calls=0;const r=await fetchNativeImage('x',3,'sha256-'+createHash('sha256').update('abc').digest('base64'),()=>{},async()=>{if(calls++===0)throw Error('network');return partial(Buffer.from('abc'),0,2,3)});assert.equal(await r.text(),'abc');assert.equal(calls,2)});
+
+test("an interrupted native download resumes exactly at the last received byte", async () => {
+  const ranges = [], progress = [];
+  const split = 310000;
+  const response = await download(async (_url, options) => {
+    ranges.push(options.headers?.Range);
+    if (ranges.length === 1) return whole(bytes.subarray(0, split));
+    return partial(bytes.subarray(split), split, bytes.length - 1);
+  }, received => progress.push(received));
+  assert.deepEqual(ranges, [undefined, `bytes=${split}-${bytes.length - 1}`]);
+  assert.deepEqual(progress, [split, bytes.length]);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+});
+
+test("a slow download stays alive as long as bytes are flowing", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const progress = [];
+  const response = await download(async (_url, options) => {
+    const body = new ReadableStream({
+      async pull(stream) {
+        if (!progress.length) {
+          t.mock.timers.tick(DOWNLOAD_IDLE_MS - 5000);
+          stream.enqueue(bytes.subarray(0, 1000));
+        } else {
+          t.mock.timers.tick(DOWNLOAD_IDLE_MS - 5000);
+          assert.equal(options.signal.aborted, false);
+          stream.enqueue(bytes.subarray(1000));
+          stream.close();
+        }
+      },
+    }, { highWaterMark: 0 });
+    return whole(body);
+  }, n => progress.push(n));
+  assert.deepEqual(progress, [1000, bytes.length]);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+});
+
+test("invalid ranges, truncated data, the wrong MIME and corrupted bytes cannot be cached", async () => {
+  const invalid = [
+    () => partial(bytes.subarray(1), 1, bytes.length - 1),
+    () => whole(bytes.subarray(0, 100)),
+    () => new Response("error", { headers: { "content-type": "text/html" } }),
+    () => whole(Buffer.alloc(bytes.length)),
+  ];
+  for (const fetcher of invalid) await assert.rejects(() => download(fetcher));
+});
+
+test("invalid manifests are rejected without fetching", async () => {
+  for (const [size, digest] of [[0, integrity], [9 * 1024 * 1024, integrity], [bytes.length, "invalid"]]) {
+    await assert.rejects(() => fetchVerifiedAsset(url, size, digest, () => {}, {
+      fetcher: async () => assert.fail("invalid manifest reached network"),
+    }), /清单/);
+  }
+});
+
+test("only revisioned public binary assets get a CDN cache key", () => {
+  const revision = "bead".repeat(8);
+  assert.equal(assetTransferURL(url, revision), `${url}?nwaxz_v=${revision}`);
+  for (const path of ["/assets/test.png", "/assets/test.glb", "/assets/test.mp4"]) {
+    assert.notEqual(assetTransferURL(`https://example.invalid${path}`, revision), `https://example.invalid${path}`);
+  }
+  for (const path of ["/sw.js", "/game-worker", "/index.html", "/preload-manifest.json", "/api/example.png"]) {
+    const original = `https://example.invalid${path}`;
+    assert.equal(assetTransferURL(original, revision), original);
+  }
+  assert.equal(assetTransferURL(url, null), url);
+});

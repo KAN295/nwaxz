@@ -28,6 +28,11 @@ test("release readiness, UTF-8, asset caching, and private-file isolation", asyn
   fs.writeFileSync(path.join(directory, "assets", "scenes", "versus-cover-v1.png"), cover);
   fs.writeFileSync(path.join(directory, ".env"), "private-value");
   fs.writeFileSync(path.join(directory, "sw.js"), 'self.addEventListener("install",()=>{})');
+  const materialPath = "/assets/materials/escape/01-wall-tile-v1.png";
+  const fingerprint = "a1234567".repeat(4);
+  fs.writeFileSync(path.join(directory, "preload-manifest.json"), JSON.stringify([
+    { url: materialPath.slice(1), revision: fingerprint },
+  ]));
   const server = createApp({
     distDir: directory,
     revision: "test-revision",
@@ -38,8 +43,8 @@ test("release readiness, UTF-8, asset caching, and private-file isolation", asyn
     server.close();
     fs.rmSync(directory, { recursive: true });
   });
-  const request = (url) =>
-    fetch(`http://127.0.0.1:${server.address().port}${url}`);
+  const request = (url, options) =>
+    fetch(`http://127.0.0.1:${server.address().port}${url}`, options);
   const health = await request("/api/health");
   assert.equal(health.status, 200);
   assert.equal(health.headers.get("cache-control"), "no-store");
@@ -63,10 +68,18 @@ test("release readiness, UTF-8, asset caching, and private-file isolation", asyn
     (await request("/assets/character/atlas.json")).headers.get("cache-control"),
     "no-cache",
   );
-  const material = await request("/assets/materials/escape/01-wall-tile-v1.png");
+  const material = await request(materialPath);
   assert.equal(material.headers.get("cache-control"),"no-cache, no-transform");
   assert.match(material.headers.get("content-type"),/image\/png/);
   assert.ok(Buffer.from(await material.arrayBuffer()).equals(original),"original PNG bytes survive HTTP delivery");
+  const versioned = await request(`${materialPath}?nwaxz_v=${fingerprint}`, { headers: { Range: "bytes=100-199" } });
+  assert.equal(versioned.status, 206);
+  assert.equal(versioned.headers.get("content-range"), `bytes 100-199/${original.length}`);
+  assert.equal(versioned.headers.get("cache-control"), "public, max-age=31536000, immutable, no-transform");
+  assert.deepEqual(Buffer.from(await versioned.arrayBuffer()), original.subarray(100, 200));
+  const retired = await request(`${materialPath}?nwaxz_v=${"0".repeat(32)}`);
+  assert.equal(retired.status, 404);
+  assert.equal(retired.headers.get("cache-control"), "no-store");
   const performance = await request("/assets/character/haunted-frog-extra-v3/laugh.png");
   assert.equal(performance.headers.get("cache-control"),"no-cache, no-transform");
   assert.match(performance.headers.get("content-type"),/image\/png/);

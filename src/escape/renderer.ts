@@ -16,7 +16,7 @@ import { aimCamera, CELL, createEscapeScene } from "./scene.ts";
 import { installEscapeModels } from "./models.ts";
 import { DOORS, type EscapeWorld } from "./world.ts";
 import { EscapeMap } from "./minimap.ts";
-import { withTimeout } from "../loading.ts";
+import { escapeAssetTimeout, withTimeout } from "../loading.ts";
 import { floorAt } from "./basement-map.ts";
 import type { CoopPlayer } from "./coop-protocol.ts";
 import { PeerActorsRenderer } from "./peers.ts";
@@ -114,13 +114,14 @@ export class EscapeRenderer {
   setReducedMotion(reduced: boolean) { this.reduced = reduced; this.models?.actor.setReducedMotion(reduced); }
   async load(onStage: (stage: string) => void = () => {}) {
     try {
+      const timeout = escapeAssetTimeout();
       onStage("正在摆放浴室里的物件…");
       for (const name of ["escape-props-v1.glb"]) {
         const task = LoadAssetContainerAsync(`/assets/models/${name}`, this.view.scene, { pluginOptions: { gltf: { animationStartMode: 0 } } }).then(container => {
           if (this.disposed) { container.dispose(); throw new Error("场景已关闭"); }
           return container;
         });
-        const container = await withTimeout(task, "浴室模型准备超时，请重试。");
+        const container = await withTimeout(task, "浴室模型准备超时，请重试。", timeout);
         this.applyPropSurfaces(container);
         this.containers.push(container);
       }
@@ -129,7 +130,7 @@ export class EscapeRenderer {
         let image: Texture;
         return withTimeout(new Promise<Texture>((resolve, reject) => {
           image = new Texture(url, this.view.scene, noMipmaps, true, noMipmaps ? Texture.BILINEAR_SAMPLINGMODE : Texture.TRILINEAR_SAMPLINGMODE, () => resolve(image), message => reject(new Error(message || "奶蛙贴图未能载入")));
-        }), "奶蛙贴图准备超时，请重试。");
+        }), "奶蛙贴图准备超时，请重试。", timeout);
       };
       const [original, actions, directionIdle, directionWalk] = await Promise.all([texture("/assets/character/haunted-frog-v1.webp"), texture("/assets/character/haunted-frog-actions-v2.webp"), texture("/assets/character/haunted-frog-directions-idle-v1.webp", true), texture("/assets/character/haunted-frog-directions-walk-v1.webp", true)]);
       const extra = Object.fromEntries(await Promise.all(Object.entries(FROG_EXTRA_ART).map(async ([key, art]) => [key, await texture(art.url, true)]))) as Pick<FrogTextures, keyof typeof FROG_EXTRA_ART>;
