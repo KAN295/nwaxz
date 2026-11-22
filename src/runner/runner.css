@@ -120,7 +120,6 @@
 .runner-toast b{display:block;font-size:22px;margin-bottom:2px;color:var(--gold)}
 .runner-toast[data-kind=magnet]{border-color:#ff7a6a}.runner-toast[data-kind=magnet] b{color:#ff9a8c}
 .runner-toast[data-kind=shield]{border-color:#5fe0ff}.runner-toast[data-kind=shield] b{color:#8ff0ff}
-.runner-toast[data-kind=spring]{border-color:#8af5ff}.runner-toast[data-kind=spring] b{color:#a8f8ff}
 .runner-toast.show{animation:runner-toast 1.8s ease-out forwards}
 @keyframes runner-toast{0%{opacity:0;transform:translateX(-50%) scale(.7)}12%{opacity:1;transform:translateX(-50%) scale(1.08)}20%{transform:translateX(-50%) scale(1)}80%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-14px)}}
 @media (prefers-reduced-motion:reduce){.runner-toast.show{animation:none}}

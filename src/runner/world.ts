@@ -7,8 +7,8 @@
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
 export type RunMode = "challenge" | "endless";
-export type RunObstacleKind = "block" | "gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
-export type RunPowerKind = "magnet" | "shield" | "boost" | "spring";
+export type RunObstacleKind = "block" | "gap" | "beam" | "spikes" | "boulder" | "fire";
+export type RunPowerKind = "magnet" | "shield" | "boost";
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
@@ -16,8 +16,8 @@ export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; 
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "beam", "spikes", "boulder", "fire", "trap"];
-const POWERS: readonly string[] = ["magnet", "shield", "boost", "spring"];
+const OBSTACLES: readonly string[] = ["block", "gap", "beam", "spikes", "boulder", "fire"];
+const POWERS: readonly string[] = ["magnet", "shield", "boost"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => POWERS.includes(kind);
 
@@ -47,9 +47,9 @@ const TURN_LATE = 1.5;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .8 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7 };
 /** Half depth along the route. */
-const DEPTH: Record<RunObstacleKind, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: .8 };
+const DEPTH: Record<RunObstacleKind, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6 };
 
 export function weatherAt(seed: number, distance: number): RunWeather {
   let hash = (seed ^ Math.imul(Math.floor(distance / 300) + 1, 0x45d9f3b)) >>> 0;
@@ -77,7 +77,6 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   spikes: ["踩中了地刺", "换到别的道，或者跳过去。"],
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
   fire: ["碰到了火焰", "换到别的道，或者跳过去。"],
-  trap: ["掉进了落穴", "留意地面的活动陷阱，及时跳开。"],
 };
 
 export class RunnerWorld {
@@ -116,12 +115,6 @@ export class RunnerWorld {
   lastPower: RunPowerKind = "magnet";
   shieldSaves = 0;
   stumbles = 0;
-  wallHits = 0;
-  wallHitTime = -10;
-  trapFalls = 0;
-  springCharges = 0;
-  springSaves = 0;
-  wallHitSide: "left" | "right" | "" = "";
 
   private altitude = 0;
   private verticalSpeed = 0;
@@ -269,56 +262,28 @@ export class RunnerWorld {
   private touchPower(item: RunItem, kind: RunPowerKind) {
     if (Math.abs(item.z - this.distance) > .9 || Math.abs(item.lane - this.position) > .55) return;
     item.done = true; this.powerPicked++; this.lastPower = kind;
-    if (kind !== "spring") this[kind] = kind === "shield" ? 20 : kind === "magnet" ? 10 : 5;
+    this[kind] = kind === "shield" ? 20 : kind === "magnet" ? 10 : 5;
     if (kind === "boost") { this.danger = 0; this.stumble = 0; }
-    if (kind === "spring") this.springCharges = 1;
   }
 
   /** Returns false when the run ended. */
   private touchObstacle(item: RunItem, kind: RunObstacleKind) {
     const ahead = item.z - this.distance, depth = DEPTH[kind];
-    if (ahead < -depth) { if (kind === "trap" && !item.done) { item.done = true; this.trapFalls++; } else item.done = true; return true; }
+    if (ahead < -depth) { item.done = true; return true; }
     if (ahead > depth) return true;
     if (item.span !== 3 && Math.abs(item.lane - this.position) > .6) return true;
     const clear = kind === "beam" ? this.slide > 0 && !this.airborne : this.altitude > CLEARANCE[kind];
-    if (clear || this.boost > 0 || this.grace > 0) {
-      if (kind === "trap" && clear && this.boost === 0 && this.grace === 0) item.done = true;
-      return true;
-    }
+    if (clear || this.boost > 0 || this.grace > 0) return true;
 
     item.done = true; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
     if (this.shield > 0) { this.shield = 0; this.grace = GRACE_TIME; this.shieldSaves++; return true; }
-    if (kind === "trap") {
-      this.trapFalls++;
-      if (this.springCharges > 0 && this.danger === 0) {
-        this.springCharges = 0; this.springSaves++; this.hitWall(this.position < 1 ? "left" : "right");
-        this.danger = DANGER_TIME; this.stumble = .85; this.grace = GRACE_TIME; this.stumbles++;
-      } else {
-        if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
-        this.stumble = .85; this.grace = GRACE_TIME;
-      }
-      this.lane = this.lane < 1 ? 1 : this.lane - 1; return true;
-    }
     const recoverable = item.span !== 3 && (kind === "block" || kind === "beam");
-    if (!recoverable) {
-      const [reason, hint] = FAIL_TEXT[kind];
-      if (this.springCharges > 0) {
-        this.springCharges = 0; this.springSaves++; this.hitWall(this.position < 1 ? "left" : "right");
-        this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++; return true;
-      }
-      this.fail(reason, hint); return false;
-    }
+    if (!recoverable) { const [reason, hint] = FAIL_TEXT[kind]; this.fail(reason, hint); return false; }
     if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
     this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
-    if (Math.abs(this.position - item.lane) < .7 && (this.position < .25 || this.position > 1.75)) this.hitWall(this.position < 1 ? "left" : "right");
     // Bumping a lane obstacle knocks the dog back toward the lane it came from.
     if (Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
     return true;
-  }
-
-  private hitWall(side: "left" | "right") {
-    this.wallHits++; this.wallHitSide = side; this.wallHitTime = this.elapsed;
-    this.hitAt = this.elapsed; this.stumble = 1; this.grace = GRACE_TIME;
   }
 
   private fail(reason: string, hint: string) { this.phase = "caught"; this.captureTime = 0; this.reason = reason; this.deathHint = hint; }
@@ -357,10 +322,10 @@ export class RunnerWorld {
       // Warm-up: one crate in the middle lane, then one on a side.
       this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "block");
       free = pattern === 0 ? this.pick([0, 2]) : 1;
-    } else if (roll < .36 - difficulty * .08) {
+    } else if (roll < .3 - difficulty * .1) {
       // One lane obstacle.
       const lane = Math.floor(this.random() * 3);
-      this.add(z, lane, this.pick(["block", "block", "beam", "spikes", "fire", "trap"] as const));
+      this.add(z, lane, this.pick(["block", "block", "beam", "spikes", "fire"] as const));
       free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
     } else if (roll < .62) {
       // Two lanes blocked, one way through.
@@ -376,7 +341,7 @@ export class RunnerWorld {
     if (jumpArc) for (let i = -2; i <= 2; i++) this.add(z + i * 1.8, free, "coin", { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
     else for (let i = 0; i < 5; i++) this.add(z - 10 + i * 2.6, free, "coin");
 
-    if (pattern > 3 && pattern % 5 === 0) this.add(z + 9, free, (["shield", "magnet", "boost", "spring"] as const)[this.powerIndex++ % 4]);
+    if (pattern > 3 && pattern % 6 === 0) this.add(z + 9, free, (["shield", "magnet", "boost"] as const)[this.powerIndex++ % 3]);
   }
 }
 
