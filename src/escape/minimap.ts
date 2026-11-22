@@ -167,7 +167,8 @@ export class EscapeMap {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.font = `bold ${Math.max(7, Math.min(compact ? 9 : 12, Math.floor(cell * .78)))}px 'Microsoft YaHei', sans-serif`;
+    // Full map: room names scale with the cell size and use the bundled game serif.
+    ctx.font = `bold ${Math.max(7, Math.min(compact ? 9 : 26, Math.floor(cell * (compact ? .78 : .95))))}px 'Escape Serif', 'Songti SC', 'SimSun', serif`;
     for (const room of ROOMS) {
       const centerX = Math.floor(room.x + room.w / 2), centerZ = Math.floor(room.z + room.h / 2);
       if (floorAt({ x: centerX, z: centerZ }) !== floor) continue;
@@ -442,16 +443,16 @@ export class EscapeMap {
 
   private drawCompass(ctx: CanvasRenderingContext2D, width: number, height: number,
     compact: boolean, padding: number) {
-    const font = Math.max(7, Math.floor((compact ? padding : padding * .6) * .55));
-    ctx.font = `bold ${font}px monospace`;
+    const font = Math.max(8, Math.floor((compact ? padding : padding * .6) * .62));
+    ctx.font = `bold ${font}px 'Escape Serif', 'Songti SC', 'SimSun', serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillStyle = "#d8c28d";
     const offset = Math.max(font, Math.floor(padding * .48));
-    ctx.fillText("N", width / 2, offset);
-    ctx.fillText("S", width / 2, height - offset);
-    ctx.fillText("W", offset, height / 2);
-    ctx.fillText("E", width - offset, height / 2);
+    ctx.fillText("北", width / 2, offset);
+    ctx.fillText("南", width / 2, height - offset);
+    ctx.fillText("西", offset, height / 2);
+    ctx.fillText("东", width - offset, height / 2);
   }
 }
 

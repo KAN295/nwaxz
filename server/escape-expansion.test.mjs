@@ -82,3 +82,19 @@ test('glass does not repeatedly ring while standing on it and rearms only after 
   assert.equal(quiet.drainEvents().filter(e=>e.type==='noise').length,0);
   assert.equal(quiet.data.hunter.state,'patrol');
 });
+
+test("the HUD goal walks the whole escape chain in plain language", () => {
+  const w = new EscapeWorld(); const d = w.data;
+  const steps = [];
+  const record = () => { const goal = w.nextGoal; assert.ok(goal.length > 4); if (steps.at(-1) !== goal) steps.push(goal); };
+  record(); assert.match(w.nextGoal, /床头抽屉/);
+  d.inventory.push("brass"); record(); assert.match(w.nextGoal, /档案室/);
+  d.opened.push("study"); record(); d.inventory.push("cellar"); record(); assert.match(w.nextGoal, /保险丝/);
+  d.inventory.push("fuse"); record(); d.power = true; record(); assert.match(w.nextGoal, /检修门/);
+  d.opened.push("cellar"); record(); d.inventory.push("cutters"); record(); assert.match(w.nextGoal, /手轮/);
+  d.inventory.push("handwheel"); record(); assert.match(w.nextGoal, /冷水/);
+  d.expansion.valves = ["valve-cold", "valve-return", "valve-vent"]; record(); assert.match(w.nextGoal, /排水阀/);
+  d.drained = true; record(); d.inventory.push("relay"); record(); d.basement.power = true; record(); assert.match(w.nextGoal, /污水闸/);
+  d.basement.sluice = true; record(); assert.match(w.nextGoal, /铁网/);
+  assert.equal(new Set(steps).size, steps.length);
+});

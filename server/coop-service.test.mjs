@@ -350,6 +350,11 @@ test("capture is private, waits for respawn acknowledgement, and preserves the t
     assert.throws(() => s.input(a.code, b.token, { seq: 1, move: { forward: 0, strafe: 0, turn: 0, look: 0, sprint: false } }), e => e.status === 409);
     s.respawn(a.code, b.token);
     assert.equal(victim.status, "connected"); assert.equal(room.world.data.elapsed, elapsed);
+    // A respawned player must be able to move again straight away.
+    Object.assign(room.world.data.hunter, { x: 20.5, z: 20.5 });
+    const start = { ...victim.actorWorld.data.player };
+    for (let seq = 2; seq < 22; seq++) { s.input(a.code, b.token, { seq, move: { forward: 1, strafe: 0, turn: 0, look: 0, sprint: false }, aim: { angle: Math.PI / 2, pitch: 0 } }); advance(50); s.pulse(); }
+    assert.ok(Math.hypot(victim.actorWorld.data.player.x - start.x, victim.actorWorld.data.player.z - start.z) > .8);
     victim.status = "eliminated";
     assert.equal(s.snapshot(room, victim).viewPlayerId, a.playerId);
   } finally { s.close(); }
