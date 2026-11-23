@@ -135,13 +135,13 @@ export class AudioManager {
     this.musicOffset = 0;
     this.syncMusic();
   }
-  haunt(): void { void this.playHaunt(); }
-  private async playHaunt(preview = false): Promise<boolean> {
+  haunt({ allowNormalMode = false } = {}): void { void this.playHaunt(false, allowNormalMode); }
+  private async playHaunt(preview = false, allowNormalMode = false): Promise<boolean> {
     const generation = this.effectGeneration;
-    if (!this.scaryMode || (!preview && !this.settings.sound) || this.disposed || document.hidden) return false;
+    if ((!allowNormalMode && !this.scaryMode) || (!preview && !this.settings.sound) || this.disposed || document.hidden) return false;
     if (!await this.unlock()) return false;
     const buffer = await this.loadRecording("laugh"), context = this.context;
-    if (!buffer || generation !== this.effectGeneration || (!preview && !this.settings.sound) || !this.scaryMode || this.disposed || document.hidden || context?.state !== "running") { this.releasePlaybackIfIdle(); return false; }
+    if (!buffer || generation !== this.effectGeneration || (!preview && !this.settings.sound) || (!allowNormalMode && !this.scaryMode) || this.disposed || document.hidden || context?.state !== "running") { this.releasePlaybackIfIdle(); return false; }
     this.playback.activate();
     const source = context.createBufferSource(), gain = context.createGain();
     source.buffer = buffer; gain.gain.setValueAtTime(.32, context.currentTime);

@@ -55,7 +55,7 @@ export default defineConfig({
       injectManifest: {
         additionalManifestEntries: extraPrecacheEntries,
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
-        globPatterns: ["**/*.{js,css,html,svg,png,webp,json,woff2,mp3,mp4,glb}"],
+        globPatterns: ["**/*.{js,css,html,svg,png,webp,json,woff2,mp3,mp4,glb}", "assets/runner/qs2027/*.jpg"],
         // Legacy sprite masters stay published; the new map surfaces use original PNGs.
         globIgnores: [
           "assets/character/milk-frog-atlas.png",

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { surfacePaths } from "../src/escape/material-assets.ts";
 import { FROG_EXTRA_ART } from "../src/escape/extra-art.ts";
+import { DOG_LOOKS } from "../src/runner/shop.ts";
 
 test("escape lobby does not statically import the 3D renderer or engine", () => {
   const graph = JSON.parse(fs.readFileSync(new URL("../dist/.vite/manifest.json", import.meta.url), "utf8"));
@@ -27,6 +28,11 @@ test("complete-offline inventory covers revisioned resources while the startup s
   assert.ok(startup.every(entry => !/\.(?:mp4|png|glb)$/.test(entry.url)), "unrelated original paintings, models and movies never gate first launch");
   assert.ok(worker.includes("PREPARE_GAME"));
   assert.equal(new Set(manifest.map(entry => entry.url)).size, manifest.length);
+  const offline = new Set(manifest.map(entry => `/${entry.url}`));
+  for (const look of DOG_LOOKS) {
+    assert.ok(offline.has(look.sprite), `${look.name} atlas must be available offline`);
+    assert.ok(offline.has(look.logo), `${look.name} logo must be available offline`);
+  }
   for (const entry of manifest) {
     const content = fs.readFileSync(new URL(`../dist/${entry.url}`, import.meta.url));
     assert.equal(entry.bytes, content.length, `${entry.url} progress size`);

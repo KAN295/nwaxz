@@ -20,7 +20,7 @@ import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { chaserFrame, dogPose } from "./animation.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { LANE_WIDTH, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
+import { isRunObstacle, LANE_WIDTH, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -70,7 +70,6 @@ export class RunnerRenderer3D {
   private skies: { day: Texture; night: Texture }[] = [];
   private shadow: Mesh;
   private schoolSheet?: Texture;
-  private schoolLoad = 0;
   private rain: AbstractMesh[] = [];
   private snow: AbstractMesh[] = [];
   private streaks: AbstractMesh[] = [];
@@ -84,6 +83,7 @@ export class RunnerRenderer3D {
   private magic: ParticleSystem;
   private fireEmbers: ParticleSystem;
   private fireSmoke: ParticleSystem;
+  private fireParticleTime = 0;
   private coinMats: Record<"silver" | "gold" | "diamond", StandardMaterial>;
   private dogLook = "original";
   private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0 };
@@ -345,23 +345,11 @@ export class RunnerRenderer3D {
     const ratio = Math.min(devicePixelRatio || 1, this.settings.quality === "high" ? 2 : 1.25);
     this.engine.setSize(Math.max(1, Math.round(rect.width * ratio)), Math.max(1, Math.round(rect.height * ratio)));
   }
-  async setDogLook(id: string) {
-    const look = getDogLook(id);
-    const request = ++this.schoolLoad;
-    if (!("sprite" in look)) {
-      this.schoolSheet?.dispose();
-      this.schoolSheet = undefined;
-      this.dogLook = "original";
-      return;
-    }
-    try {
-      const image = await loadImage(look.sprite);
-      if (this.disposed || request !== this.schoolLoad) return;
-      this.schoolSheet?.dispose();
-      this.schoolSheet = sheetTexture(this.scene, image.src);
-      this.dogLook = look.id;
-      return image;
-    } catch { return undefined; }
+  setDogLook(id: string, image?: HTMLImageElement) {
+    if (this.disposed) return;
+    this.schoolSheet?.dispose();
+    this.schoolSheet = image ? sheetTexture(this.scene, image.src) : undefined;
+    this.dogLook = image ? id : "original";
   }
 
   // ---------- static geometry ----------
@@ -598,7 +586,7 @@ export class RunnerRenderer3D {
     this.drawAtmosphere(theme, look, night, weather);
     this.drawRoad(world);
     this.drawCorners(world);
-    this.drawProps(world, t);
+    this.drawProps(world, t, dt);
 
     // Dog. A late turn press inside the curve blends from the straight line onto the arc.
     if (world.turnCount !== this.seen.turns) {
@@ -673,6 +661,7 @@ export class RunnerRenderer3D {
     this.routeVersion = -1;
     this.lastWorld = world;
     this.lastTime = 0;
+    this.fireParticleTime = 0;
     this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount };
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
@@ -748,9 +737,12 @@ export class RunnerRenderer3D {
     }
   }
 
-  private drawProps(world: RunnerWorld, t: number) {
+  private drawProps(world: RunnerWorld, t: number, dt: number) {
     const visible = new Set<number>();
-    for (const item of world.items) if ((!item.done || world.trapFall && (item.kind === "trap" || item.kind === "gap")) && item.z > world.distance - 8 && item.z < world.distance + 155) visible.add(item.id);
+    for (const item of world.items) {
+      if (item.z <= world.distance - 8 || item.z >= world.distance + 155) continue;
+      if (!item.done || isRunObstacle(item.kind)) visible.add(item.id);
+    }
     for (const [id, root] of this.props) if (!visible.has(id)) { root.dispose(); this.props.delete(id); }
     for (const item of world.items) {
       if (!visible.has(item.id)) continue;
@@ -783,14 +775,18 @@ export class RunnerRenderer3D {
         plank.setEnabled(fall < .85);
       }
     }
-    const fire = world.items.find(item => item.kind === "fire" && !item.done && item.z > world.distance - 2 && item.z < world.distance + 22);
-    if (fire) {
-      const at = this.place(fire.z, (fire.lane - (fire.span === 2 ? .5 : 1)) * LANE_WIDTH);
-      (this.fireEmbers.emitter as Vector3).set(at.x, .55, at.z);
-      (this.fireSmoke.emitter as Vector3).set(at.x, 1.1, at.z);
-      this.fireEmbers.manualEmitCount += this.settings.reducedMotion ? 1 : 3;
-      this.fireSmoke.manualEmitCount += this.settings.reducedMotion ? 0 : 1;
-    }
+    if (world.phase !== "running") return;
+    const fire = world.items.find(item => item.kind === "fire" && item.z > world.distance - 2 && item.z < world.distance + 22);
+    if (!fire) { this.fireParticleTime = 0; return; }
+    this.fireParticleTime += dt * 60;
+    const ticks = Math.floor(this.fireParticleTime);
+    if (!ticks) return;
+    this.fireParticleTime -= ticks;
+    const at = this.place(fire.z, (fire.lane - (fire.span === 2 ? .5 : 1)) * LANE_WIDTH);
+    (this.fireEmbers.emitter as Vector3).set(at.x, .55, at.z);
+    (this.fireSmoke.emitter as Vector3).set(at.x, 1.1, at.z);
+    this.fireEmbers.manualEmitCount += ticks * (this.settings.reducedMotion ? 1 : 3);
+    if (!this.settings.reducedMotion) this.fireSmoke.manualEmitCount += ticks;
   }
 
   private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean) {

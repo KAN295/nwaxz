@@ -33,6 +33,8 @@ export class RunnerGame {
   private credited: CurrencyPurse = { silver: 0, gold: 0, diamond: 0 };
   private shopOpen = false;
   private shopQuery = "";
+  private shopError = "";
+  private pendingSkin?: { id: string };
   private shopObserver?: IntersectionObserver;
   private recordError = false;
   private renderer?: RunnerRenderer3D;
@@ -48,7 +50,6 @@ export class RunnerGame {
   private shownPhase: RunPhase | "loading" = "loading";
   private art: { dog?: HTMLImageElement; frog?: HTMLImageElement; laugh?: HTMLImageElement } = {};
   private skinPortrait?: HTMLImageElement;
-  private portraitRequest = 0;
   private swipe?: { x: number; y: number; id: number; used: boolean };
   private warnedTurn = -1;
   private urgentTurn = -1;
@@ -131,7 +132,13 @@ export class RunnerGame {
       this.renderer?.dispose();
       this.renderer = new module.RunnerRenderer3D(this.el.canvas, this.settings);
       await this.renderer.load();
-      await this.applyDogLook(this.wardrobe.equipped);
+      const look = getDogLook(this.wardrobe.equipped);
+      if ("sprite" in look) {
+        try {
+          const image = await loadImage(look.sprite, 15000);
+          if (!this.destroyed) this.applyDogLook(look.id, image);
+        } catch { this.shopError = "已装备的皮肤暂时加载失败，请在商城重试。"; }
+      }
       if (this.destroyed) { this.renderer.dispose(); return; }
       this.el.main.dataset.engine = "babylon";
       this.ready = true; this.shownPhase = "ready"; this.showPanel();
@@ -178,7 +185,7 @@ export class RunnerGame {
       case "calibrate": this.tilt.calibrate(); this.gyroMessage = "已重新校准"; this.showPanel(); return;
       case "help": this.showHelp(); return;
       case "shop": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.shopOpen = true; this.shopQuery = ""; this.showPanel(); } return;
-      case "shop-back": this.shopOpen = false; this.showPanel(); return;
+      case "shop-back": this.closeShop(); return;
       case "help-back": this.showPanel(); return;
       case "retry-art": void this.load(); return;
       case "skip-capture": this.world.finishCapture(); return;
@@ -193,11 +200,19 @@ export class RunnerGame {
       const index = RUN_SCENES.findIndex(scene => `scene-${scene.id}` === action);
       if (index >= 0) { this.sceneChoice = index; this.newWorld(); this.showPanel(); }
     }
-    if (action.startsWith("buy-") || action.startsWith("equip-")) this.chooseLook(action);
+    if (action.startsWith("buy-") || action.startsWith("equip-")) void this.chooseLook(action);
   };
 
   private onKey = (event: KeyboardEvent) => {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.target instanceof HTMLInputElement) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (this.shopOpen) {
+      if (event.key === "Escape" && !event.repeat) {
+        event.preventDefault();
+        this.closeShop();
+      }
+      return;
+    }
+    if (event.target instanceof HTMLInputElement) return;
     const phase = this.world.phase;
     if (event.key === "Escape" || event.key === "p" || event.key === "P") {
       event.preventDefault(); if (event.repeat) return;
@@ -319,15 +334,18 @@ export class RunnerGame {
     if (w.shieldSaves !== this.seenEvents.shield) { this.seenEvents.shield = w.shieldSaves; this.toast("<b>护盾</b>挡住了撞击！", "shield"); }
     if (w.stumbles > this.seenEvents.stumble) {
       this.seenEvents.stumble = w.stumbles;
-      this.audio.setMode("horror"); this.audio.haunt();
-    } else if (w.phase === "running" && w.danger === 0) this.audio.setMode("normal");
+      this.audio.haunt({ allowNormalMode: true });
+    }
     el.capture.hidden = w.phase !== "caught";
     if (w.phase === "caught") set(el.capture.querySelector("strong")!, w.reason);
 
     if (this.ready && this.shownPhase !== w.phase) {
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); }
       if (w.phase === "won") this.audio.effect("win");
-      if (w.phase === "caught" && this.shownPhase === "running") { this.audio.setMode("horror"); this.audio.haunt(); if (this.settings.vibration) navigator.vibrate?.(180); }
+      if (w.phase === "caught" && this.shownPhase === "running") {
+        if (!w.trapFall) this.audio.haunt({ allowNormalMode: true });
+        if (this.settings.vibration) navigator.vibrate?.(180);
+      }
       this.shownPhase = w.phase; this.showPanel();
     }
   }
@@ -360,9 +378,14 @@ export class RunnerGame {
 
   // ---------- records ----------
 
-  private persistWardrobe() {
-    try { localStorage.setItem(WARDROBE_KEY, JSON.stringify({ version: 2, ...this.wardrobe })); }
-    catch { this.recordError = true; }
+  private persistWardrobe(wardrobe = this.wardrobe) {
+    try {
+      localStorage.setItem(WARDROBE_KEY, JSON.stringify({ version: 2, ...wardrobe }));
+      return true;
+    } catch {
+      this.recordError = true;
+      return false;
+    }
   }
   private creditCollectedCoins() {
     let changed = false;
@@ -372,21 +395,44 @@ export class RunnerGame {
     }
     if (changed) this.persistWardrobe();
   }
-  private chooseLook(action: string) {
-    if (!this.shopOpen) return;
+  private async chooseLook(action: string) {
+    if (!this.shopOpen || this.pendingSkin) return;
     const buying = action.startsWith("buy-");
     const id = action.slice(buying ? 4 : 6);
     const look = id === ORIGINAL_LOOK.id ? ORIGINAL_LOOK : DOG_LOOKS.find(item => item.id === id);
     if (!look || buying && id === ORIGINAL_LOOK.id) return;
+    const next = { ...this.wardrobe, owned: [...this.wardrobe.owned], equipped: id };
     if (buying) {
       const price = "price" in look ? look.price : {};
-      if (this.wardrobe.owned.includes(look.id) || !canAfford(this.wardrobe, price)) return;
-      for (const key of ["silver", "gold", "diamond"] as const) this.wardrobe[key] -= price[key] ?? 0;
-      this.wardrobe.owned.push(look.id);
-    } else if (!this.wardrobe.owned.includes(look.id)) return;
-    this.wardrobe.equipped = look.id;
-    void this.applyDogLook(look.id);
-    this.persistWardrobe(); this.showPanel();
+      if (next.owned.includes(id) || !canAfford(next, price)) return;
+      for (const key of ["silver", "gold", "diamond"] as const) next[key] -= price[key] ?? 0;
+      next.owned.push(id);
+    } else if (!next.owned.includes(id)) return;
+
+    const pending = this.pendingSkin = { id };
+    this.shopError = "";
+    this.showPanel();
+    try {
+      const image = "sprite" in look ? await loadImage(look.sprite, 15000) : undefined;
+      if (this.destroyed || this.pendingSkin !== pending) return;
+      if (!this.persistWardrobe(next)) { this.shopError = "皮肤未能保存，请重试。"; return; }
+      this.wardrobe = next;
+      this.applyDogLook(id, image);
+    } catch {
+      if (this.pendingSkin === pending) this.shopError = "皮肤加载失败，请重试。";
+    } finally {
+      if (this.pendingSkin === pending) {
+        this.pendingSkin = undefined;
+        if (!this.destroyed) this.showPanel();
+      }
+    }
+  }
+
+  private closeShop() {
+    this.pendingSkin = undefined;
+    this.shopOpen = false;
+    this.showPanel();
+    this.el.panel.querySelector<HTMLButtonElement>('[data-run="shop"]')?.focus();
   }
 
   private filterShop() {
@@ -397,10 +443,9 @@ export class RunnerGame {
     }
   }
 
-  private async applyDogLook(id: string) {
-    const request = ++this.portraitRequest;
-    const image = await this.renderer?.setDogLook(id);
-    if (!this.destroyed && request === this.portraitRequest) this.skinPortrait = image;
+  private applyDogLook(id: string, image?: HTMLImageElement) {
+    this.renderer?.setDogLook(id, image);
+    this.skinPortrait = image;
   }
 
   private recordKey() { return this.mode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY; }
@@ -434,13 +479,19 @@ export class RunnerGame {
     if (!this.ready) {
       html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div>`}${btn("exit", "返回", "ghost")}`;
     } else if (this.shopOpen) {
+      const pending = this.pendingSkin?.id;
+      const status = pending ? "正在加载皮肤…" : this.shopError;
+      const originalActive = this.wardrobe.equipped === ORIGINAL_LOOK.id;
       html = `<h2>皮肤商城</h2><p>QS 2027 · 世界大学前 100 名（含并列 102 所）</p><p>银币 ${this.wardrobe.silver}　金币 ${this.wardrobe.gold}　钻石 ${this.wardrobe.diamond}</p>
         <input class="runner-shop-search" type="search" placeholder="搜索学校或名次" aria-label="搜索学校或名次">
-        <div class="runner-shop-list"><div class="runner-shop-item" data-skin-id="original"><span class="runner-shop-swatch" style="--skin:#fff"></span><div><strong>默认奶狗</strong><small>原本的奶狗形象</small></div><button data-run="equip-original" ${this.wardrobe.equipped === "original" ? "disabled" : ""}>${this.wardrobe.equipped === "original" ? "使用中" : "装备"}</button></div>${DOG_LOOKS.map(look => {
-          const owned = this.wardrobe.owned.includes(look.id), active = this.wardrobe.equipped === look.id;
+        <div class="runner-shop-list"><div class="runner-shop-item" data-skin-id="original"><span class="runner-shop-swatch" style="--skin:#fff"></span><div><strong>默认奶狗</strong><small>原本的奶狗形象</small></div><button data-run="equip-original" ${pending || originalActive ? "disabled" : ""}>${originalActive ? "使用中" : "装备"}</button></div>${DOG_LOOKS.map(look => {
+          const owned = this.wardrobe.owned.includes(look.id);
+          const active = this.wardrobe.equipped === look.id && !!this.skinPortrait;
           const cost = (Object.entries(look.price) as [keyof CurrencyPurse, number][]).map(([key, n]) => `${n}${{ silver: "银币", gold: "金币", diamond: "钻石" }[key]}`).join(" · ");
-          return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-preview" style="--skin:${look.color}" data-sprite="${look.sprite}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${active || !owned && !canAfford(this.wardrobe, look.price) ? "disabled" : ""}>${active ? "使用中" : owned ? "装备" : "解锁"}</button></div>`;
-        }).join("")}</div>${btn("shop-back", "返回", "ghost")}${note}`;
+          const disabled = !!pending || active || !owned && !canAfford(this.wardrobe, look.price);
+          const label = active ? "使用中" : owned ? "装备" : "解锁";
+          return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-preview" style="--skin:${look.color}" data-sprite="${look.sprite}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
+        }).join("")}</div>${status ? `<p class="runner-note" role="status">${status}</p>` : ""}${btn("shop-back", "返回", "ghost")}${note}`;
     } else if (w.phase === "ready") {
       const toggle = (action: string, label: string, on: boolean) => `<button data-run="${action}" aria-pressed="${on}">${label}</button>`;
       html = `
