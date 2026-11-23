@@ -1,5 +1,24 @@
+export const PUBLIC_GAME_ORIGIN = 'https://nwaxz.bzlom.cn';
+export const PUBLIC_ROUTES = [
+  {id:'direct', name:'奶娃月泉', label:'直连', host:'play.bzlom.cn'},
+  {id:'primary', name:'奶娃浴场', label:'主站', host:'nwaxz.bzlom.cn'},
+] as const;
+export type PublicRouteId = typeof PUBLIC_ROUTES[number]['id'];
+export type RouteLatencies = Partial<Record<PublicRouteId, number | null>>;
+export const HIGH_LATENCY_MS = 250;
+
+/** Time only the application echo. DNS, TLS and the WebSocket upgrade finish before this timer starts. */
+export async function measureRoomRoute(host:string):Promise<number|null> {
+  let latency=0;
+  try {
+    const socket=await firstReadyRoomSocket([new URL(`wss://${host}/api/coop/AAAAAA/socket`)],new AbortController().signal,ms=>{latency=ms;});
+    socket.close();
+    return latency;
+  } catch { return null; }
+}
+
 /** Race an application round trip on each open socket before handing either one a room token. */
-export function firstReadyRoomSocket(routes: URL[], signal: AbortSignal): Promise<WebSocket> {
+export function firstReadyRoomSocket(routes: URL[], signal: AbortSignal, measured?:(latency:number)=>void): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const candidates = new Set<WebSocket>();
     let settled = false;
@@ -23,9 +42,10 @@ export function firstReadyRoomSocket(routes: URL[], signal: AbortSignal): Promis
       let ws: WebSocket;
       try { ws = new WebSocket(route); } catch { continue; }
       candidates.add(ws);
-      ws.onopen = () => ws.send('{"type":"probe"}');
+      let sentAt=0;
+      ws.onopen = () => {sentAt=performance.now();ws.send('{"type":"probe"}');};
       ws.onmessage = e => {
-        try { if (JSON.parse(e.data)?.type === 'route-ready') { finish(ws); return; } } catch { /* unusable endpoint */ }
+        try { if (JSON.parse(e.data)?.type === 'route-ready') { measured?.(Math.round(performance.now()-sentAt));finish(ws); return; } } catch { /* unusable endpoint */ }
         ws.close();
       };
       ws.onclose = () => {

@@ -1,7 +1,7 @@
 import type { CoopCreateRequest, CoopInput, CoopJoinRequest, CoopSessionResponse, CoopSnapshot } from './coop-protocol.ts';
 import {version as APP_VERSION} from '../../package.json';
 import { applyCoopSnapshot } from './coop-snapshot.ts';
-import { firstReadyRoomSocket } from './public-route.ts';
+import { firstReadyRoomSocket, PUBLIC_GAME_ORIGIN, PUBLIC_ROUTES, type PublicRouteId } from './public-route.ts';
 export type CoopConnectionState='connecting'|'connected'|'reconnecting'|'offline'|'closed';
 class CommandError extends Error { constructor(message:string,readonly status:number){super(message);} }
 
@@ -12,6 +12,7 @@ export class CoopClient {
  private socket?:CoopSocket;
  private routeAttempt?:AbortController;
  private primaryNext=false;
+ preferredRoute?:PublicRouteId;
  private alive=false; private connected=false; private inputTimer=0; private pingTimer=0; private retryTimer=0;
  private lastPacketAt=0; private pinging=false;
  private seq=0; private requestId=0; private lastInputAt=0; private lastSignature='';
@@ -39,11 +40,11 @@ export class CoopClient {
   const url=new URL(`${this.base}/${encodeURIComponent(this.session.code)}/socket`,location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
   let ws:CoopSocket;
   let direct=false;
-  if(!this.link && location.origin==='https://nwaxz.bzlom.cn' && url.origin==='wss://nwaxz.bzlom.cn' && !this.primaryNext){
+  if(!this.link && location.origin===PUBLIC_GAME_ORIGIN && url.origin==='wss://nwaxz.bzlom.cn' && this.preferredRoute!=='primary' && !this.primaryNext){
    const attempt=new AbortController();this.routeAttempt=attempt;
-   const alternate=new URL(url);alternate.hostname='play.bzlom.cn';
+   const alternate=new URL(url);alternate.hostname=PUBLIC_ROUTES[0].host;
    try {
-    const selected=await firstReadyRoomSocket([alternate,url],attempt.signal);
+    const selected=await firstReadyRoomSocket(this.preferredRoute==='direct'?[alternate]:[alternate,url],attempt.signal);
     if(attempt.signal.aborted){selected.close();return;}
     ws=selected;direct=selected.url===alternate.href;
    } catch {

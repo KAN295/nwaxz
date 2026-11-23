@@ -1,5 +1,6 @@
 import type { CoopPlayer, CoopRoomView } from "./coop-protocol.ts";
 import { DEFAULT_HUNTER_DIFFICULTY } from "./hunter-search-model.ts";
+import { PUBLIC_ROUTES, HIGH_LATENCY_MS, type PublicRouteId, type RouteLatencies } from "./public-route.ts";
 
 export type LobbyScreen = "home" | "servers" | "room" | "friends" | "profile" | "solo" | "settings" | "saves" | "controls" | "restart" | "closed";
 export type LobbyProfile = { uid: string; name: string; avatar: number };
@@ -13,6 +14,8 @@ export type LobbyModel = {
   version?: string;
   selfPlayerId?: string;
   network?: "online" | "lan";
+  routeLatencies?:RouteLatencies;
+  preferredRoute?:PublicRouteId;
   screen: LobbyScreen;
   servers: LobbyServer[];
   rooms: LobbyRoom[];
@@ -34,6 +37,7 @@ export type LobbyModel = {
 };
 export type LobbyActions = {
   network?(mode:"online"|"lan"):void;
+  selectRoute?(id?:PublicRouteId):void;
   screen(name: LobbyScreen): void;
   create(input: { name: string; visibility: "public" | "private"; password?: string }): void;
   join(code: string, password?: string): void;
@@ -72,7 +76,7 @@ export function renderLobbyView(container: HTMLElement, model: LobbyModel, actio
   const subScreen = ["solo", "settings", "saves", "controls", "restart", "closed"].includes(model.screen);
   const activeMainScreen = subScreen ? undefined : (["friends", "profile"].includes(model.screen) ? model.screen : mainScreen);
   container.innerHTML = `<section class="escape-lobby" data-lobby-screen="${model.screen}" aria-label="逃生大厅">
-    <header class="lv-top"><div class="lv-status" ${model.screen==="servers" && model.network!=="lan"?"":"hidden"}><i class="${model.servers.some(s=>/online|在线|ready|可用/i.test(s.state))?"is-up":"is-down"}"></i>${model.servers[0]?esc(model.servers[0].state):"无服务器"} · ${model.servers.length?`${model.servers.reduce((n,s)=>n+s.players,0)} 人在线`:"--"}${model.servers.find(s=>s.latency!=null)?` · ${model.servers.find(s=>s.latency!=null)!.latency} ms`:""}</div><button class="lv-user" data-screen="profile">${avatar(model.profile.avatar)}<span>${esc(model.profile.name)}</span></button></header>
+    <header class="lv-top"><div class="lv-status" ${model.screen==="servers" && model.network!=="lan"?"":"hidden"}><i class="${model.servers.some(s=>/online|在线|ready|可用/i.test(s.state))?"is-up":"is-down"}"></i>${model.servers[0]?esc(model.servers[0].state):"无服务器"} · ${model.servers.length?`${model.servers[0].players} 人在线`:"--"}${!model.routeLatencies && model.servers.find(s=>s.latency!=null)?` · ${model.servers.find(s=>s.latency!=null)!.latency} ms`:""}</div><button class="lv-user" data-screen="profile">${avatar(model.profile.avatar)}<span>${esc(model.profile.name)}</span></button></header>
     <aside class="lv-rail"><button class="lv-title" data-screen="home" aria-label="回到标题画面"><small>奶蛙</small><strong>下水道逃生</strong></button>
       <nav class="lv-menu" aria-label="主菜单">
         <button class="lv-nav ${["solo","saves","restart"].includes(model.screen)?"is-active":""}" data-action="single" id="escape-menu-solo">单人游戏</button>
@@ -91,6 +95,22 @@ export function renderLobbyView(container: HTMLElement, model: LobbyModel, actio
     const target = (event.target as HTMLElement).closest<HTMLElement>("button,[data-room]"); if (!target) return;
     const scr=target.dataset.screen as LobbyScreen|undefined; if(scr){actions.screen(scr==="room"&&!model.selectedRoom?"servers":scr);return;}
     if(target.dataset.network==="lan" || target.dataset.network==="online"){actions.network?.(target.dataset.network);return;}
+    if(target.hasAttribute("data-auto-route")){actions.selectRoute?.();return;}
+    const route=PUBLIC_ROUTES.find(r=>r.id===target.dataset.route);
+    if(route){
+      const ms=model.routeLatencies?.[route.id];
+      if(typeof ms!=='number')return;
+      if(ms>HIGH_LATENCY_MS){
+        const modal=container.querySelector<HTMLElement>(".lv-modal-root")!;
+        modal.innerHTML=`<div class="lv-scrim"><section class="lv-modal" role="alertdialog" aria-modal="true" aria-labelledby="lv-lag-title"><h2 id="lv-lag-title">${route.name} · 高延迟</h2><p>当前延迟 <strong class="lv-lag">${ms} ms</strong>，可能导致移动和交互滞后。</p><button class="lv-primary" data-return>返回选线</button><button class="lv-secondary" data-confirm>仍然选择</button></section></div>`;
+        const back=modal.querySelector<HTMLButtonElement>('[data-return]')!;
+        const cancel=()=>{modal.innerHTML='';container.querySelector<HTMLButtonElement>(`[data-route="${route.id}"]`)?.focus();};
+        back.onclick=cancel;back.focus();
+        modal.querySelector<HTMLElement>('.lv-modal')!.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();cancel();}};
+        modal.querySelector<HTMLButtonElement>('[data-confirm]')!.onclick=()=>{modal.innerHTML='';actions.selectRoute?.(route.id);};
+      }else actions.selectRoute?.(route.id);
+      return;
+    }
     if(target.hasAttribute("data-open-create")){showCreate();return;}
     if(target.dataset.action==="join-code"){const code=(container.querySelector<HTMLInputElement>("#lv-code")?.value||"").trim().toUpperCase();if(code)showJoin(code,false);return;}
     const act=target.dataset.action, uid=target.dataset.uid||"";
@@ -119,12 +139,31 @@ export function renderLobbyView(container: HTMLElement, model: LobbyModel, actio
 
 function homeMarkup(m:LobbyModel){return `<div class="lv-home-stage"><p class="lv-home-line">浴场的灯又灭了。别让它听见你。</p></div>${m.invitations.length?`<div class="lv-invites">${m.invitations.map(i=>`<div>${avatar(0)}<span><b>${esc(i.fromName)}</b> 邀请你加入 <strong>${esc(i.roomCode)}</strong></span><button class="lv-primary" data-action="accept-invite" data-code="${esc(i.roomCode)}">接受邀请</button></div>`).join("")}</div>`:""}`;}
 function serverCard(s:LobbyServer){return `<article class="lv-server"><h3>${esc(s.name)}</h3><p>${s.rooms}/${s.capacity} 个房间 · ${s.players} 人</p><footer><span class="${s.latency!=null&&s.latency<100?"lv-good":""}">${s.latency==null?"--":`${s.latency} ms`}</span></footer></article>`;}
+function routeCards(latencies:RouteLatencies,selected?:PublicRouteId){
+  return PUBLIC_ROUTES.map(route=>{
+    const ms=latencies[route.id], high=typeof ms==='number' && ms>HIGH_LATENCY_MS;
+    const reading=ms===null?'无法连接':ms===undefined?'测速中…':`${ms} ms`;
+    return `<button type="button" class="lv-server lv-route" data-route="${route.id}" aria-pressed="${selected===route.id}" ${typeof ms!=='number'?'disabled':''}><strong>${route.name}</strong><span>${route.label}</span><b class="${high?'lv-lag':typeof ms==='number'&&ms<100?'lv-good':''}">${high?'高延迟 · ':''}${reading}</b></button>`;
+  }).join('');
+}
+
+export function updateRouteReadings(container:HTMLElement,latencies:RouteLatencies,selected?:PublicRouteId){
+  const grid=container.querySelector<HTMLElement>('[data-route-grid]');
+  if(!grid)return;
+  // Preserve keyboard focus when periodic samples arrive.
+  const focused=(document.activeElement as HTMLElement|null)?.dataset.route;
+  grid.innerHTML=routeCards(latencies,selected);
+  if(focused)grid.querySelector<HTMLButtonElement>(`[data-route="${focused}"]`)?.focus();
+}
 function serverMarkup(m: LobbyModel) {
   const local = m.network === "lan";
   const modes = m.servers[0]?.id === "lan" ? "" : `<div class="lv-network" role="group" aria-label="联机方式">${(["online","lan"] as const).map(mode=>`<button class="lv-secondary" data-network="${mode}" aria-pressed="${mode===(m.network??"online")}">${mode==="lan"?"内网模式":"在线模式"}</button>`).join("")}</div>`;
   const join = '<div class="lv-list-tools"><label>房间码<input id="lv-code" maxlength="12" placeholder="输入房间码" autocomplete="off"></label><button class="lv-secondary" data-action="join-code">加入房间</button></div>';
   if(local) return modes + join + '<p class="lv-message">连上同一 Wi-Fi 或有线网络，让队友用房间码加入。对局期间请房主保持游戏页面打开。</p>';
-  return `${modes}${join}<div class="lv-server-grid">${m.servers.map(serverCard).join("") || '<div class="lv-empty">暂无服务器数据</div>'}</div><div class="lv-section-head"><h2>房间列表</h2><span>公开房间与密码房</span></div><div class="lv-room-list">${m.rooms.map(r=>`<article><div><b>${esc(r.name)}</b><span>${esc(r.code)} · 队长 ${esc(r.leaderName)}</span></div><span class="lv-room-phase">${phaseLabel(r.phase)}</span><span>${r.locked?"需要密码":"公开"}</span><span>${r.players}/${r.maxPlayers}</span><button class="lv-primary" data-room="${esc(r.code)}" ${r.phase!=="lobby"||r.players>=r.maxPlayers?"disabled":""}>${r.players>=r.maxPlayers?"已满":r.phase!=="lobby"?"进行中":"加入"}</button></article>`).join("") || '<div class="lv-empty">暂无房间。</div>'}</div>`;
+  const serverPicker = m.routeLatencies
+    ? `<div class="lv-section-head"><h2>选择服务器</h2><button type="button" class="lv-quiet" data-auto-route aria-pressed="${!m.preferredRoute}">自动选线${m.preferredRoute?'':' ✓'}</button></div><div class="lv-server-grid" data-route-grid>${routeCards(m.routeLatencies,m.preferredRoute)}</div>`
+    : `<div class="lv-server-grid">${m.servers.map(serverCard).join("") || '<div class="lv-empty">暂无服务器数据</div>'}</div>`;
+  return `${modes}${serverPicker}${join}<div class="lv-section-head"><h2>房间列表</h2><span>${m.routeLatencies && m.servers[0]?`共用房间 · ${m.servers[0].rooms}/${m.servers[0].capacity}`:"公开房间与密码房"}</span></div><div class="lv-room-list">${m.rooms.map(r=>`<article><div><b>${esc(r.name)}</b><span>${esc(r.code)} · 队长 ${esc(r.leaderName)}</span></div><span class="lv-room-phase">${phaseLabel(r.phase)}</span><span>${r.locked?"需要密码":"公开"}</span><span>${r.players}/${r.maxPlayers}</span><button class="lv-primary" data-room="${esc(r.code)}" ${r.phase!=="lobby"||r.players>=r.maxPlayers?"disabled":""}>${r.players>=r.maxPlayers?"已满":r.phase!=="lobby"?"进行中":"加入"}</button></article>`).join("") || '<div class="lv-empty">暂无房间。</div>'}</div>`;
 }
 function roomMarkup(m:LobbyModel,players:CoopPlayer[]){const ps=players;return `<div class="lv-room-banner"><span>${m.network==="lan"?"内网房间":"房间"}　/　${esc(m.selectedRoom?.code||"------")}</span><span>${ps.length}/3 玩家</span></div><div class="lv-roster">${[0,1,2].map(slot=>{const p=ps.find(p=>p.slot===slot+1);return `<article class="lv-slot ${p?"occupied":"vacant"}">${p?`<div class="lv-body lv-body-${p.avatar}" aria-hidden="true"></div><div class="lv-player-card">${avatar(p.avatar)}<span><b>${esc(p.name)}${p.id===m.selectedRoom?.leaderId?` <small>队长</small>`:""}</b><em>${p.status!=="connected"?esc(p.status):p.ready?"已准备":"等待准备"}</em></span><i class="${p.ready?"ready":""}">${p.ready?"✓":"…"}</i></div>`:`<div class="lv-vacant-mark">＋</div><b>等待玩家</b><span>空位</span>`}</article>`;}).join("")}</div><div class="lv-room-bottom"><div><b>队伍状态</b><span>${ps.length<3?`还可加入 ${3-ps.length} 名玩家`:"队伍已满"}</span></div><button class="lv-secondary" data-action="leave">离开房间</button>${m.selfPlayerId===m.selectedRoom?.leaderId?`<button class="lv-primary" data-action="start" ${canStart(m)?"":"disabled"}>开始游戏　→</button>`:`<button class="lv-secondary" disabled>等待队长</button>`}</div>`;}
 function friendsMarkup(m:LobbyModel){return `<div class="lv-list-tools"><label>添加好友 UID<input id="lv-add-uid" maxlength="48" placeholder="输入好友 UID"></label><button class="lv-primary" data-action="add-friend">发送申请</button></div>${m.requests.length?`<div class="lv-section-head"><h2>好友申请</h2></div><div class="lv-friend-list">${m.requests.map(r=>`<div>${avatar(r.avatar)}<b>${esc(r.name)} <small>UID ${esc(r.uid)}</small></b><button class="lv-primary" data-action="accept-friend" data-uid="${esc(r.uid)}">接受</button></div>`).join("")}</div>`:""}<div class="lv-section-head"><h2>好友列表</h2><span>${m.friends.filter(f=>f.online).length} 位在线</span></div><div class="lv-friend-list">${m.friends.map(f=>`<div>${avatar(f.avatar)}<b>${esc(f.name)} <small>UID ${esc(f.uid)}</small></b><span class="${f.online?"online":""}">${f.online?(f.roomCode?`房间 ${esc(f.roomCode)}`:"在线"):"离线"}</span>${f.online?`<button class="lv-secondary" data-action="invite" data-uid="${esc(f.uid)}" ${m.selectedRoom && m.network!=="lan"?"":"disabled"}>邀请</button>`:""}<button class="lv-quiet" data-action="remove-friend" data-uid="${esc(f.uid)}">移除</button></div>`).join("")||`<div class="lv-empty">暂无好友。输入 UID 发送申请。</div>`}</div>${m.invitations.length?`<div class="lv-section-head"><h2>房间邀请</h2></div><div class="lv-friend-list">${m.invitations.map(i=>`<div>${avatar(0)}<b>${esc(i.fromName)} <small>邀请你加入 ${esc(i.roomCode)}</small></b><button class="lv-primary" data-action="accept-invite" data-code="${esc(i.roomCode)}">加入房间</button></div>`).join("")}</div>`:""}`;}

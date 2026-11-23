@@ -22,7 +22,8 @@ import { EscapeLook, type MouseLookMode } from "./look.ts";
 import { CoopClient, type CoopConnectionState } from "./coop-client.ts";
 import {CoopMovement} from './coop-movement.ts';
 import {SocialClient} from './social-client.ts';
-import {renderLobbyView,type LobbyModel,type LobbyScreen} from './lobby-view.ts';
+import {renderLobbyView,updateRouteReadings,type LobbyModel,type LobbyScreen} from './lobby-view.ts';
+import {HIGH_LATENCY_MS, PUBLIC_GAME_ORIGIN, PUBLIC_ROUTES, measureRoomRoute, type PublicRouteId, type RouteLatencies} from './public-route.ts';
 import './lobby-view.css';
 import type { CoopInput, CoopSnapshot } from "./coop-protocol.ts";
 import { version as APP_VERSION } from "../../package.json";
@@ -84,6 +85,9 @@ export class EscapeGame {
   private noteReturnToJournal = false;
   private coop?: CoopClient;
   private lobbyNetwork: "online"|"lan" = "online";
+  private preferredRoute?:PublicRouteId;
+  private routeLatencies:RouteLatencies={};
+  private nextRouteProbe=0;
   private coopSnapshot?: CoopSnapshot;
   private coopState: CoopConnectionState = "offline";
   private coopMessage = "";
@@ -229,8 +233,21 @@ export class EscapeGame {
     const rootScreen=this.lobbyScreenStack[0]??this.lobbyScreen;
     const model:LobbyModel={network:this.lobbyNetwork,profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
     this.lobbyDisposer?.();
+    if(location.origin===PUBLIC_GAME_ORIGIN){
+      model.routeLatencies=this.routeLatencies;
+      model.preferredRoute=this.preferredRoute;
+      if(this.lobbyScreen==='servers' && this.lobbyNetwork==='online' && performance.now()>=this.nextRouteProbe){
+        this.nextRouteProbe=performance.now()+14_000;
+        for(const route of PUBLIC_ROUTES)void measureRoomRoute(route.host).then(ms=>{
+          if(this.disposed)return;
+          this.routeLatencies[route.id]=ms;
+          updateRouteReadings(this.root,this.routeLatencies,this.preferredRoute);
+        });
+      }
+    }
     const operation=(fn:()=>Promise<unknown>,success:string)=>{void fn().then(()=>{this.socialMessage(success);return this.refreshSocialLobby();}).catch(error=>this.socialMessage(error instanceof Error?error.message:'操作失败'));};
     this.lobbyDisposer=renderLobbyView(this.$('#escape-panel'),model,{
+      selectRoute:id=>{if(this.coop || this.coopRequesting)return;this.preferredRoute=id;this.lobbyMessage=undefined;this.renderSocialLobby();},
       network:mode=>{if(this.coop || this.coopRequesting)return;this.lobbyNetwork=mode;this.lobbyMessage=undefined;this.renderSocialLobby();},
       screen:screen=>{this.lobbyMessage=undefined;if(['home','servers','room','friends','profile'].includes(screen)){this.lobbyScreen=screen==='room'&&!this.coop?'servers':screen;this.lobbyScreenStack=[];this.renderSocialLobby();}else this.openLobbyScreen(screen);void this.refreshSocialLobby();},
       single:()=>{const open=()=>this.openLobbyScreen('solo');if(this.coop)void this.leaveCoop().then(open);else open();},controls:()=>this.openLobbyScreen('controls'),settings:()=>this.openLobbyScreen('settings'),
@@ -254,6 +271,7 @@ export class EscapeGame {
     this.coopRequesting=true;
     try{const profile=await this.social.ensure();if(this.disposed||!this.lobbyVisible)return;const common={version:APP_VERSION,name:profile.name,avatar:profile.avatar as 0|1|2|3,profileToken:profile.token,password:input.password};
       const client=this.lobbyNetwork==='lan' ? await (await import('./lan-client.mjs')).openLanRoom(kind,profile,input) : kind==='create'?await CoopClient.create({...common,title:input.name,visibility:input.visibility}):await CoopClient.join({...common,code:input.code??''});
+      if(this.lobbyNetwork==='online')client.preferredRoute=this.preferredRoute;
       if(this.disposed||!this.lobbyVisible){await client.leave();return;}this.attachCoop(client);this.showSocialLobby('room');void this.prepareCoopRoom(client);
     }catch(error){this.socialMessage(error instanceof Error?error.message:'无法进入房间');}finally{this.coopRequesting=false;}
   }
@@ -379,12 +397,12 @@ export class EscapeGame {
   private renderCoopStatus() {
     const status = this.root.querySelector<HTMLElement>("#escape-coop-status"); if (!status) return;
     status.hidden = !this.coopMode || !this.started;
-    status.dataset.state = this.coopState === "connected" && (this.coopLatency ?? 0) > 250 ? "unstable" : this.coopState;
+    status.dataset.state = this.coopState === "connected" && (this.coopLatency ?? 0) > HIGH_LATENCY_MS ? "unstable" : this.coopState;
     const latency = this.coopLatency;
     status.title = latency === undefined ? "" : `延迟 ${latency} ms`;
     const lives = this.coopSnapshot?.room.players.find(player => player.id === this.coop?.session.playerId)?.lives ?? 0;
     // Latency only matters when it is bad; a healthy connection shows just the remaining lives.
-    status.textContent = `${"♥".repeat(Math.max(0, lives))}${this.coopState !== "connected" ? " · 重连中" : (latency ?? 0) > 250 ? ` · ${latency} ms` : ""}`;
+    status.textContent = `${"♥".repeat(Math.max(0, lives))}${this.coopState !== "connected" ? " · 重连中" : (latency ?? 0) > HIGH_LATENCY_MS ? ` · ${latency} ms` : ""}`;
   }
   private adoptPrepared() {
     const bundle = takePreparedEscape();

@@ -170,3 +170,11 @@
 
 .lv-network { display:flex; gap:.5rem; margin-block:0 1rem; }
 .lv-network [aria-pressed="true"] { color:#161811; background:#c5b17e; border-color:#dbc68e; }
+.escape-lobby .lv-route { display:grid; grid-template-columns:1fr auto; gap:4px 12px; text-align:left; font-family:var(--serif); color:var(--ink); cursor:pointer; }
+.escape-lobby .lv-route strong { font-size:20px; }
+.escape-lobby .lv-route span { align-self:center; color:var(--ink-soft); font-size:14px; }
+.escape-lobby .lv-route b { grid-column:1/-1; font-variant-numeric:tabular-nums; }
+.escape-lobby .lv-route[aria-pressed="true"] { box-shadow:inset 4px 0 var(--ink); background:#fff8dc80; }
+.escape-lobby .lv-route:disabled { cursor:default; opacity:.65; }
+.escape-lobby .lv-lag { color:#92271d; font-weight:800; }
+.escape-lobby [data-route-grid] { margin-bottom:18px; }
