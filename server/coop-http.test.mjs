@@ -96,7 +96,7 @@ test('SSE is private, unbuffered and sends a valid personally projected snapshot
   assert.equal(packet.protocol, 1);
   assert.equal(packet.room.code, host.code);
   assert.equal(packet.room.players.length, 2);
-  assert.deepEqual(packet.room.players.map(p => p.avatar), [0, 1]);
+  assert.deepEqual(packet.room.players.map(p => p.avatar), [0, 0]);
   assert.deepEqual(EscapeWorld.restore(packet.world).snapshot(), packet.world);
   const ping = await request('/ping'); assert.equal(ping.status, 200); assert.ok(Number.isFinite(ping.body.serverTime));
   controller.abort();

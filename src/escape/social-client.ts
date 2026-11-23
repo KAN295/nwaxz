@@ -4,7 +4,7 @@ export type GuestIdentity=LobbyProfile&{token:string};
 export class SocialClient {
  identity?:GuestIdentity;
  private ensuring?:Promise<GuestIdentity>;
- constructor(){try{const raw=JSON.parse(localStorage.getItem(GUEST_IDENTITY_KEY)??'null');if(raw?.version===1&&/^\d{9}$/.test(raw.uid)&&/^[\w-]{43}$/.test(raw.token))this.identity={uid:raw.uid,name:raw.name,avatar:raw.avatar,token:raw.token};}catch{/* invalid credentials are replaced on explicit guest creation */}}
+ constructor(){try{const raw=JSON.parse(localStorage.getItem(GUEST_IDENTITY_KEY)??'null');if(raw?.version===1&&/^\d{9}$/.test(raw.uid)&&/^[\w-]{43}$/.test(raw.token))this.identity={uid:raw.uid,name:raw.name,avatar:0,token:raw.token};}catch{/* invalid credentials are replaced on explicit guest creation */}}
  private save(){if(this.identity)try{localStorage.setItem(GUEST_IDENTITY_KEY,JSON.stringify({version:1,...this.identity}));}catch{/* guest remains usable for this page */}}
  private async request(path:string,method='GET',body?:unknown){
   const response=await fetch('/api/social'+path,{method,cache:'no-store',signal:AbortSignal.timeout(7000),headers:{'content-type':'application/json',...(this.identity?{authorization:`Bearer ${this.identity.token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await response.json();if(!response.ok)throw Object.assign(new Error(data.error??'服务器暂时无法连接'),{status:response.status});return data;

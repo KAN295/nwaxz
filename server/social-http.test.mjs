@@ -46,12 +46,13 @@ test('guest profiles authenticate and update through their bearer token', async 
 
   const me = await call('/api/social/me', { token: profile.token });
   assert.equal(me.status, 200);
-  assert.deepEqual(me.body, { uid: profile.uid, name: '旧昵称', avatar: 1 });
+  assert.deepEqual(me.body, { uid: profile.uid, name: '旧昵称', avatar: 0 });
   assert.equal((await call('/api/social/me', { token: 'invalid' })).status, 401);
 
-  const updated = await call('/api/social/me', { method: 'PATCH', token: profile.token, body: { name: '新昵称', avatar: 3 } });
+  assert.equal((await call('/api/social/me', { method: 'PATCH', token: profile.token, body: { avatar: 3 } })).status, 400);
+  const updated = await call('/api/social/me', { method: 'PATCH', token: profile.token, body: { name: '新昵称', avatar: 0 } });
   assert.equal(updated.status, 200);
-  assert.deepEqual(updated.body, { uid: profile.uid, name: '新昵称', avatar: 3 });
+  assert.deepEqual(updated.body, { uid: profile.uid, name: '新昵称', avatar: 0 });
   assert.deepEqual((await call('/api/social/me', { token: profile.token })).body, updated.body);
   assert.equal((await call('/api/social/me', { method: 'PATCH', token: profile.token, body: { name: ' ', avatar: 1 } })).status, 400);
 });

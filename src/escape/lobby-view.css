@@ -102,8 +102,12 @@
 .escape-lobby .lv-slot.vacant::before{background:repeating-linear-gradient(45deg,#d9c9a8,#d9c9a8 8px,#e9dcc0 8px,#e9dcc0 16px)}
 .escape-lobby .lv-vacant-mark{position:relative;font-size:30px;line-height:1;color:var(--ink-faint)}
 .escape-lobby .lv-slot.vacant b,.escape-lobby .lv-slot.vacant span{position:relative;font-family:var(--serif)}
-.escape-lobby .lv-body{position:absolute;inset:14px 14px 64px;background:url('/assets/character/escape-survivors-0.webp') 0 0/400% 200% no-repeat;filter:sepia(.25) drop-shadow(0 8px 12px #000)}
-.escape-lobby .lv-body-1{background-image:url('/assets/character/escape-survivors-1.webp')}.escape-lobby .lv-body-2{background-image:url('/assets/character/escape-survivors-2.webp')}.escape-lobby .lv-body-3{background-image:url('/assets/character/escape-survivors-3.webp')}
+.escape-lobby .lv-body{position:absolute;inset:14px 14px 64px;display:grid;place-items:end center}
+.escape-lobby .lv-body::before{content:"";height:100%;aspect-ratio:134/321;max-width:100%;background:url('/assets/character/raincoat-v2/room-idle.webp') 0 0/400% 100% no-repeat;animation:raincoat-breathe 3.6s steps(4,end) infinite}
+.escape-lobby .lv-slot:nth-child(2) .lv-body::before{animation-delay:-1.2s}
+.escape-lobby .lv-slot:nth-child(3) .lv-body::before{animation-delay:-2.4s}
+@keyframes raincoat-breathe{to{background-position-x:133.333333%}}
+@media(prefers-reduced-motion:reduce){.escape-lobby .lv-body::before{animation:none}}
 .escape-lobby .lv-player-card{position:relative;display:flex;align-items:center;gap:8px;height:54px;color:var(--ink)}
 .escape-lobby .lv-player-card .lv-portrait{display:none}
 .escape-lobby .lv-player-card>span{flex:1;display:grid;line-height:1.3}.escape-lobby .lv-player-card b{font:700 17px var(--serif)}
@@ -178,3 +182,5 @@
 .escape-lobby .lv-route:disabled { cursor:default; opacity:.65; }
 .escape-lobby .lv-lag { color:#92271d; font-weight:800; }
 .escape-lobby [data-route-grid] { margin-bottom:18px; }
+
+.escape-lobby .lv-avatar-0{background-image:url('/assets/character/raincoat-v2/portrait.webp');background-size:cover;background-position:center}

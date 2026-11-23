@@ -1,5 +1,6 @@
 /** Pure helpers and the isolated world-space renderer for remote co-op survivors. */
 import { Color3 } from "@babylonjs/core/Maths/math.js";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer.js";
 import { Constants } from "@babylonjs/core/Engines/constants.js";
 import { Material } from "@babylonjs/core/Materials/material.js";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial.js";
@@ -12,12 +13,13 @@ import type { FreeCamera } from "@babylonjs/core/Cameras/freeCamera.js";
 import type { Scene } from "@babylonjs/core/scene.js";
 import type { CoopPlayer } from "./coop-protocol.ts";
 import { floorYAt } from "./basement-map.ts";
-import { interpolatePeerAngle, peerAvatarDefinition, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle } from "./peer-art.ts";
+import { interpolatePeerAngle, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle } from "./peer-art.ts";
 import { CELL } from "./scene.ts";
+import { raincoatAction, advanceRaincoatPhase, raincoatSheet, type RaincoatAction } from "./raincoat.ts";
+import raincoatArt from "./raincoat-frames.json";
 const SLOT_COLORS: Record<1 | 2 | 3, string> = { 1: "#bbd4df", 2: "#b9d7bd", 3: "#dfc68d" };
-// Avatar artwork has a small transparent margin. Match the 1.65 m first-person eye line.
-const PEER_HEIGHT = 1.88;
-const PEER_WIDTH = 1.12;
+// Painted standing height above the floor, with the eyes near the first-person camera height.
+const PEER_HEIGHT = 1.79;
 export { interpolatePeerAngle, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle };
 
 type PeerActor = {
@@ -25,15 +27,13 @@ type PeerActor = {
   body: Mesh;
   marker: Mesh;
   bodyMaterial: StandardMaterial;
-  atlas?: Texture;
-  avatar?: number;
+  frame: number;
+  phase: number;
+  motion: RaincoatAction;
   markerMaterial: StandardMaterial;
   x: number;
   z: number;
-  angle: number;
-  time: number;
-  crouched: boolean;
-  moving: boolean;
+  facing?: number;
   visible: boolean;
 };
 
@@ -41,6 +41,7 @@ type PeerActor = {
 export class PeerActorsRenderer {
   private actors = new Map<string, PeerActor>();
   private markerMaterials = new Map<1 | 2 | 3, StandardMaterial>();
+  private sheets = new Map<RaincoatAction, Texture>();
   private disposed = false;
 
   constructor(private scene: Scene, private camera: FreeCamera) {}
@@ -63,39 +64,36 @@ export class PeerActorsRenderer {
         actor = this.createActor(peer.slot);
         this.actors.set(peer.id, actor);
       }
-      if (actor.avatar !== peer.avatar) this.setAvatar(actor, peer.avatar);
-      // The timestamped pose buffer already interpolates this sample.
-      actor.x = p.x;
-      actor.z = p.z;
-      actor.angle = p.angle;
-      actor.time += delta;
-      actor.crouched = !!p.crouched;
-      actor.moving = !!p.moving;
-      actor.visible = true;
-
-      const crouchScale = actor.crouched ? .66 : 1;
-      const height = PEER_HEIGHT * crouchScale;
-      const walkPhase = actor.moving ? actor.time * (p.sprinting ? 12 : 7.5) : 0;
-      const bob = actor.moving ? Math.abs(Math.sin(walkPhase)) * (p.sprinting ? .045 : .025) : 0;
-      const sway = actor.moving ? Math.sin(walkPhase) * .018 : 0;
-      const floorY = floorYAt({ x: actor.x, z: actor.z });
-      actor.root.position.set(actor.x * CELL + sway, floorY, actor.z * CELL);
-      actor.root.scaling.y = 1;
-      actor.body.position.y = PEER_HEIGHT * crouchScale * .5 + bob;
-      actor.body.scaling.x = PEER_WIDTH;
-      actor.body.scaling.y = height;
+      const metres = actor.visible ? Math.hypot(p.x - actor.x, p.z - actor.z) * CELL : 0;
+      const backwards = (p.x - actor.x) * Math.cos(p.angle) + (p.z - actor.z) * Math.sin(p.angle) < 0;
+      const action = raincoatAction(!!p.moving, !!p.crouched, !!p.sprinting);
+      if (actor.motion !== action) { actor.phase = 0; actor.motion = action; }
+      const travel = metres >= 2 ? 0 : metres * (backwards ? -1 : 1);
+      actor.phase = advanceRaincoatPhase(action, actor.phase, travel, delta);
+      actor.x = p.x; actor.z = p.z; actor.visible = true;
+      actor.root.position.set(p.x * CELL, floorYAt(p), p.z * CELL);
       actor.bodyMaterial.alpha = peer.status === "reconnecting" ? .42 : 1;
-      actor.marker.position.y = height + .38 + bob;
+      actor.marker.position.y = (p.crouched ? 1.18 : 1.8) + .38;
       actor.markerMaterial.alpha = peer.status === "reconnecting" ? .55 : .96;
-      actor.marker.setEnabled(true);
-      actor.body.setEnabled(!!actor.atlas && actor.atlas.isReady());
-      const viewFromAngle = Math.atan2(this.camera.position.z - actor.root.position.z, this.camera.position.x - actor.root.position.x);
-      const cell = peerViewAtlasCell(actor.angle, viewFromAngle);
-      if (actor.atlas) {
-        actor.atlas.uOffset = cell.column / 4;
-        actor.atlas.uScale = .25;
-        actor.atlas.vScale = .5;
-        actor.atlas.vOffset = cell.row === 0 ? .5 : 0;
+      const bearing = Math.atan2(this.camera.position.z - actor.root.position.z, this.camera.position.x - actor.root.position.x);
+      const candidate = peerDirectionForView(p.angle, bearing);
+      if (actor.facing === undefined || Math.abs(wrapPeerAngle(bearing - p.angle - actor.facing * Math.PI / 4)) > Math.PI / 8 + .07) actor.facing = candidate;
+      const desired = this.sheet(action);
+      const texture = desired.isReady() ? desired : this.sheet('idle');
+      actor.body.setEnabled(texture.isReady());
+      if (!texture.isReady()) continue;
+      const frame = (texture === desired ? Math.floor(actor.phase * 4) : 0) * 8 + actor.facing;
+      if (actor.frame !== frame || actor.bodyMaterial.diffuseTexture !== texture) {
+        actor.frame = frame;
+        actor.bodyMaterial.diffuseTexture = texture;
+        const art = raincoatArt.actions[texture === desired ? action : 'idle'];
+        const [x, y, w, h] = art.frames[frame];
+        const left = x / art.width, right = (x + w) / art.width;
+        const top = 1 - y / art.height, bottom = 1 - (y + h) / art.height;
+        const metresPerPixel = PEER_HEIGHT / raincoatArt.referenceHeights[actor.facing];
+        actor.body.scaling.set(w * metresPerPixel, h * metresPerPixel, 1);
+        actor.body.position.y = (h / 2 - 2) * metresPerPixel;
+        actor.body.updateVerticesData(VertexBuffer.UVKind, [left,bottom, right,bottom, right,top, left,top]);
       }
     }
 
@@ -118,11 +116,13 @@ export class PeerActorsRenderer {
     this.clear();
     for (const material of this.markerMaterials.values()) material.dispose(false, true);
     this.markerMaterials.clear();
+    for (const texture of this.sheets.values()) texture.dispose();
+    this.sheets.clear();
   }
 
   private createActor(slot: 1 | 2 | 3): PeerActor {
     const root = new TransformNode(`coop-peer-${slot}`, this.scene);
-    const body = MeshBuilder.CreatePlane(`coop-peer-body-${slot}`, { width: 1, height: 1 }, this.scene);
+    const body = MeshBuilder.CreatePlane(`coop-peer-body-${slot}`, { width: 1, height: 1, updatable: true }, this.scene);
     body.parent = root;
     body.billboardMode = Mesh.BILLBOARDMODE_Y;
     body.position.y = PEER_HEIGHT * .5;
@@ -146,22 +146,18 @@ export class PeerActorsRenderer {
     marker.position.y = PEER_HEIGHT + .38;
     const markerMaterial = this.markerMaterial(slot);
     marker.material = markerMaterial;
-    return { root, body, marker, bodyMaterial, markerMaterial, x: 0, z: 0, angle: 0, time: 0, crouched: false, moving: false, visible: false };
+    return { root, body, marker, bodyMaterial, markerMaterial, x: 0, z: 0, frame: -1, phase: 0, motion: "idle", visible: false };
   }
 
-  private setAvatar(actor: PeerActor, avatar: number) {
-    const definition = peerAvatarDefinition(avatar);
-    actor.atlas?.dispose();
-    const atlas = new Texture(definition.asset, this.scene, true, true, Texture.BILINEAR_SAMPLINGMODE);
-    atlas.hasAlpha = true;
-    atlas.uScale = .25;
-    atlas.vScale = .5;
-    atlas.vOffset = .5;
-    actor.atlas = atlas;
-    actor.avatar = avatar;
-    actor.bodyMaterial.diffuseTexture = atlas;
-    actor.bodyMaterial.alpha = 1;
-    actor.bodyMaterial.useAlphaFromDiffuseTexture = true;
+  private sheet(action: RaincoatAction): Texture {
+    let texture = this.sheets.get(action);
+    if (!texture) {
+      texture = new Texture(raincoatSheet(action), this.scene, true, true, Texture.BILINEAR_SAMPLINGMODE);
+      texture.hasAlpha = true;
+      texture.wrapU = texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+      this.sheets.set(action, texture);
+    }
+    return texture;
   }
 
   private markerMaterial(slot: 1 | 2 | 3) {
@@ -196,6 +192,5 @@ export class PeerActorsRenderer {
     actor.marker.dispose(false, false);
     actor.root.dispose(false, false);
     actor.bodyMaterial.dispose(false, false);
-    actor.atlas?.dispose();
   }
 }
