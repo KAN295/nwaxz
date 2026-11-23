@@ -5,7 +5,7 @@
 .escape-avatar { width: 54px; height: 54px; padding: 4px; border: 2px solid transparent; border-radius: 50%; background: #182122; cursor: pointer; }
 .escape-avatar[aria-pressed="true"] { border-color: #d8ee74; box-shadow: 0 0 0 2px #182122, 0 0 0 4px #d8ee74; }
 .escape-avatar-art { display: block; width: 40px; height: 40px; flex: 0 0 40px; border-radius: 50%; background-image: url("/assets/character/escape-survivor-portraits.webp"); background-size: 200% 200%; background-repeat: no-repeat; }
-.escape-avatar-art[data-avatar="0"] { background-image:url("/assets/character/raincoat-v2/portrait.webp");background-size:cover;background-position:center; }
+.escape-avatar-art[data-avatar="0"] { background-position: 0% 0%; }
 .escape-avatar-art[data-avatar="1"] { background-position: 100% 0%; }
 .escape-avatar-art[data-avatar="2"] { background-position: 0% 100%; }
 .escape-avatar-art[data-avatar="3"] { background-position: 100% 100%; }

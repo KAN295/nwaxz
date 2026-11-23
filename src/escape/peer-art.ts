@@ -9,7 +9,7 @@ export const PEER_AVATARS = [
   { id: 2, name: "蒙脸维修员", asset: "/assets/character/escape-survivors-2.webp", accent: "#97b2a1" },
   { id: 3, name: "旧制服巡夜人", asset: "/assets/character/escape-survivors-3.webp", accent: "#c3a875" },
 ] as const;
-export const peerAvatarOptions = PEER_AVATARS.filter(avatar => avatar.id === 0).map(({ id, name }) => ({ id, label: name }));
+export const peerAvatarOptions = PEER_AVATARS.map(({ id, name }) => ({ id, label: name }));
 export const PEER_PORTRAIT_ATLAS = "/assets/character/escape-survivor-portraits.webp";
 
 /** Atlas order, clockwise from the survivor facing the camera. */

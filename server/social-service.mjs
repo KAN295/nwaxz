@@ -15,15 +15,15 @@ export class SocialService {
  }
  close(){this.db.close();}
  validate(name,avatar){if(typeof name!=='string'||![...name.trim()].length||[...name.trim()].length>12||/[\u0000-\u001f\u007f]/u.test(name)||!Number.isInteger(avatar)||avatar<0||avatar>3)fail(400,'昵称或形象无效');}
- public(uid){if(typeof uid!=='string'||!/^\d{9}$/.test(uid))fail(400,'UID 无效');const row=this.db.prepare('SELECT uid,name,0 AS avatar FROM profiles WHERE uid=?').get(uid);if(!row)fail(404,'UID 不存在');return {...row};}
- auth(token){if(typeof token!=='string'||!/^[\w-]{43}$/.test(token))fail(401,'游客身份失效，请重新登录');const row=this.db.prepare('SELECT uid,name,0 AS avatar FROM profiles WHERE token_hash=?').get(hash(token));if(!row)fail(401,'游客身份失效，请重新登录');this.present.set(row.uid,this.now());return {...row};}
+ public(uid){if(typeof uid!=='string'||!/^\d{9}$/.test(uid))fail(400,'UID 无效');const row=this.db.prepare('SELECT uid,name,avatar FROM profiles WHERE uid=?').get(uid);if(!row)fail(404,'UID 不存在');return {...row};}
+ auth(token){if(typeof token!=='string'||!/^[\w-]{43}$/.test(token))fail(401,'游客身份失效，请重新登录');const row=this.db.prepare('SELECT uid,name,avatar FROM profiles WHERE token_hash=?').get(hash(token));if(!row)fail(401,'游客身份失效，请重新登录');this.present.set(row.uid,this.now());return {...row};}
  register({name='幸存者',avatar=0},ip=''){
   this.validate(name,avatar);const now=this.now(),bucket=this.buckets.get(ip)??{at:now,count:0};if(now-bucket.at>3600000){bucket.at=now;bucket.count=0;}if(++bucket.count>30)fail(429,'这个网络创建的游客过多，请稍后再试');this.buckets.set(ip,bucket);
   if(this.db.prepare('SELECT count(*) n FROM profiles').get().n>=10000)fail(503,'游客名额已满');
   let uid;do{uid=String(randomInt(100000000,1000000000));}while(this.db.prepare('SELECT 1 FROM profiles WHERE uid=?').get(uid));
-  const token=randomBytes(32).toString('base64url');this.db.prepare('INSERT INTO profiles VALUES(?,?,?,?)').run(uid,hash(token),name.trim(),0);this.present.set(uid,now);return {...this.public(uid),token};
+  const token=randomBytes(32).toString('base64url');this.db.prepare('INSERT INTO profiles VALUES(?,?,?,?)').run(uid,hash(token),name.trim(),avatar);this.present.set(uid,now);return {...this.public(uid),token};
  }
- update(profile,{name=profile.name,avatar=profile.avatar}){this.validate(name,avatar);if(avatar!==0)fail(400,'该角色暂未开放');this.db.prepare('UPDATE profiles SET name=?,avatar=? WHERE uid=?').run(name.trim(),avatar,profile.uid);return this.public(profile.uid);}
+ update(profile,{name=profile.name,avatar=profile.avatar}){this.validate(name,avatar);this.db.prepare('UPDATE profiles SET name=?,avatar=? WHERE uid=?').run(name.trim(),avatar,profile.uid);return this.public(profile.uid);}
  connected(a,b){const[x,y]=[a,b].sort();return !!this.db.prepare('SELECT 1 FROM friends WHERE a=? AND b=?').get(x,y);}
  request(profile,uid){this.public(uid);if(uid===profile.uid)fail(400,'不能添加自己');if(this.connected(profile.uid,uid))return{ok:true};if(this.db.prepare('SELECT count(*) n FROM requests WHERE sender=?').get(profile.uid).n>=25)fail(429,'待处理申请过多');this.db.prepare('INSERT OR IGNORE INTO requests VALUES(?,?)').run(profile.uid,uid);return{ok:true};}
  accept(profile,uid){this.db.exec('BEGIN IMMEDIATE');try{if(!this.db.prepare('SELECT 1 FROM requests WHERE sender=? AND receiver=?').get(uid,profile.uid))fail(404,'申请不存在');const count=this.db.prepare('SELECT count(*) n FROM friends WHERE a=? OR b=?');if(count.get(profile.uid,profile.uid).n>=100||count.get(uid,uid).n>=100)fail(409,'好友已满');const[a,b]=[uid,profile.uid].sort();this.db.prepare('INSERT OR IGNORE INTO friends VALUES(?,?)').run(a,b);this.db.prepare('DELETE FROM requests WHERE (sender=? AND receiver=?) OR (sender=? AND receiver=?)').run(uid,profile.uid,profile.uid,uid);this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}return{ok:true};}

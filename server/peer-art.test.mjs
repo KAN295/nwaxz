@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
-import art from "../src/escape/raincoat-frames.json" with { type: "json" };
-import { raincoatAction, raincoatSheet, advanceRaincoatPhase, RAINCOAT_ACTIONS } from "../src/escape/raincoat.ts";
 import { PEER_DIRECTIONS, PEER_AVATARS, peerAvatarOptions, peerDirectionCell, peerAvatarPortraitStyle, interpolatePeerAngle, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle } from "../src/escape/peer-art.ts";
 
 const peer = (overrides = {}) => ({
@@ -40,24 +37,9 @@ test("remote visibility excludes self, terminal states, invalid assets, and miss
   assert.equal(peerIsRenderable(peer({ position: { x: 1, z: 2, angle: Number.NaN } }), "local-player"), false);
 });
 
-test("only the raincoat is selectable while archived portrait indices remain readable", () => {
-  assert.deepEqual(peerAvatarOptions.map(option => option.id), [0]);
+test("four roster options retain fixed avatar ids and square portrait atlas cells", () => {
+  assert.deepEqual(peerAvatarOptions.map(option => option.id), [0, 1, 2, 3]);
   assert.equal(PEER_AVATARS.length, 4);
   assert.deepEqual([0, 1, 2, 3].map(id => peerAvatarPortraitStyle(id).backgroundPosition), ["0% 0%", "100% 0%", "0% 100%", "100% 100%"]);
   assert.ok([0, 1, 2, 3].every(id => peerAvatarPortraitStyle(id).backgroundSize === "200% 200%"));
-});
-
-test("each raincoat motion has four distinct, in-bounds poses for every view", () => {
-  for (const action of RAINCOAT_ACTIONS) {
-    const file = readFileSync(new URL('../public' + raincoatSheet(action), import.meta.url));
-    assert.equal(file.toString('ascii', 8, 12), 'WEBP');
-    const { width, height, frames } = art.actions[action];
-    assert.equal(frames.length, 32);
-    assert.equal(new Set(frames.map(rect => rect.join(','))).size, 32);
-    for (const [x,y,w,h] of frames) assert.ok(w > 0 && h > 0 && x >= 0 && y >= 0 && x+w <= width && y+h <= height);
-  }
-  assert.deepEqual([[false,false,false],[true,false,false],[true,false,true],[false,true,false],[true,true,true]].map(args=>raincoatAction(...args)),RAINCOAT_ACTIONS);
-  assert.equal(advanceRaincoatPhase('walk', .25, 0, 2), .25);
-  assert.ok(advanceRaincoatPhase('idle', 0, 0, 1) > .25);
-  assert.equal(advanceRaincoatPhase('walk', 0, -1.55 / 4, 0), .75);
 });

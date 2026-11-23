@@ -69,7 +69,7 @@ const portraitResponses = [];
 async function openPlayer(name, { phone = false } = {}) {
   const context = await browser.newContext({ viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, deviceScaleFactor: phone ? 2 : 1, isMobile: phone, hasTouch: phone, serviceWorkers: 'allow' });
   contexts.push(context); await context.addInitScript(instrumentation);
-  const page = await context.newPage(); pages.push(page); page.on('pageerror', error => pageErrors.push(error.message)); page.on('console', message => { if (message.type() === 'error' && /Content Security Policy|Refused to (?:apply|load|connect)/i.test(message.text())) cspViolations.push(message.text()); }); page.on('response', response => { if (response.url().endsWith('/raincoat-v2/portrait.webp')) portraitResponses.push(response.status()); });
+  const page = await context.newPage(); pages.push(page); page.on('pageerror', error => pageErrors.push(error.message)); page.on('console', message => { if (message.type() === 'error' && /Content Security Policy|Refused to (?:apply|load|connect)/i.test(message.text())) cspViolations.push(message.text()); }); page.on('response', response => { if (response.url().endsWith('/escape-survivor-portraits.webp')) portraitResponses.push(response.status()); });
   await page.goto(base); await page.locator('#extreme').click();
   await page.locator('.lv-user').waitFor({ state: 'visible', timeout: 15000 });
   await page.locator('.lv-user').click();
@@ -84,11 +84,10 @@ async function openPlayer(name, { phone = false } = {}) {
   await page.locator('#escape-menu-coop').click();
   return { context, page };
 }
-async function selectAvatar(page) {
+async function selectAvatar(page, avatar) {
   await page.locator('.lv-user').click();
-  assert.deepEqual(await page.locator('[data-action="avatar"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.avatar)), ['0']);
-  await page.locator('[data-action="avatar"][data-avatar="0"]').click();
-  await page.waitForFunction(value => document.querySelector('.lv-user .lv-portrait')?.classList.contains(`lv-avatar-${value}`), 0, { timeout: 10000 });
+  await page.locator(`[data-action="avatar"][data-avatar="${avatar}"]`).click();
+  await page.waitForFunction(value => document.querySelector('.lv-user .lv-portrait')?.classList.contains(`lv-avatar-${value}`), avatar, { timeout: 10000 });
 }
 async function showServers(page) {
   if (await page.locator('.lv-room-bottom').count()) {
@@ -98,8 +97,8 @@ async function showServers(page) {
   if (!await page.locator('.lv-main .lv-list-tools').count()) await page.locator('#escape-menu-coop').click();
   await page.locator('.lv-main .lv-list-tools').waitFor({ state: 'visible', timeout: 15000 });
 }
-async function createRoom(page) {
-  await showServers(page); await selectAvatar(page);
+async function createRoom(page, avatar = 0) {
+  await showServers(page); await selectAvatar(page, avatar);
   if (!await page.locator('.lv-main .lv-list-tools').count()) await page.locator('#escape-menu-coop').click();
   const previous = await page.evaluate(() => window.__coopSessions.length);
   await page.locator('[data-open-create]').click();
@@ -112,8 +111,8 @@ async function createRoom(page) {
   await page.waitForFunction(code => document.querySelector('.lv-roster') && document.querySelector('.lv-room-banner')?.textContent?.includes(code), session.code, { timeout: 15000 });
   return session.code;
 }
-async function joinRoom(page, code) {
-  await showServers(page); await selectAvatar(page);
+async function joinRoom(page, code, avatar) {
+  await showServers(page); await selectAvatar(page, avatar);
   if (!await page.locator('.lv-main .lv-list-tools').count()) await page.locator('#escape-menu-coop').click();
   const previous = await page.evaluate(() => window.__coopSessions.length);
   await page.locator('#lv-code').fill(code);
@@ -184,9 +183,9 @@ async function assertTeamClear(page, viewport, label) {
 
 try {
   const a = await openPlayer('奶蛙甲'); const b = await openPlayer('奶蛙乙', { phone: true });
-  const code = await createRoom(a.page); await joinRoom(b.page, code);
+  const code = await createRoom(a.page, 2); await joinRoom(b.page, code, 1);
   await waitReady(a.page); await waitReady(b.page);
-  await b.page.waitForFunction(() => window.__coopSnapshots.at(-1)?.room.players.every(player => player.avatar === 0), undefined, { timeout: 10000 });
+  await b.page.waitForFunction(() => window.__coopSnapshots.at(-1)?.room.players.some(player => player.avatar === 1), undefined, { timeout: 10000 });
   await startRoom(a.page); await b.page.locator('#escape-coop-team').waitFor({ state: 'visible', timeout: 90000 });
   await a.page.keyboard.press('e');
   try{await b.page.waitForFunction(()=>window.__coopSnapshots.at(-1)?.world.hunt.collected.includes('crystal-bed'),undefined,{timeout:10000});}
@@ -249,7 +248,7 @@ try {
   await exitRoom(b.page);
 
   const c = await openPlayer('奶蛙丙');
-  const code3 = await createRoom(a.page); await joinRoom(b.page, code3); await joinRoom(c.page, code3);
+  const code3 = await createRoom(a.page, 0); await joinRoom(b.page, code3, 1); await joinRoom(c.page, code3, 3);
   await waitReady(a.page); await waitReady(b.page); await waitReady(c.page);
   await startRoom(a.page); await b.page.locator('#escape-coop-team').waitFor({ state: 'visible', timeout: 90000 }); await c.page.locator('#escape-coop-team').waitFor({ state: 'visible', timeout: 90000 });
   for (const [width, height] of [[1280, 800], [900, 500]]) await assertTeamClear(a.page, { width, height }, `3-player desktop ${width}x${height}`);

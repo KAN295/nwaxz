@@ -13,7 +13,7 @@ test('guest UID authenticates privately and mutual friends persist after reopeni
  const rows=social.db.prepare('SELECT * FROM profiles').all();assert.ok(!JSON.stringify(rows).includes(a.token));assert.ok(!('token_hash' in social.public(a.uid)));
  social.request(a,b.uid);assert.equal(social.snapshot(b,{rooms:new Map()}).requests[0].uid,a.uid);assert.throws(()=>social.accept(a,b.uid),e=>e.status===404);social.accept(b,a.uid);
  social.close();social=new SocialService({filename});assert.equal(social.auth(a.token).uid,a.uid);assert.equal(social.snapshot(a,{rooms:new Map()}).friends[0].uid,b.uid);assert.equal(social.snapshot(a,{rooms:new Map()}).friends[0].online,false);
- assert.throws(()=>social.update(a,{avatar:3}),e=>e.status===400);social.update(a,{name:'巡夜人'});assert.equal(social.public(a.uid).name,'巡夜人');social.remove(a,b.uid);assert.equal(social.snapshot(b,{rooms:new Map()}).friends.length,0);
+ social.update(a,{name:'巡夜人',avatar:3});assert.equal(social.public(a.uid).name,'巡夜人');social.remove(a,b.uid);assert.equal(social.snapshot(b,{rooms:new Map()}).friends.length,0);
 });
 test('password rooms reject a wrong password and only a real friend invitation bypasses it',t=>{
  let now=1000000;const social=new SocialService({now:()=>now}),coop=new CoopService({autoTick:false});t.after(()=>{social.close();coop.close();});
