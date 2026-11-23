@@ -7,16 +7,17 @@
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
 export type RunMode = "challenge" | "endless";
-export type RunObstacleKind = "block" | "gap" | "beam" | "spikes" | "boulder" | "fire";
+export type RunObstacleKind = "block" | "gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
+export type CoinTier = "silver" | "gold" | "diamond";
 export type RunPowerKind = "magnet" | "shield" | "boost";
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 3; y?: number; pulled?: boolean };
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 3; y?: number; pulled?: boolean; tier?: CoinTier };
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "beam", "spikes", "boulder", "fire"];
+const OBSTACLES: readonly string[] = ["block", "gap", "beam", "spikes", "boulder", "fire", "trap"];
 const POWERS: readonly string[] = ["magnet", "shield", "boost"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => POWERS.includes(kind);
@@ -47,9 +48,9 @@ const TURN_LATE = 1.5;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35 };
 /** Half depth along the route. */
-const DEPTH: Record<RunObstacleKind, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6 };
+const DEPTH: Record<RunObstacleKind, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.25 };
 
 export function weatherAt(seed: number, distance: number): RunWeather {
   let hash = (seed ^ Math.imul(Math.floor(distance / 300) + 1, 0x45d9f3b)) >>> 0;
@@ -77,6 +78,7 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   spikes: ["踩中了地刺", "换到别的道，或者跳过去。"],
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
   fire: ["碰到了火焰", "换到别的道，或者跳过去。"],
+  trap: ["掉进了落穴", "看见活动木板要跳过去或提前换道。"],
 };
 
 export class RunnerWorld {
@@ -87,6 +89,10 @@ export class RunnerWorld {
   lane = 1;
   position = 1;
   coins = 0;
+  silver = 0;
+  gold = 0;
+  diamond = 0;
+  trapFall = false;
   coinScore = 0;
   streak = 0;
   /** Seconds of jump left (kept for animation); 0 when grounded. */
@@ -256,7 +262,9 @@ export class RunnerWorld {
       const reach = Math.abs(ahead) < .9 && Math.abs(item.lane - this.position) < .5 && Math.abs((item.y ?? .8) - (this.altitude + .8)) < 1.1;
       if (!reach && !(this.boost > 0 && Math.abs(ahead) < .9)) return;
     }
-    item.done = true; this.coins++; this.streak++; this.streakTimer = 4; this.coinScore += 50 * this.multiplier;
+    const tier = item.tier ?? "silver";
+    item.done = true; this.coins++; this[tier]++; this.streak++; this.streakTimer = 4;
+    this.coinScore += (tier === "diamond" ? 1000 : tier === "gold" ? 150 : 50) * this.multiplier;
   }
 
   private touchPower(item: RunItem, kind: RunPowerKind) {
@@ -278,7 +286,7 @@ export class RunnerWorld {
     item.done = true; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
     if (this.shield > 0) { this.shield = 0; this.grace = GRACE_TIME; this.shieldSaves++; return true; }
     const recoverable = item.span !== 3 && (kind === "block" || kind === "beam");
-    if (!recoverable) { const [reason, hint] = FAIL_TEXT[kind]; this.fail(reason, hint); return false; }
+    if (!recoverable) { const [reason, hint] = FAIL_TEXT[kind]; this.trapFall = kind === "trap" || kind === "gap"; this.fail(reason, hint); return false; }
     if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
     this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
     // Bumping a lane obstacle knocks the dog back toward the lane it came from.
@@ -291,6 +299,11 @@ export class RunnerWorld {
   private random() { this.seed = (Math.imul(1664525, this.seed) + 1013904223) >>> 0; return this.seed / 4294967296; }
   private pick<T>(values: readonly T[]) { return values[Math.floor(this.random() * values.length)]; }
   private add(z: number, lane: number, kind: RunItemKind, extra: Partial<RunItem> = {}) { this.items.push({ id: this.sequence++, z, lane, kind, done: false, ...extra }); }
+  private addCoin(z: number, lane: number, extra: Partial<RunItem> = {}) {
+    const roll = this.random();
+    const tier: CoinTier = z >= 1800 && roll < .008 ? "diamond" : z >= 400 && roll < Math.min(.7, (z - 400) / 1300) ? "gold" : "silver";
+    this.add(z, lane, "coin", { ...extra, tier });
+  }
 
   private nearTurn(z: number) { return this.turns.some(turn => z > turn.z - 45 && z < turn.z + 25); }
 
@@ -325,7 +338,7 @@ export class RunnerWorld {
     } else if (roll < .3 - difficulty * .1) {
       // One lane obstacle.
       const lane = Math.floor(this.random() * 3);
-      this.add(z, lane, this.pick(["block", "block", "beam", "spikes", "fire"] as const));
+      this.add(z, lane, this.pick(["block", "block", "beam", "spikes", "fire", "trap"] as const));
       free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
     } else if (roll < .62) {
       // Two lanes blocked, one way through.
@@ -338,8 +351,8 @@ export class RunnerWorld {
     }
 
     // Coins: a line leading into the free lane, or an arc over a jump.
-    if (jumpArc) for (let i = -2; i <= 2; i++) this.add(z + i * 1.8, free, "coin", { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
-    else for (let i = 0; i < 5; i++) this.add(z - 10 + i * 2.6, free, "coin");
+    if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
+    else for (let i = 0; i < 5; i++) this.addCoin(z - 10 + i * 2.6, free);
 
     if (pattern > 3 && pattern % 6 === 0) this.add(z + 9, free, (["shield", "magnet", "boost"] as const)[this.powerIndex++ % 3]);
   }

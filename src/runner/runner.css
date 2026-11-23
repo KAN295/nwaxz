@@ -24,6 +24,7 @@
 .runner-coins{justify-self:end;display:flex;align-items:center;gap:6px;padding:6px 12px 6px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);pointer-events:none}
 .runner-coins i{width:20px;height:20px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff3b5,#f2c443 45%,#b9851c)}
 .runner-coins b{font:800 18px/1 ui-rounded,system-ui;font-variant-numeric:tabular-nums;color:var(--gold)}
+.runner-coins b{font-size:12px;white-space:nowrap}.runner-coins i{background:radial-gradient(circle at 35% 35%,#fff,#b4c8cf 55%,#677b85)}
 .runner-scene{position:absolute;z-index:2;top:calc(max(12px,env(safe-area-inset-top)) + 64px);left:0;right:0;margin:0;text-align:center;font-size:11px;color:var(--muted);text-shadow:0 1px 4px #000;pointer-events:none}
 .runner-screen:not([data-phase=running]) .runner-scene{display:none}
 .runner-effects{position:absolute;z-index:2;top:calc(max(12px,env(safe-area-inset-top)) + 54px);right:14px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none}
@@ -82,6 +83,12 @@
 .runner-roster figcaption{font-size:13px;font-weight:700}
 .runner-roster figcaption small{display:block;font-size:11px;font-weight:400;color:var(--muted)}
 .runner-roster>span{font:900 14px system-ui;color:var(--gold);opacity:.7}
+.runner-shop-list{display:grid;gap:8px;margin:14px 0;max-height:44dvh;overflow:auto;text-align:left}
+.runner-shop-item{display:grid;grid-template-columns:46px 1fr 66px;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.04)}
+.runner-shop-swatch{width:42px;height:42px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#fff,var(--skin) 50%,#444 100%);box-shadow:0 0 16px var(--skin)}
+.runner-shop-item strong{display:block;font-size:14px}.runner-shop-item small{display:block;color:var(--muted);font-size:11px}
+.runner-card .runner-shop-item button{margin:0;min-height:34px;font-size:12px;border:1px solid var(--line);background:rgba(246,211,107,.12);color:var(--ink)}
+.runner-card .runner-shop-item button:disabled{opacity:.5;cursor:default}
 .runner-seg{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:8px 0;padding:4px;border-radius:12px;background:rgba(0,0,0,.25)}
 .runner-seg-3{grid-template-columns:repeat(3,1fr)}
 .runner-card .runner-seg button{margin:0;min-height:36px;border:0;border-radius:9px;background:transparent;color:var(--muted);font-size:13px;font-weight:600}

@@ -6,6 +6,7 @@ import { RunnerWorld, readRunRecord, isRunObstacle, weatherAt, nightAt, sceneAt 
 import { dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
+import { readWardrobe, canAfford } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
@@ -86,6 +87,37 @@ test('coins collect once, magnet pulls across lanes, shield absorbs exactly one 
   const s = place('shield'); run(s, .5); assert.ok(s.shield > 0);
   s.items = [{ id: 3, z: s.distance + 4, lane: 1, kind: 'gap', done: false, span: 3 }]; run(s, .5);
   assert.equal(s.phase, 'running'); assert.equal(s.shield, 0);
+});
+
+test('silver starts the run; gold arrives later and diamonds remain rare', () => {
+  const world = new RunnerWorld(22, 'endless'); world.items = [];
+  for (let n = 0; n < 100; n++) world.addCoin(100, 1);
+  assert.ok(world.items.every(item => item.tier === 'silver'));
+  world.items = [];
+  for (let n = 0; n < 400; n++) world.addCoin(1100, 1);
+  assert.ok(world.items.some(item => item.tier === 'gold'));
+  assert.ok(world.items.every(item => item.tier !== 'diamond'));
+  world.items = [];
+  for (let n = 0; n < 2000; n++) world.addCoin(2200, 1);
+  const diamonds = world.items.filter(item => item.tier === 'diamond').length;
+  assert.ok(diamonds > 0 && diamonds < 35, `${diamonds} diamonds in 2000 items`);
+  for (const [tier, points] of [['silver', 50], ['gold', 150], ['diamond', 1000]]) {
+    const collected = place('coin', { tier }); run(collected, .6);
+    assert.equal(collected[tier], 1); assert.equal(collected.coinScore, points);
+  }
+});
+
+test('falling through a gap or trap plays the fall, while other hits do not', () => {
+  for (const kind of ['gap', 'trap']) { const world = place(kind); run(world, .6); assert.equal(world.phase, 'caught'); assert.equal(world.trapFall, true); }
+  const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
+});
+
+test('wardrobe balances and owned looks survive a valid save only', () => {
+  const empty = readWardrobe(null); assert.deepEqual(empty.owned, ['sunny']); assert.equal(empty.equipped, 'sunny');
+  const saved = readWardrobe(JSON.stringify({ version: 1, silver: 45, gold: 9, diamond: 0, owned: ['sunny', 'mint', 'fake', 'mint'], equipped: 'mint' }));
+  assert.deepEqual(saved.owned, ['sunny', 'mint']); assert.equal(saved.equipped, 'mint');
+  assert.ok(canAfford(saved, { silver: 45 })); assert.ok(!canAfford(saved, { diamond: 1 }));
+  assert.equal(readWardrobe(JSON.stringify({ ...saved, version: 1, silver: -1 })).silver, 0);
 });
 
 test('boost is faster, passes hazards, takes corners itself and expires', () => {
