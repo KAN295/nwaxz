@@ -12,11 +12,12 @@ export function createApp({ distDir, revision = "development", coopService, soci
   app.use((req, res, next) => {
     const host=req.get('host')??'';
     const sockets=/^[a-z\d.\-:[\]]+$/i.test(host)?` ws://${host} wss://${host}`:'';
+    const direct=host==='nwaxz.bzlom.cn'?' wss://play.bzlom.cn':'';
     res.set({
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Content-Security-Policy":
-        `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'${sockets}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'`,
+        `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'${sockets}${direct}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'`,
     });
     next();
   });

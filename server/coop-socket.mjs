@@ -12,7 +12,10 @@ export function attachCoopSockets(server, service, allowUpgrade = () => true, so
     const match = /^\/api\/coop\/([A-Z2-9]{6})\/socket$/.exec(new URL(req.url,'http://local').pathname);
     const lan = !!social && new URL(req.url,"http://local").pathname === "/api/coop/lan/socket";
     if(!match && !lan){socket.destroy();return;}
-    if(req.headers.origin){try{if(new URL(req.headers.origin).host!==req.headers.host){socket.destroy();return;}}catch{socket.destroy();return;}}
+    const direct=req.headers.host==='play.bzlom.cn';
+    if(direct){
+      if(!match || req.headers.origin!=='https://nwaxz.bzlom.cn'){socket.destroy();return;}
+    }else if(req.headers.origin){try{if(new URL(req.headers.origin).host!==req.headers.host){socket.destroy();return;}}catch{socket.destroy();return;}}
     const target = lan ? signaling : wss;
     if(target.clients.size>=64){socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');return;}
     target.handleUpgrade(req,socket,head,ws=>lan ? broker.connect(ws, social, service, req) : attachCoopPeer(ws, match[1], service));

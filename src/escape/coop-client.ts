@@ -1,6 +1,7 @@
 import type { CoopCreateRequest, CoopInput, CoopJoinRequest, CoopSessionResponse, CoopSnapshot } from './coop-protocol.ts';
 import {version as APP_VERSION} from '../../package.json';
 import { applyCoopSnapshot } from './coop-snapshot.ts';
+import { firstReadyRoomSocket } from './public-route.ts';
 export type CoopConnectionState='connecting'|'connected'|'reconnecting'|'offline'|'closed';
 class CommandError extends Error { constructor(message:string,readonly status:number){super(message);} }
 
@@ -9,6 +10,8 @@ export type CoopSocket = Pick<WebSocket, 'readyState'|'bufferedAmount'|'close'|'
 export type CoopLink = {open():CoopSocket; close():void};
 export class CoopClient {
  private socket?:CoopSocket;
+ private routeAttempt?:AbortController;
+ private primaryNext=false;
  private alive=false; private connected=false; private inputTimer=0; private pingTimer=0; private retryTimer=0;
  private lastPacketAt=0; private pinging=false;
  private seq=0; private requestId=0; private lastInputAt=0; private lastSignature='';
@@ -30,13 +33,32 @@ export class CoopClient {
  get snapshot(){return this.lastSnapshot;}
  private state(state:CoopConnectionState,message:string,latency?:number){for(const fn of this.stateListeners)fn(state,message,latency);}
  start(){if(this.alive)return;this.alive=true;this.connect();}
- private connect(){
-  if(!this.alive || this.socket)return;
+ private async connect(){
+  if(!this.alive || this.socket || this.routeAttempt)return;
   this.state(this.lastSnapshot?'reconnecting':'connecting',this.lastSnapshot?'正在重新连接':'正在连接房间');
   const url=new URL(`${this.base}/${encodeURIComponent(this.session.code)}/socket`,location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
-  const ws=this.link ? this.link.open() : new WebSocket(url);this.socket=ws;
+  let ws:CoopSocket;
+  let direct=false;
+  if(!this.link && location.origin==='https://nwaxz.bzlom.cn' && url.origin==='wss://nwaxz.bzlom.cn' && !this.primaryNext){
+   const attempt=new AbortController();this.routeAttempt=attempt;
+   const alternate=new URL(url);alternate.hostname='play.bzlom.cn';
+   try {
+    const selected=await firstReadyRoomSocket([alternate,url],attempt.signal);
+    if(attempt.signal.aborted){selected.close();return;}
+    ws=selected;direct=selected.url===alternate.href;
+   } catch {
+    if(attempt.signal.aborted)return;
+    this.primaryNext=true;
+    this.retryTimer=window.setTimeout(()=>this.connect(),0);return;
+   } finally {if(this.routeAttempt===attempt)this.routeAttempt=undefined;}
+  }else{
+   this.primaryNext=false;
+   ws=this.link ? this.link.open() : new WebSocket(url);
+  }
+  this.socket=ws;
   const deadline=window.setTimeout(()=>{if(!this.connected)ws.close();},this.link ? 40000 : 7000);
-  ws.onopen=()=>ws.send(JSON.stringify({type:'auth',token:this.session.token,version:APP_VERSION}));
+  const authenticate=()=>ws.send(JSON.stringify({type:'auth',token:this.session.token,version:APP_VERSION}));
+  ws.onopen=authenticate;
   ws.onmessage=event=>{
    if(this.socket!==ws)return;
    let packet;try{packet=JSON.parse(event.data);}catch{return;}
@@ -56,9 +78,11 @@ export class CoopClient {
   ws.onerror=()=>{};
   ws.onclose=event=>{
    clearTimeout(deadline);if(this.socket!==ws)return;this.socket=undefined;this.connected=false;this.actions=[];this.rejectPending();
+   if(direct)this.primaryNext=true;
    if(this.link && event.code===4004){this.stop();this.state('closed',event.reason || '房主已离开');return;}
    if(this.alive){this.state('reconnecting','连接中断，正在重连');this.retryTimer=window.setTimeout(()=>this.connect(),1000);}
   };
+  if(ws.readyState===WebSocket.OPEN)authenticate();
  }
  private rejectPending(){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new CommandError('连接中断',0));}this.pending.clear();}
  private async request(type:string,data?:unknown){
@@ -98,5 +122,5 @@ export class CoopClient {
  async ping(){const at=performance.now();await this.request('ping');return Math.round(performance.now()-at);}
  reconnect(){this.reset();this.start();this.startInputs();}
  stop(){this.reset();this.link?.close();}
- private reset(){this.alive=false;this.connected=false;const ws=this.socket;this.socket=undefined;ws?.close();this.rejectPending();clearTimeout(this.retryTimer);clearInterval(this.inputTimer);clearInterval(this.pingTimer);this.inputTimer=this.pingTimer=0;this.latestInput=undefined;this.actions=[];}
+ private reset(){this.alive=false;this.connected=false;this.routeAttempt?.abort();this.routeAttempt=undefined;this.primaryNext=false;const ws=this.socket;this.socket=undefined;ws?.close();this.rejectPending();clearTimeout(this.retryTimer);clearInterval(this.inputTimer);clearInterval(this.pingTimer);this.inputTimer=this.pingTimer=0;this.latestInput=undefined;this.actions=[];}
 }

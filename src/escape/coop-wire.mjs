@@ -1,7 +1,7 @@
 import { diffCoopSnapshot } from './coop-snapshot.ts';
 
 export function attachCoopPeer(ws, code, service, boundToken = undefined) {
-    let token,windowAt=Date.now(),count=0, previousSnapshot;
+    let token,windowAt=Date.now(),count=0, previousSnapshot,probed=false;
     const send=value=>{if(ws.readyState===1)ws.send(JSON.stringify(value));};
     const deadline=setTimeout(()=>ws.close(1008,'authentication required'),5000);deadline.unref?.();
     ws.on('error',()=>{});
@@ -13,6 +13,9 @@ export function attachCoopPeer(ws, code, service, boundToken = undefined) {
         packet=JSON.parse(bytes.toString());
         if(!packet||typeof packet!=='object'||Array.isArray(packet))throw new Error('消息格式无效');
         if(!token){
+          if(!probed && boundToken===undefined && packet.type==='probe' && Object.keys(packet).length===1){
+            probed=true;send({type:'route-ready'});return;
+          }
           if(packet.type!=='auth'||typeof packet.token!=='string'||Object.keys(packet).some(k=>!['type','token','version'].includes(k)))throw new Error('会话无效');
           if (boundToken !== undefined && packet.token !== boundToken) throw new Error("会话无效");
           service.assertVersion(packet.version);service.auth(code,packet.token);

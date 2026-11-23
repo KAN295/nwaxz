@@ -5,7 +5,24 @@ import {CoopService} from './coop-service.mjs';
 import {attachCoopSockets} from './coop-socket.mjs';
 import {applyCoopSnapshot} from '../src/escape/coop-snapshot.ts';
 import packageInfo from '../package.json' with {type:'json'};
+import {WebSocket as ClientSocket} from 'ws';
 const {version}=packageInfo;
+test('the direct game host accepts only main-site room upgrades and a probe never joins a room',async t=>{
+ const app=createApp(),service=app.locals.coop,server=app.listen(0,'127.0.0.1');
+ await new Promise(resolve=>server.once('listening',resolve));
+ const stop=attachCoopSockets(server,service,undefined,app.locals.social);
+ t.after(()=>{stop();service.shutdown();app.locals.social.close();server.closeAllConnections();server.close();});
+ const base='ws://127.0.0.1:'+server.address().port+'/api/coop/';
+ const open=(path,origin)=>new ClientSocket(base+path,{origin,headers:{Host:'play.bzlom.cn'}});
+ for(const [path,origin] of [['AAAAAA/socket','https://example.com'],['lan/socket','https://nwaxz.bzlom.cn']]){
+   const ws=open(path,origin);await new Promise((resolve,reject)=>{ws.once('error',resolve);ws.once('open',()=>reject(Error('unexpected upgrade')));});
+ }
+ const ws=open('AAAAAA/socket','https://nwaxz.bzlom.cn');
+ await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
+ const reply=new Promise(resolve=>ws.once('message',raw=>resolve(JSON.parse(raw))));
+ ws.send(JSON.stringify({type:'probe'}));assert.deepEqual(await reply,{type:'route-ready'});
+ assert.equal(service.rooms.size,0);ws.close();
+});
 async function fixture(t){
  const service=new CoopService(),server=createApp({coopService:service}).listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const close=attachCoopSockets(server,service);
  t.after(()=>{close();service.shutdown();server.closeAllConnections();server.close();});
