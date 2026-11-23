@@ -742,7 +742,7 @@ async function boot(enterNow = false) {
     startupStage = "assets";
     const loading = $(".boot-loading");
     loading.innerHTML = '<small id="boot-label">正在准备浴室…</small><progress id="boot-progress" max="100" aria-label="游戏加载进度"></progress><small id="boot-detail">正在准备游戏入口</small>';
-    if (!enterNow && !import.meta.env.DEV) {
+    if (!enterNow && !import.meta.env.DEV && "serviceWorker" in navigator && "caches" in window) {
       await preloadGame(value => {
         const percent = value.totalBytes > 0 ? Math.floor(value.loadedBytes / value.totalBytes * 100) : 0;
         $<HTMLProgressElement>("#boot-progress").value = percent;

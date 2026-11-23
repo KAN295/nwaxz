@@ -15,8 +15,9 @@ import { floorYAt } from "./basement-map.ts";
 import { interpolatePeerAngle, peerAvatarDefinition, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle } from "./peer-art.ts";
 import { CELL } from "./scene.ts";
 const SLOT_COLORS: Record<1 | 2 | 3, string> = { 1: "#bbd4df", 2: "#b9d7bd", 3: "#dfc68d" };
-const PEER_HEIGHT = 1.55;
-const PEER_WIDTH = 0.86;
+// Avatar artwork has a small transparent margin. Match the 1.65 m first-person eye line.
+const PEER_HEIGHT = 1.88;
+const PEER_WIDTH = 1.12;
 export { interpolatePeerAngle, peerDirectionForView, peerIsRenderable, peerViewAtlasCell, wrapPeerAngle };
 
 type PeerActor = {
@@ -48,7 +49,6 @@ export class PeerActorsRenderer {
     if (this.disposed) return;
     const live = new Set<string>();
     const delta = Math.max(0, Math.min(.12, Number.isFinite(dt) ? dt : 1 / 60));
-    const smooth = 1 - Math.exp(-delta * 11);
 
     for (const peer of peers) {
       if (!peerIsRenderable(peer, selfId) || !peer.position) {
@@ -64,16 +64,16 @@ export class PeerActorsRenderer {
         this.actors.set(peer.id, actor);
       }
       if (actor.avatar !== peer.avatar) this.setAvatar(actor, peer.avatar);
-      const first = actor.time === 0;
-      actor.x = first ? p.x : actor.x + (p.x - actor.x) * smooth;
-      actor.z = first ? p.z : actor.z + (p.z - actor.z) * smooth;
-      actor.angle = first ? p.angle : interpolatePeerAngle(actor.angle, p.angle, smooth);
+      // The timestamped pose buffer already interpolates this sample.
+      actor.x = p.x;
+      actor.z = p.z;
+      actor.angle = p.angle;
       actor.time += delta;
       actor.crouched = !!p.crouched;
       actor.moving = !!p.moving;
       actor.visible = true;
 
-      const crouchScale = actor.crouched ? .72 : 1;
+      const crouchScale = actor.crouched ? .66 : 1;
       const height = PEER_HEIGHT * crouchScale;
       const walkPhase = actor.moving ? actor.time * (p.sprinting ? 12 : 7.5) : 0;
       const bob = actor.moving ? Math.abs(Math.sin(walkPhase)) * (p.sprinting ? .045 : .025) : 0;

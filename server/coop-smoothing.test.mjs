@@ -2,6 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PoseBuffer } from "../src/escape/coop-smoothing.ts";
 
+test("burst arrivals interpolate on server time instead of exaggerating remote velocity", () => {
+  const poses = new PoseBuffer(100);
+  const server = 1_750_000_000_000;
+  poses.observeClock(server, 100);
+  poses.push("hunter", server, { x: 0, z: 0, angle: 0 });
+  poses.observeClock(server + 50, 300);
+  poses.push("hunter", server + 50, { x: 1, z: 0, angle: 0 });
+  poses.observeClock(server + 100, 300);
+  poses.push("hunter", server + 100, { x: 2, z: 0, angle: 0 });
+  assert.ok(poses.sample("hunter", 300).x > 1.8 && poses.sample("hunter", 300).x <= 2);
+});
+
 test("remote actors are drawn between the two snapshots that bracket the render time", () => {
   const poses = new PoseBuffer(100);
   poses.push("hunter", 1000, { x: 0, z: 0, angle: 0 });

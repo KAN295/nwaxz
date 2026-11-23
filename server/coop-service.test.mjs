@@ -388,12 +388,38 @@ test("disconnect has a reconnect grace period and rooms are released after every
     assert.equal(player.status, "reconnecting");
     assert.equal(room.leaderId, b.playerId);
     assert.throws(() => s.auth(a.code, "bad"), e => e.status === 401);
-    advance(29_999); s.cleanup(); assert.ok(s.rooms.has(a.code));
+    advance(59_999); s.cleanup(); assert.ok(s.rooms.has(a.code));
     const peer = { writableEnded: false, writableLength: 0, events: {}, status() { return this; }, set() { return this; }, flushHeaders() {}, write() { return true; }, on(event, fn) { this.events[event] = fn; }, end() { this.writableEnded = true; } };
     s.reconnect(a.code, a.token, peer);
     assert.equal(s.findPlayer(room, a.token).status, "connected");
     peer.events.close(); s.disconnect(a.code, s.findPlayer(room, b.token));
-    advance(30_001); s.cleanup(); assert.equal(s.rooms.has(a.code), false);
+    advance(60_001); s.cleanup(); assert.equal(s.rooms.has(a.code), false);
+  } finally { s.close(); }
+});
+
+test("a congested connection skips snapshots but still receives critical events and current state", () => {
+  const { instance: s, advance } = service();
+  try {
+    const a = s.create(request("a")), b = s.join({ ...request("b"), code: a.code });
+    const room = s.rooms.get(a.code), player = s.findPlayer(room, a.token), snapshots = [];
+    s.setReady(a.code, a.token, true); s.setReady(a.code, b.token, true);
+    s.start(a.code, player);
+    const stream = {
+      writableEnded: false, writableLength: 20 * 1024,
+      status() { return this; }, set() { return this; }, write() {}, on() {},
+      sendSnapshot(snapshot) { snapshots.push(snapshot); },
+      end() { this.writableEnded = true; },
+    };
+    s.attachStream(room, player, stream);
+    room.sharedEvents.push({ type: "door", id: "study" });
+    advance(50); s.pulse();
+    assert.equal(snapshots.length, 0);
+    assert.equal(stream.writableEnded, false);
+    stream.writableLength = 0;
+    advance(50); s.pulse();
+    assert.equal(snapshots.length, 1);
+    assert.ok(snapshots[0].events.some(event => event.type === "door" && event.id === "study"));
+    assert.equal(snapshots[0].serverTime, s.now());
   } finally { s.close(); }
 });
 

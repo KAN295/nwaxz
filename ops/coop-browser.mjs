@@ -7,16 +7,36 @@ import {attachCoopSockets} from '../server/coop-socket.mjs';
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright');
 const coopService = new CoopService();
-const server = createApp({ distDir: fileURLToPath(new URL('../dist/', import.meta.url)), coopService }).listen(0, '127.0.0.1');
+const browserHost = process.env.NWAXZ_BROWSER_LAN_HOST ?? '127.0.0.1';
+const server = createApp({ distDir: fileURLToPath(new URL('../dist/', import.meta.url)), coopService, lan: browserHost !== '127.0.0.1' }).listen(0, browserHost);
 await new Promise(resolve => server.once('listening', resolve));
 attachCoopSockets(server,coopService);
-const base = `http://127.0.0.1:${server.address().port}`;
+const base = `http://${browserHost}:${server.address().port}`;
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH, headless: true, args: ['--disable-gpu', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-background-networking'] });
 const instrumentation = `
   window.__coopSnapshots = []; window.__coopInputs = []; window.__coopSessions = [];
   const NativeSocket=window.WebSocket;
   window.WebSocket=class extends NativeSocket {
-    constructor(...args){super(...args);this.addEventListener('message',event=>{try{const p=JSON.parse(event.data);if(p.type==='snapshot'){window.__coopSnapshots.push(p.data);if(window.__coopSnapshots.length>300)window.__coopSnapshots.shift();}}catch{}});}
+    constructor(...args){
+      super(...args);
+      let snapshot;
+      const merge = (prior, delta) => {
+        const next = {...prior, ...delta.set};
+        for (const key of delta.clear) delete next[key];
+        return next;
+      };
+      this.addEventListener('message',event=>{
+        try {
+          const p=JSON.parse(event.data);
+          if (p.type==='snapshot') snapshot=p.data;
+          else if(p.type==='snapshot-delta' && snapshot?.revision===p.data.base)
+            snapshot={...merge(snapshot,p.data.snapshot),world:merge(snapshot.world,p.data.world)};
+          else return;
+          window.__coopSnapshots.push(snapshot);
+          if(window.__coopSnapshots.length>300)window.__coopSnapshots.shift();
+        } catch {}
+      });
+    }
     send(data){try{const p=JSON.parse(data);if(p.type==='input')window.__coopInputs.push(p.data);}catch{}return super.send(data);}
   };
   const realFetch = window.fetch.bind(window);
@@ -190,7 +210,7 @@ try {
   assert.ok(phoneTeam && phoneTeam.x >= 0 && phoneTeam.x + phoneTeam.width <= 390, 'team panel fits a coarse-pointer phone viewport');
   await a.page.waitForFunction(() => window.__coopSnapshots.some(s => s.room?.players?.length === 2 && s.room.players.every(p => p.lives === 2)), undefined, { timeout: 15000 });
   assert.equal(await b.page.locator('#escape-lives span').count(), 2, 'personal hearts match the two-player life cap');
-  assert.match(await b.page.locator('#escape-coop-team').innerText(), /2命/, 'two-player team displays two lives per survivor');
+  assert.equal((await b.page.locator('#escape-coop-team').innerText()).match(/♥♥/g)?.length, 2, 'two-player team displays two lives per survivor');
   const sessionA = await a.page.evaluate(() => window.__coopSessions[0]); const sessionB = await b.page.evaluate(() => window.__coopSessions[0]);
   await b.page.waitForFunction(id => !!window.__coopSnapshots.at(-1)?.room.players.find(player => player.id === id)?.position, sessionA.playerId, { timeout: 10000 });
   await a.page.waitForFunction(id => !!window.__coopSnapshots.at(-1)?.room.players.find(player => player.id === id)?.position, sessionB.playerId, { timeout: 10000 });
@@ -201,9 +221,13 @@ try {
   await a.page.waitForFunction(({ id, x, z }) => { const p = window.__coopSnapshots.at(-1)?.room.players.find(player => player.id === id)?.position; return p && Math.hypot(p.x - x, p.z - z) > .05; }, { id: sessionB.playerId, x: before.x, z: before.z }, { timeout: 10000 });
   assert.ok(await b.page.evaluate(() => window.__coopInputs.some(input => input.move.forward > 0)), 'non-host movement is sent as directional input');
   await b.page.waitForFunction(() => window.__coopInputs.some(input => input.action === 'light'), undefined, { timeout: 5000 });
-  await a.page.locator('#escape-coop-status').waitFor({ state: 'visible' }); await a.page.waitForFunction(() => /延迟 \d+ms/.test(document.querySelector('#escape-coop-status')?.textContent ?? ''), undefined, { timeout: 6000 });
+  await a.page.locator('#escape-coop-status').waitFor({ state: 'visible' }); await a.page.waitForFunction(() => /延迟 \d+ ms/.test(document.querySelector('#escape-coop-status')?.title ?? ''), undefined, { timeout: 6000 });
+  const previousPeer = ownRoom.peers.get(sessionB.playerId);
+  coopService.closePeer(previousPeer);
+  await b.page.waitForFunction(() => document.querySelector('#escape-coop-status')?.dataset.state === 'reconnecting', undefined, { timeout: 6000 });
   await b.context.setOffline(true); await b.page.waitForTimeout(1000); await b.context.setOffline(false);
   await b.page.waitForFunction(() => document.querySelector('#escape-coop-status')?.dataset.state === 'connected', undefined, { timeout: 15000 });
+  assert.notEqual(ownRoom.peers.get(sessionB.playerId), previousPeer, 'weak connection gets a fresh peer and keeps the same room membership');
   const capture2 = placeForCapture(code, sessionB.token);
   await b.page.waitForFunction(id => window.__coopSnapshots.at(-1)?.room.players.find(player => player.id === id)?.status === 'caught', sessionB.playerId, { timeout: 10000 });
   await b.page.locator('.escape-cinematic').waitFor({ state: 'visible', timeout: 5000 });
@@ -232,7 +256,7 @@ try {
   await a.page.setViewportSize({ width: 1280, height: 800 }); await b.page.setViewportSize({ width: 390, height: 844 });
   await a.page.waitForFunction(() => window.__coopSnapshots.some(s => s.room?.players?.length === 3 && s.room.players.every(p => p.lives === 1)), undefined, { timeout: 15000 });
   assert.equal(await c.page.locator('#escape-lives span').count(), 1, 'personal hearts match the three-player life cap');
-  assert.match(await c.page.locator('#escape-coop-team').innerText(), /1命/, 'three-player team displays one life per survivor');
+  assert.equal((await c.page.locator('#escape-coop-team').innerText()).match(/♥/g)?.length, 3, 'three-player team displays one life per survivor');
   const thirdSession = await c.page.evaluate(() => window.__coopSessions.at(-1)); const newLeaderSession = await a.page.evaluate(() => window.__coopSessions.at(-1)); await c.page.bringToFront();
   await c.page.keyboard.down('w'); await c.page.waitForTimeout(700); await c.page.keyboard.up('w');
   assert.ok(await a.page.evaluate(id => window.__coopSnapshots.some(s => { const p = s.room?.players.find(player => player.id === id)?.position; return p && (p.x !== 5.5 || p.z !== 5.5); }), (await c.page.evaluate(() => window.__coopSessions.at(-1))).playerId), 'third player movement reaches the shared room');

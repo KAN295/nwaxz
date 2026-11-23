@@ -18,15 +18,25 @@ const lerpAngle = (a: number, b: number, t: number) => a + wrap(b - a) * t;
 
 export class PoseBuffer {
   private tracks = new Map<string, Sample[]>();
+  private clockOffset?: number;
+  private lastArrival?: number;
   readonly delayMs: number;
   constructor(delayMs = 100) { this.delayMs = delayMs; }
+  observeClock(serverTime: number, receivedAt: number) {
+    const observed = receivedAt - serverTime;
+    const elapsed = receivedAt - (this.lastArrival ?? receivedAt);
+    this.clockOffset = this.clockOffset === undefined || elapsed > 5000 ? observed :
+      Math.min(observed, this.clockOffset + Math.max(0, elapsed) * .03);
+    this.lastArrival = receivedAt;
+  }
 
   push(id: string, at: number, pose: Pose) {
     let track = this.tracks.get(id);
     if (!track) this.tracks.set(id, track = []);
     const last = track.at(-1);
+    if (last && at < last.at) return;
     if (last && Math.hypot(pose.x - last.pose.x, pose.z - last.pose.z) > TELEPORT) track.length = 0;
-    if (last && at <= last.at) track.pop();
+    else if (last && at === last.at) track.pop();
     track.push({ at, pose: { ...pose } });
     if (track.length > KEEP) track.splice(0, track.length - KEEP);
   }
@@ -34,7 +44,7 @@ export class PoseBuffer {
   sample(id: string, now: number): Pose | undefined {
     const track = this.tracks.get(id);
     if (!track?.length) return undefined;
-    const t = now - this.delayMs;
+    const t = now - (this.clockOffset ?? 0) - this.delayMs;
     if (track.length === 1 || t <= track[0].at) return { ...track[0].pose };
     for (let i = track.length - 1; i > 0; i--) {
       const a = track[i - 1], b = track[i];
@@ -55,5 +65,5 @@ export class PoseBuffer {
     for (const id of this.tracks.keys()) if (!keep.has(id)) this.tracks.delete(id);
   }
 
-  clear() { this.tracks.clear(); }
+  clear() { this.tracks.clear(); this.clockOffset = this.lastArrival = undefined; }
 }

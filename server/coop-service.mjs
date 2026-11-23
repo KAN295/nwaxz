@@ -4,7 +4,8 @@ import packageInfo from "../package.json" with { type: "json" };
 import { EscapeWorld } from "../src/escape/world.ts";
 
 // Snapshots go out every tick (20 Hz); clients interpolate remote actors between them.
-const TICK_MS = 50, SNAPSHOT_MS = 50, GRACE_MS = 30_000, ROOM_TTL_MS = 30 * 60_000, EMPTY_LOBBY_TTL_MS = 2 * 60_000, TERMINAL_TTL_MS = 60_000;
+const TICK_MS = 50, SNAPSHOT_MS = 50, GRACE_MS = 60_000, ROOM_TTL_MS = 30 * 60_000, EMPTY_LOBBY_TTL_MS = 2 * 60_000, TERMINAL_TTL_MS = 60_000;
+const SNAPSHOT_HIGH_WATER = 16 * 1024, MAX_CONGESTION_MS = 12_000, MAX_DEFERRED_EVENTS = 256;
 const HARD_ROOM_LIMIT = 8, MAX_STREAMS = 48, CODE_CHARS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 const validName = value => typeof value === "string" && value.trim().length > 0 && [...value.trim()].length <= 12 && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -201,7 +202,7 @@ export class CoopService {
     const streamCount = [...this.rooms.values()].reduce((sum, current) => sum + current.peers.size, 0) - (previous ? 1 : 0);
     if (streamCount >= MAX_STREAMS) throw new CoopError(503, "联机连接已满");
     res.status(200).set({ "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no" }); res.flushHeaders?.();
-    const peer = { res, lastSent: 0 }; room.peers.set(player.id, peer);
+    const peer = { res, lastSent: 0, deferredEvents: [] }; room.peers.set(player.id, peer);
     room.revision++;
     res.on("close", () => { if (room.peers.get(player.id) === peer) { room.peers.delete(player.id); if (player.status === "connected") { player.status = "reconnecting"; if (room.leaderId === player.id) this.electLeader(room); } player.disconnectedAt = this.now(); } });
     res.write(`event: connected\ndata: ${JSON.stringify({ serverTime: this.now(), room: this.view(room) })}\n\n`);
@@ -232,7 +233,7 @@ export class CoopService {
       }
       if (room.peers.size && room.phase === "playing" && room.terminalAt === undefined) room.lastActive = now;
       if (room.phase === "playing" && now >= room.nextPulse) {
-        room.nextPulse = now + TICK_MS;
+        room.nextPulse += (Math.floor((now - room.nextPulse) / TICK_MS) + 1) * TICK_MS;
         const connected = [...room.players.values()].filter(p => p.status === "connected");
         if (connected.length) {
           const roster = [...room.players.values()].filter(p => !["caught", "eliminated", "escaped", "left"].includes(p.status));
@@ -280,8 +281,16 @@ export class CoopService {
         room.snapshotEvents = [...room.world.drainEvents().filter(event => event.type !== "caught"), ...room.sharedEvents.splice(0)];
         for (const p of room.players.values()) {
           const peer = room.peers.get(p.id); if (!peer || peer.res.writableEnded) continue;
-          if (peer.res.writableLength > 256 * 1024) { this.closePeer(peer); room.peers.delete(p.id); if (p.status === "connected") p.status = "reconnecting"; p.disconnectedAt = now; if (room.leaderId === p.id) this.electLeader(room); continue; }
+          if (peer.res.writableLength > SNAPSHOT_HIGH_WATER) {
+            peer.congestedSince ??= now;
+            peer.deferredEvents.push(...room.snapshotEvents, ...(p.pendingEvents ?? []), ...p.actorWorld.drainEvents());
+            p.pendingEvents = [];
+            if (now - peer.congestedSince >= MAX_CONGESTION_MS || peer.deferredEvents.length > MAX_DEFERRED_EVENTS) this.closePeer(peer);
+            continue;
+          }
+          peer.congestedSince = undefined;
           const snapshot=this.snapshot(room,p);
+          if (peer.deferredEvents.length) snapshot.events.unshift(...peer.deferredEvents.splice(0));
           if(peer.res.sendSnapshot)peer.res.sendSnapshot(snapshot);
           else if(!peer.res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`))peer.lastSent=now;
         }
@@ -309,19 +318,19 @@ export class CoopService {
 
 export class CoopError extends Error { constructor(status, message, details = {}) { super(message); this.status = status; this.details = details; } }
 
-export function mountCoopRoutes(app, { service = new CoopService(), express }) {
+export function mountCoopRoutes(app, { service = new CoopService(), express, lan = false, clientIp = resolveCoopClientIp }) {
   const router = express.Router(); router.use(express.json({ limit: "8kb", strict: true }));
   const run = fn => (req, res) => { try { res.json(fn(req)); } catch (error) { res.status(error.status ?? 400).json({ error: error.message ?? "请求无效", ...error.details }); } };
   const onlyKeys = (body, keys) => body === undefined && keys.length === 0 || !!body && typeof body === "object" && !Array.isArray(body) && !Object.keys(body).some(key => !keys.includes(key));
   const tokenFrom = req => /^Bearer ([A-Za-z0-9_-]{20,128})$/u.exec(req.get("authorization") ?? "")?.[1] ?? "";
   router.get("/ping", (_req, res) => res.json({ serverTime: Date.now() }));
-  router.get('/servers',run(()=>({serverTime:Date.now(),server:{id:'primary',name:'奶蛙浴场',rooms:service.rooms.size,capacity:service.maxRooms,players:[...service.rooms.values()].reduce((n,r)=>n+[...r.players.values()].filter(p=>p.status==='connected').length,0),version:packageInfo.version},rooms:[...service.rooms.values()].map(room=>({code:room.code,name:room.name,players:[...room.players.values()].filter(p=>p.status!=='left').length,maxPlayers:3,locked:!!room.passwordHash,phase:room.phase,leaderName:room.players.get(room.leaderId)?.name??''}))})));
+  router.get('/servers',run(()=>({serverTime:Date.now(),server:{id:lan?'lan':'primary',name:lan?'局域网联机':'奶蛙浴场',rooms:service.rooms.size,capacity:service.maxRooms,players:[...service.rooms.values()].reduce((n,r)=>n+[...r.players.values()].filter(p=>p.status==='connected').length,0),version:packageInfo.version},rooms:[...service.rooms.values()].map(room=>({code:room.code,name:room.name,players:[...room.players.values()].filter(p=>p.status!=='left').length,maxPlayers:3,locked:!!room.passwordHash,phase:room.phase,leaderName:room.players.get(room.leaderId)?.name??''}))})));
   const identity=req=>{
     service.assertVersion(req.body?.version);service.validateProfile(req.body?.name,req.body?.avatar);
     return app.locals.social.auth(tokenFrom(req));
   };
-  router.post("/rooms", run(req => { if (!req.body || Object.keys(req.body).some(key => !["version", "name", "avatar",'title','visibility','password'].includes(key))) throw new CoopError(400, "请求字段无效"); const profile=identity(req);return service.create({...req.body,name:profile.name,avatar:profile.avatar,profileUid:profile.uid}, resolveCoopClientIp(req)); }));
-  router.post("/:code/join", run(req => { if (!req.body || Object.keys(req.body).some(key => !["version", "name", "avatar",'password'].includes(key))) throw new CoopError(400, "请求字段无效");const profile=identity(req),code=String(req.params.code).toUpperCase();const result=service.join({ ...req.body, code,name:profile.name,avatar:profile.avatar,profileUid:profile.uid,invited:app.locals.social.invited(profile.uid,code) }, resolveCoopClientIp(req));app.locals.social.consume(profile.uid,code);return result; }));
+  router.post("/rooms", run(req => { if (!req.body || Object.keys(req.body).some(key => !["version", "name", "avatar",'title','visibility','password'].includes(key))) throw new CoopError(400, "请求字段无效"); const profile=identity(req);return service.create({...req.body,name:profile.name,avatar:profile.avatar,profileUid:profile.uid}, clientIp(req)); }));
+  router.post("/:code/join", run(req => { if (!req.body || Object.keys(req.body).some(key => !["version", "name", "avatar",'password'].includes(key))) throw new CoopError(400, "请求字段无效");const profile=identity(req),code=String(req.params.code).toUpperCase();const result=service.join({ ...req.body, code,name:profile.name,avatar:profile.avatar,profileUid:profile.uid,invited:app.locals.social.invited(profile.uid,code) }, clientIp(req));app.locals.social.consume(profile.uid,code);return result; }));
   router.post("/:code/start", run(req => { if (!onlyKeys(req.body, [])) throw new CoopError(400, "请求字段无效"); const room = service.auth(req.params.code, tokenFrom(req)); const player = service.findPlayer(room, tokenFrom(req)); return service.start(req.params.code, player); }));
   router.post("/:code/ready", run(req => { if (!onlyKeys(req.body, ["ready"])) throw new CoopError(400, "请求字段无效"); return service.setReady(req.params.code, tokenFrom(req), req.body.ready); }));
   router.post("/:code/respawn", run(req => { if (!onlyKeys(req.body, [])) throw new CoopError(400, "请求字段无效"); return service.respawn(req.params.code, tokenFrom(req)); }));
