@@ -6,7 +6,7 @@ import { RunnerWorld, readRunRecord, isRunObstacle, weatherAt, nightAt, sceneAt 
 import { dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
-import { readWardrobe, canAfford } from '../src/runner/shop.ts';
+import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
@@ -72,6 +72,17 @@ test('lethal lane hazards: spikes and fire can be jumped, the boulder needs a do
   const double = place('boulder'); double.items[0].z = 9; double.action('jump'); run(double, .25); double.action('jump'); run(double, .7); assert.equal(double.phase, 'running');
 });
 
+test('two-lane fire and debris collide across both lanes and leave the third clear', () => {
+  for (const kind of ['fire', 'spikes']) for (const lane of [0, 1]) {
+    for (const hitLane of [lane, lane + 1]) {
+      const hit = place(kind, { lane, span: 2 }); hit.lane = hit.position = hitLane; run(hit, .6);
+      assert.equal(hit.phase, 'caught', `${kind} ${lane} hits lane ${hitLane}`);
+    }
+    const safe = place(kind, { lane, span: 2 }); safe.lane = safe.position = lane === 0 ? 2 : 0; run(safe, .6);
+    assert.equal(safe.phase, 'running', `${kind} ${lane} leaves one lane clear`);
+  }
+});
+
 test('jump arc, double jump, landing buffer and air slide', () => {
   const w = new RunnerWorld(); w.start(); w.items = []; w.turns = [];
   w.action('jump'); run(w, .3); const h = w.jumpHeight; assert.ok(h > 1);
@@ -112,12 +123,18 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
   const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
 });
 
-test('wardrobe balances and owned looks survive a valid save only', () => {
-  const empty = readWardrobe(null); assert.deepEqual(empty.owned, ['sunny']); assert.equal(empty.equipped, 'sunny');
-  const saved = readWardrobe(JSON.stringify({ version: 1, silver: 45, gold: 9, diamond: 0, owned: ['sunny', 'mint', 'fake', 'mint'], equipped: 'mint' }));
-  assert.deepEqual(saved.owned, ['sunny', 'mint']); assert.equal(saved.equipped, 'mint');
+test('QS 2027 shop has 100 ranked looks with bundled logos, and saves only valid looks', () => {
+  assert.equal(DOG_LOOKS.length, 100); assert.equal(new Set(DOG_LOOKS.map(look => look.id)).size, 100);
+  assert.equal(DOG_LOOKS[0].name, 'Massachusetts Institute of Technology (MIT)');
+  for (const look of DOG_LOOKS) { assert.match(look.color, /^#[0-9a-f]{6}$/i); assert.ok(fs.existsSync(`public${look.logo}`), look.logo); }
+  const empty = readWardrobe(null); assert.deepEqual(empty.owned, ['original']); assert.equal(empty.equipped, 'original');
+  const saved = readWardrobe(JSON.stringify({ version: 2, silver: 45, gold: 9, diamond: 0, owned: ['original', 'qs001', 'fake', 'qs001'], equipped: 'qs001' }));
+  assert.deepEqual(saved.owned, ['original', 'qs001']); assert.equal(saved.equipped, 'qs001');
   assert.ok(canAfford(saved, { silver: 45 })); assert.ok(!canAfford(saved, { diamond: 1 }));
-  assert.equal(readWardrobe(JSON.stringify({ ...saved, version: 1, silver: -1 })).silver, 0);
+  assert.equal(readWardrobe(JSON.stringify({ ...saved, version: 2, silver: -1 })).silver, 0);
+  const migrated = migrateLegacyWardrobe(JSON.stringify({ version: 1, silver: 7, gold: 4, diamond: 0, owned: ['sunny', 'mint', 'nebula'], equipped: 'mint' }));
+  assert.deepEqual(migrated.owned, ['original']); assert.equal(migrated.equipped, 'original');
+  assert.equal(migrated.silver, 52); assert.equal(migrated.diamond, 3);
 });
 
 test('boost is faster, passes hazards, takes corners itself and expires', () => {
@@ -153,7 +170,7 @@ function drive(w) {
   const next = ahead[0]; if (!next) return;
   if (next.span === 3) { if (next.z - w.distance < w.speed * .28 + 1) w.action(next.kind === 'beam' ? 'slide' : 'jump'); return; }
   if (next.z - w.distance < Math.max(14, w.speed * .9)) {
-    const blocked = ahead.filter(i => Math.abs(i.z - next.z) < .01).map(i => i.lane);
+    const blocked = ahead.filter(i => Math.abs(i.z - next.z) < .01).flatMap(i => i.span === 2 ? [i.lane, i.lane + 1] : [i.lane]);
     const lane = [0, 1, 2].find(l => !blocked.includes(l));
     if (!w.turnWindow) { if (w.lane < lane) w.action('right'); else if (w.lane > lane) w.action('left'); }
   }
@@ -196,7 +213,7 @@ test('scenes rotate every 450 m; weather is reproducible; night alternates after
   assert.equal(sceneAt(0, 1), 1); assert.equal(sceneAt(450, 1), 2); assert.equal(sceneAt(900, 1), 0);
   const values = new Set(); for (let seed = 0; seed < 20; seed++) for (let d = 0; d < 6000; d += 300) { values.add(weatherAt(seed, d)); assert.equal(weatherAt(seed, d), weatherAt(seed, d + 1)); }
   assert.deepEqual([...values].sort(), ['rain', 'snow', 'sunny']);
-  for (const [d, v] of [[999, false], [1000, true], [1499, true], [1500, false], [2000, true]]) assert.equal(nightAt(d), v);
+  for (const [d, v] of [[999, false], [1000, true], [1499, true], [2499, true], [2500, false], [3099, false], [3100, true]]) assert.equal(nightAt(d), v);
 });
 
 test('dog animation: eight-frame gallop, jump/slide poses, frozen clock; chaser uses rear frames', () => {

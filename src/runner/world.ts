@@ -13,7 +13,7 @@ export type RunPowerKind = "magnet" | "shield" | "boost";
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 3; y?: number; pulled?: boolean; tier?: CoinTier };
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier };
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
@@ -57,7 +57,7 @@ export function weatherAt(seed: number, distance: number): RunWeather {
   hash = Math.imul(hash ^ (hash >>> 16), 0x45d9f3b) >>> 0;
   return (["sunny", "rain", "snow"] as const)[hash % 3];
 }
-export const nightAt = (distance: number) => distance >= 1000 && Math.floor((distance - 1000) / 500) % 2 === 0;
+export const nightAt = (distance: number) => distance >= 1000 && (distance - 1000) % 2100 < 1500;
 
 export function readRunRecord(raw: string | null): RunRecord {
   const empty: RunRecord = { version: 1, distance: 0, coins: 0, score: 0 };
@@ -75,7 +75,7 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   block: ["撞上了倒木", "整条路的倒木要跳过去。"],
   gap: ["掉进了裂缝", "看到裂缝提前起跳，空中还能再跳一次。"],
   beam: ["撞上了低门", "整条路的低门要下滑钻过去。"],
-  spikes: ["踩中了地刺", "换到别的道，或者跳过去。"],
+  spikes: ["绊倒在乱石枯枝上", "看清路上的乱石和枯枝，换道或跳过去。"],
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
   fire: ["碰到了火焰", "换到别的道，或者跳过去。"],
   trap: ["掉进了落穴", "看见活动木板要跳过去或提前换道。"],
@@ -279,7 +279,7 @@ export class RunnerWorld {
     const ahead = item.z - this.distance, depth = DEPTH[kind];
     if (ahead < -depth) { item.done = true; return true; }
     if (ahead > depth) return true;
-    if (item.span !== 3 && Math.abs(item.lane - this.position) > .6) return true;
+    if (item.span !== 3 && (item.span === 2 ? this.position < item.lane - .6 || this.position > item.lane + 1.6 : Math.abs(item.lane - this.position) > .6)) return true;
     const clear = kind === "beam" ? this.slide > 0 && !this.airborne : this.altitude > CLEARANCE[kind];
     if (clear || this.boost > 0 || this.grace > 0) return true;
 
@@ -332,17 +332,22 @@ export class RunnerWorld {
     let jumpArc = false;
 
     if (pattern < 2) {
-      // Warm-up: one crate in the middle lane, then one on a side.
+      // Warm-up: one fallen-log obstacle in the middle lane, then one on a side.
       this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "block");
       free = pattern === 0 ? this.pick([0, 2]) : 1;
     } else if (roll < .3 - difficulty * .1) {
-      // One lane obstacle.
-      const lane = Math.floor(this.random() * 3);
-      this.add(z, lane, this.pick(["block", "block", "beam", "spikes", "fire", "trap"] as const));
-      free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
+      const kind = this.pick(["block", "block", "beam", "spikes", "fire", "trap"] as const);
+      if (kind === "fire" || kind === "spikes" && this.random() < .42) {
+        // A two-lane fire or debris bed still leaves one complete lane free.
+        const lane = Math.floor(this.random() * 2);
+        this.add(z, lane, kind, { span: 2 }); free = lane === 0 ? 2 : 0;
+      } else {
+        const lane = Math.floor(this.random() * 3);
+        this.add(z, lane, kind); free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
+      }
     } else if (roll < .62) {
       // Two lanes blocked, one way through.
-      for (const lane of [0, 1, 2]) if (lane !== free) this.add(z, lane, this.pick(scene === 2 ? ["block", "boulder", "beam"] as const : ["block", "boulder", "fire", "spikes"] as const));
+      for (const lane of [0, 1, 2]) if (lane !== free) this.add(z, lane, this.pick(scene === 2 ? ["block", "boulder", "beam"] as const : ["block", "boulder", "spikes"] as const));
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
       const kind = this.pick(scene === 0 ? ["gap", "gap", "block", "beam"] as const : scene === 1 ? ["block", "beam", "beam", "gap"] as const : ["beam", "block", "gap"] as const);

@@ -1,0 +1,802 @@
+[
+  {
+    "id": "qs001",
+    "rank": "1",
+    "name": "Massachusetts Institute of Technology (MIT)",
+    "color": "#a82e45",
+    "logo": "/assets/runner/qs2027/qs001.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/massachusetts-institute-of-technology-mit_410_small.jpg"
+  },
+  {
+    "id": "qs002",
+    "rank": "=2",
+    "name": "Imperial College London",
+    "color": "#0202cd",
+    "logo": "/assets/runner/qs2027/qs002.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240430033452pm869301QS-Imperial-Logo-white-text-blue-background-48x48.jpg"
+  },
+  {
+    "id": "qs003",
+    "rank": "=2",
+    "name": "Stanford University",
+    "color": "#a54a5b",
+    "logo": "/assets/runner/qs2027/qs003.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/stanford-university_573_small.jpg"
+  },
+  {
+    "id": "qs004",
+    "rank": "4",
+    "name": "University of Oxford",
+    "color": "#213a5d",
+    "logo": "/assets/runner/qs2027/qs004.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-oxford_478_small.jpg"
+  },
+  {
+    "id": "qs005",
+    "rank": "5",
+    "name": "Harvard University",
+    "color": "#5d3c36",
+    "logo": "/assets/runner/qs2027/qs005.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/harvard-university_253_small.jpg"
+  },
+  {
+    "id": "qs006",
+    "rank": "6",
+    "name": "University of Cambridge",
+    "color": "#cbd226",
+    "logo": "/assets/runner/qs2027/qs006.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-cambridge_95_small.jpg"
+  },
+  {
+    "id": "qs007",
+    "rank": "7",
+    "name": "California Institute of Technology (Caltech)",
+    "color": "#fde3c7",
+    "logo": "/assets/runner/qs2027/qs007.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/california-institute-of-technology-caltech_94_small.jpg"
+  },
+  {
+    "id": "qs008",
+    "rank": "=8",
+    "name": "ETH Zurich",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs008.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260622010903pm265059eth-zurich-swiss-federal-inst-of-technology-48x48.jpg"
+  },
+  {
+    "id": "qs009",
+    "rank": "=8",
+    "name": "UCL",
+    "color": "#654d86",
+    "logo": "/assets/runner/qs2027/qs009.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260707042429am454699UCL-Logo200x200-RGB-48x48.jpg"
+  },
+  {
+    "id": "qs010",
+    "rank": "10",
+    "name": "National University of Singapore (NUS)",
+    "color": "#527b9e",
+    "logo": "/assets/runner/qs2027/qs010.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/national-university-of-singapore-nus_443_small.jpg"
+  },
+  {
+    "id": "qs011",
+    "rank": "11",
+    "name": "The University of Hong Kong",
+    "color": "#74ae6d",
+    "logo": "/assets/runner/qs2027/qs011.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250912101330am198735HKUcolour-low-resolution-48x48.jpg"
+  },
+  {
+    "id": "qs012",
+    "rank": "12",
+    "name": "Nanyang Technological University, Singapore (NTU Singapore)",
+    "color": "#6a9ba0",
+    "logo": "/assets/runner/qs2027/qs012.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/nanyang-technological-university-singapore-ntu_592560cf2aeae70239af4c32_small.jpg"
+  },
+  {
+    "id": "qs013",
+    "rank": "13",
+    "name": "Peking University",
+    "color": "#924c52",
+    "logo": "/assets/runner/qs2027/qs013.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/peking-university_50_small.jpg"
+  },
+  {
+    "id": "qs014",
+    "rank": "14",
+    "name": "Tsinghua University",
+    "color": "#ddd8ec",
+    "logo": "/assets/runner/qs2027/qs014.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/tsinghua-university_626_small.jpg"
+  },
+  {
+    "id": "qs015",
+    "rank": "15",
+    "name": "University of Pennsylvania",
+    "color": "#accbdb",
+    "logo": "/assets/runner/qs2027/qs015.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-pennsylvania_495_small.jpg"
+  },
+  {
+    "id": "qs016",
+    "rank": "=16",
+    "name": "Cornell University",
+    "color": "#e5938e",
+    "logo": "/assets/runner/qs2027/qs016.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/cornell-university_143_small.jpg"
+  },
+  {
+    "id": "qs017",
+    "rank": "=16",
+    "name": "Yale University",
+    "color": "#092b64",
+    "logo": "/assets/runner/qs2027/qs017.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/yale-university_684_small.jpg"
+  },
+  {
+    "id": "qs018",
+    "rank": "18",
+    "name": "The Chinese University of Hong Kong (CUHK)",
+    "color": "#bf7d5d",
+    "logo": "/assets/runner/qs2027/qs018.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/230719090304am589775CUHK-acronym-logo-thumb-200x200%20%281%29_0.jpg"
+  },
+  {
+    "id": "qs019",
+    "rank": "19",
+    "name": "The University of New South Wales (UNSW Sydney)",
+    "color": "#ae572b",
+    "logo": "/assets/runner/qs2027/qs019.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/221220094647am317557UNSW-Sydney-Logo-jpeg-48x48.jpg"
+  },
+  {
+    "id": "qs020",
+    "rank": "=20",
+    "name": "Johns Hopkins University",
+    "color": "#b4c4d1",
+    "logo": "/assets/runner/qs2027/qs020.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/johns-hopkins-university_305_small.jpg"
+  },
+  {
+    "id": "qs021",
+    "rank": "=20",
+    "name": "University of California, Berkeley (UCB)",
+    "color": "#cfdce5",
+    "logo": "/assets/runner/qs2027/qs021.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-california-berkeley-ucb_84_small.jpg"
+  },
+  {
+    "id": "qs022",
+    "rank": "=22",
+    "name": "EPFL – École polytechnique fédérale de Lausanne",
+    "color": "#f6c7b6",
+    "logo": "/assets/runner/qs2027/qs022.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/epfl-ecole-polytechnique-federale-de-lausanne_592560cf2aeae70239af4b34_small.jpg"
+  },
+  {
+    "id": "qs023",
+    "rank": "=22",
+    "name": "The University of Melbourne",
+    "color": "#bfdef8",
+    "logo": "/assets/runner/qs2027/qs023.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/211118103607am165180PRIMARY-A-A4-Vertical-Housed-RGB-200px-48x48.jpg"
+  },
+  {
+    "id": "qs024",
+    "rank": "24",
+    "name": "University of Chicago",
+    "color": "#9e3f50",
+    "logo": "/assets/runner/qs2027/qs024.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-chicago_120_small.jpg"
+  },
+  {
+    "id": "qs025",
+    "rank": "25",
+    "name": "Technical University of Munich",
+    "color": "#1a75ae",
+    "logo": "/assets/runner/qs2027/qs025.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/technical-university-of-munich_599_small.jpg"
+  },
+  {
+    "id": "qs026",
+    "rank": "26",
+    "name": "Fudan University",
+    "color": "#db5964",
+    "logo": "/assets/runner/qs2027/qs026.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/fudan-university_218_small.jpg"
+  },
+  {
+    "id": "qs027",
+    "rank": "27",
+    "name": "Princeton University",
+    "color": "#362128",
+    "logo": "/assets/runner/qs2027/qs027.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/princeton-university_508_small.jpg"
+  },
+  {
+    "id": "qs028",
+    "rank": "28",
+    "name": "The University of Sydney",
+    "color": "#ce3e22",
+    "logo": "/assets/runner/qs2027/qs028.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-university-of-sydney_592560cf2aeae70239af4cd0_small.jpg"
+  },
+  {
+    "id": "qs029",
+    "rank": "29",
+    "name": "Australian National University (ANU)",
+    "color": "#bb8658",
+    "logo": "/assets/runner/qs2027/qs029.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/251223044806am137327ANU-Crest-Inversed-Gold200x200-48x48.jpg"
+  },
+  {
+    "id": "qs030",
+    "rank": "30",
+    "name": "McGill University",
+    "color": "#ee4c44",
+    "logo": "/assets/runner/qs2027/qs030.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/261019035858pm503594McGill-48x48.jpg"
+  },
+  {
+    "id": "qs031",
+    "rank": "31",
+    "name": "Monash University",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs031.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/monash-university_412_small.jpg"
+  },
+  {
+    "id": "qs032",
+    "rank": "32",
+    "name": "University of Toronto",
+    "color": "#092f61",
+    "logo": "/assets/runner/qs2027/qs032.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-toronto_619_small.jpg"
+  },
+  {
+    "id": "qs033",
+    "rank": "33",
+    "name": "The Hong Kong University of Science and Technology",
+    "color": "#6e87ae",
+    "logo": "/assets/runner/qs2027/qs033.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-hong-kong-university-of-science-and-technology_269_small.jpg"
+  },
+  {
+    "id": "qs034",
+    "rank": "34",
+    "name": "Université PSL",
+    "color": "#597f9c",
+    "logo": "/assets/runner/qs2027/qs034.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/universit-psl_592560e69988f300e2321dfe_small.jpg"
+  },
+  {
+    "id": "qs035",
+    "rank": "35",
+    "name": "The University of Edinburgh",
+    "color": "#3c4357",
+    "logo": "/assets/runner/qs2027/qs035.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-university-of-edinburgh_180_small.jpg"
+  },
+  {
+    "id": "qs036",
+    "rank": "36",
+    "name": "Shanghai Jiao Tong University",
+    "color": "#c96b7f",
+    "logo": "/assets/runner/qs2027/qs036.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/shanghai-jiao-tong-university_556_small.jpg"
+  },
+  {
+    "id": "qs037",
+    "rank": "37",
+    "name": "King's College London",
+    "color": "#e75e59",
+    "logo": "/assets/runner/qs2027/qs037.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/231024034600pm558869KCL-box-red-485-rgb-48x48.jpg"
+  },
+  {
+    "id": "qs038",
+    "rank": "38",
+    "name": "Seoul National University",
+    "color": "#51669d",
+    "logo": "/assets/runner/qs2027/qs038.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/graduate-school-of-business-seoul-national-university_553_small.jpg"
+  },
+  {
+    "id": "qs039",
+    "rank": "39",
+    "name": "The University of Tokyo",
+    "color": "#1f73cd",
+    "logo": "/assets/runner/qs2027/qs039.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-university-of-tokyo_615_small.jpg"
+  },
+  {
+    "id": "qs040",
+    "rank": "=40",
+    "name": "The University of Manchester",
+    "color": "#7d56a8",
+    "logo": "/assets/runner/qs2027/qs040.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-university-of-manchester_389_small.jpg"
+  },
+  {
+    "id": "qs041",
+    "rank": "=40",
+    "name": "The University of Queensland",
+    "color": "#552c80",
+    "logo": "/assets/runner/qs2027/qs041.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/210824044126am970441uq-logo-48x48.jpg"
+  },
+  {
+    "id": "qs042",
+    "rank": "42",
+    "name": "Yonsei University",
+    "color": "#c8d5db",
+    "logo": "/assets/runner/qs2027/qs042.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/yonsei-university_688_small.jpg"
+  },
+  {
+    "id": "qs043",
+    "rank": "=43",
+    "name": "Columbia University",
+    "color": "#a3c1d5",
+    "logo": "/assets/runner/qs2027/qs043.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/211207010540pm571294Webp.net-resizeimage-2021-12-07T150514.382-48x48.jpg"
+  },
+  {
+    "id": "qs044",
+    "rank": "=43",
+    "name": "Institut Polytechnique de Paris",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs044.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240924074028am263366logo-ipp-pour-qs-48x48.jpg"
+  },
+  {
+    "id": "qs045",
+    "rank": "=45",
+    "name": "Northwestern University",
+    "color": "#cbc2dc",
+    "logo": "/assets/runner/qs2027/qs045.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/northwestern-university_592560cf2aeae70239af4c50_small.jpg"
+  },
+  {
+    "id": "qs046",
+    "rank": "=45",
+    "name": "University of British Columbia",
+    "color": "#8e8da5",
+    "logo": "/assets/runner/qs2027/qs046.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-british-columbia_70_small.jpg"
+  },
+  {
+    "id": "qs047",
+    "rank": "47",
+    "name": "Zhejiang University",
+    "color": "#b8c8d7",
+    "logo": "/assets/runner/qs2027/qs047.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/zhejiang-university_592560cf2aeae70239af4d37_small.jpg"
+  },
+  {
+    "id": "qs048",
+    "rank": "48",
+    "name": "Delft University of Technology",
+    "color": "#d2f1e9",
+    "logo": "/assets/runner/qs2027/qs048.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/241219075823am191478thumbnail-logo-voor-QS-48x48.jpg"
+  },
+  {
+    "id": "qs049",
+    "rank": "49",
+    "name": "University of California, Los Angeles (UCLA)",
+    "color": "#3584bd",
+    "logo": "/assets/runner/qs2027/qs049.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-california-los-angeles-ucla_87_small.jpg"
+  },
+  {
+    "id": "qs050",
+    "rank": "50",
+    "name": "The Hong Kong Polytechnic University",
+    "color": "#983849",
+    "logo": "/assets/runner/qs2027/qs050.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-hong-kong-polytechnic-university_267_small.jpg"
+  },
+  {
+    "id": "qs051",
+    "rank": "51",
+    "name": "University of Michigan-Ann Arbor",
+    "color": "#0c2f69",
+    "logo": "/assets/runner/qs2027/qs051.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-michigan_403_small.jpg"
+  },
+  {
+    "id": "qs052",
+    "rank": "=52",
+    "name": "City University of Hong Kong (CityUHK)",
+    "color": "#cb506d",
+    "logo": "/assets/runner/qs2027/qs052.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240301064743am994206logo-48x48.jpg"
+  },
+  {
+    "id": "qs053",
+    "rank": "=52",
+    "name": "Korea University",
+    "color": "#d5b8b1",
+    "logo": "/assets/runner/qs2027/qs053.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/korea-university_325_small.jpg"
+  },
+  {
+    "id": "qs054",
+    "rank": "54",
+    "name": "National Taiwan University (NTU)",
+    "color": "#eff2cd",
+    "logo": "/assets/runner/qs2027/qs054.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/national-taiwan-university-ntu_592560cf2aeae70239af4c3c_small.jpg"
+  },
+  {
+    "id": "qs055",
+    "rank": "55",
+    "name": "Carnegie Mellon University",
+    "color": "#f2f6d5",
+    "logo": "/assets/runner/qs2027/qs055.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/carnegie-mellon-university_101_small.jpg"
+  },
+  {
+    "id": "qs056",
+    "rank": "56",
+    "name": "Universiti Malaya (UM)",
+    "color": "#e1f0db",
+    "logo": "/assets/runner/qs2027/qs056.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/universiti-malaya-um_383_small.jpg"
+  },
+  {
+    "id": "qs057",
+    "rank": "57",
+    "name": "University of Bristol",
+    "color": "#c88091",
+    "logo": "/assets/runner/qs2027/qs057.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260226025000pm868526Square-logo-full-logo-48x48.jpg"
+  },
+  {
+    "id": "qs058",
+    "rank": "58",
+    "name": "New York University (NYU)",
+    "color": "#5d1887",
+    "logo": "/assets/runner/qs2027/qs058.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260502122549pm629511Nyu-Logo-PNG-48x48.jpg"
+  },
+  {
+    "id": "qs059",
+    "rank": "59",
+    "name": "KU Leuven",
+    "color": "#2086ac",
+    "logo": "/assets/runner/qs2027/qs059.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/ku-leuven_592560cf2aeae70239af4aec_small.jpg"
+  },
+  {
+    "id": "qs060",
+    "rank": "60",
+    "name": "University of Amsterdam",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs060.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240924020914pm288471UvA-logo-48x48.jpg"
+  },
+  {
+    "id": "qs061",
+    "rank": "61",
+    "name": "Ludwig-Maximilians-Universität München",
+    "color": "#d4e2d3",
+    "logo": "/assets/runner/qs2027/qs061.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/ludwig-maximilians-universitt-mnchen_420_small.jpg"
+  },
+  {
+    "id": "qs062",
+    "rank": "62",
+    "name": "The London School of Economics and Political Science (LSE)",
+    "color": "#fb0f28",
+    "logo": "/assets/runner/qs2027/qs062.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/london-school-of-economics-and-political-science-lse_362_small.jpg"
+  },
+  {
+    "id": "qs063",
+    "rank": "63",
+    "name": "KFUPM",
+    "color": "#538885",
+    "logo": "/assets/runner/qs2027/qs063.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250616011103pm115163linkedin-48x48.jpg"
+  },
+  {
+    "id": "qs064",
+    "rank": "64",
+    "name": "Kyoto University",
+    "color": "#65748f",
+    "logo": "/assets/runner/qs2027/qs064.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/261109042217am857526E-C-48x48.jpg"
+  },
+  {
+    "id": "qs065",
+    "rank": "65",
+    "name": "KAIST",
+    "color": "#3185b0",
+    "logo": "/assets/runner/qs2027/qs065.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/kaist-korea-advanced-institute-of-science-technology_324_small.jpg"
+  },
+  {
+    "id": "qs066",
+    "rank": "66",
+    "name": "Brown University",
+    "color": "#dcebe1",
+    "logo": "/assets/runner/qs2027/qs066.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/brown-university_72_small.jpg"
+  },
+  {
+    "id": "qs067",
+    "rank": "67",
+    "name": "The University of Auckland",
+    "color": "#646383",
+    "logo": "/assets/runner/qs2027/qs067.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260619030343am832549Square-logo-48x48.jpg"
+  },
+  {
+    "id": "qs068",
+    "rank": "=68",
+    "name": "University of Warwick",
+    "color": "#9c91e7",
+    "logo": "/assets/runner/qs2027/qs068.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260608020352pm889787UoW-Profile-Avatars-Facebook-Lavender-48x48.jpg"
+  },
+  {
+    "id": "qs069",
+    "rank": "=68",
+    "name": "University of Birmingham",
+    "color": "#46767b",
+    "logo": "/assets/runner/qs2027/qs069.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260511082037am441022uobologo200x200-48x48.jpg"
+  },
+  {
+    "id": "qs070",
+    "rank": "70",
+    "name": "Duke University",
+    "color": "#c7c7e1",
+    "logo": "/assets/runner/qs2027/qs070.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/duke-university_168_small.jpg"
+  },
+  {
+    "id": "qs071",
+    "rank": "71",
+    "name": "Lund University",
+    "color": "#acafd4",
+    "logo": "/assets/runner/qs2027/qs071.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/lund-university_371_small.jpg"
+  },
+  {
+    "id": "qs072",
+    "rank": "72",
+    "name": "University of Texas at Austin",
+    "color": "#eeb790",
+    "logo": "/assets/runner/qs2027/qs072.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-texas-at-austin_604_small.jpg"
+  },
+  {
+    "id": "qs073",
+    "rank": "73",
+    "name": "Sorbonne University",
+    "color": "#434273",
+    "logo": "/assets/runner/qs2027/qs073.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/sorbonne-university_5a6afcfecb4de709397114fe_small.jpg"
+  },
+  {
+    "id": "qs074",
+    "rank": "74",
+    "name": "University of Illinois Urbana-Champaign",
+    "color": "#c6d0dc",
+    "logo": "/assets/runner/qs2027/qs074.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250319093914am927515Illinois-Logo-Full-Color-200x200-48x48.jpg"
+  },
+  {
+    "id": "qs075",
+    "rank": "75",
+    "name": "Trinity College Dublin, The University of Dublin",
+    "color": "#669ec4",
+    "logo": "/assets/runner/qs2027/qs075.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/trinity-college-dublin-the-university-of-dublin_167_small.jpg"
+  },
+  {
+    "id": "qs076",
+    "rank": "76",
+    "name": "Université Paris-Saclay",
+    "color": "#a47187",
+    "logo": "/assets/runner/qs2027/qs076.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/universit-paris-saclay_592560cf2aeae70239af4c6e_small.jpg"
+  },
+  {
+    "id": "qs077",
+    "rank": "=77",
+    "name": "The University of Western Australia",
+    "color": "#f6f8d1",
+    "logo": "/assets/runner/qs2027/qs077.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/the-university-of-western-australia_673_small.jpg"
+  },
+  {
+    "id": "qs078",
+    "rank": "=77",
+    "name": "University of Leeds",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs078.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250929041939pm876425Logo-200x200-v2-48x48.jpg"
+  },
+  {
+    "id": "qs079",
+    "rank": "79",
+    "name": "Adelaide University",
+    "color": "#cfcede",
+    "logo": "/assets/runner/qs2027/qs079.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/251230064220am949573AU-stacked-300x300-48x48.jpg"
+  },
+  {
+    "id": "qs080",
+    "rank": "80",
+    "name": "University of Glasgow",
+    "color": "#3b5d86",
+    "logo": "/assets/runner/qs2027/qs080.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-glasgow_592560cf2aeae70239af4b6c_small.jpg"
+  },
+  {
+    "id": "qs081",
+    "rank": "81",
+    "name": "University of California, San Diego (UCSD)",
+    "color": "#b2b9ce",
+    "logo": "/assets/runner/qs2027/qs081.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-california-san-diego-ucsd_89_small.jpg"
+  },
+  {
+    "id": "qs082",
+    "rank": "=82",
+    "name": "KTH Royal Institute of Technology",
+    "color": "#9c99bd",
+    "logo": "/assets/runner/qs2027/qs082.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260305113719am179277kth-royal-institute-of-technology--592560cf2aeae70239af4c9b-large-48x48.jpg"
+  },
+  {
+    "id": "qs083",
+    "rank": "=82",
+    "name": "The University of Sheffield",
+    "color": "#744fa7",
+    "logo": "/assets/runner/qs2027/qs083.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/230919100158am438629UoS-logo-48x48.jpg"
+  },
+  {
+    "id": "qs084",
+    "rank": "84",
+    "name": "Universidad de Buenos Aires (UBA)",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs084.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/universidad-de-buenos-aires-uba_78_small.jpg"
+  },
+  {
+    "id": "qs085",
+    "rank": "85",
+    "name": "Durham University",
+    "color": "#5d1e56",
+    "logo": "/assets/runner/qs2027/qs085.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/durham-university_170_small.jpg"
+  },
+  {
+    "id": "qs086",
+    "rank": "86",
+    "name": "Universität Heidelberg",
+    "color": "#931820",
+    "logo": "/assets/runner/qs2027/qs086.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/221104124726pm969012uniHD-siegel-200x200k-48x48.jpg"
+  },
+  {
+    "id": "qs087",
+    "rank": "=87",
+    "name": "Politecnico di Milano",
+    "color": "#ced4df",
+    "logo": "/assets/runner/qs2027/qs087.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/260325021911pm966918POLIMI-logo-200x200-v2--48x48.jpg"
+  },
+  {
+    "id": "qs088",
+    "rank": "=87",
+    "name": "The University of Technology Sydney (UTS)",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs088.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-technology-sydney_592560cf2aeae70239af4ccf_small.jpg"
+  },
+  {
+    "id": "qs089",
+    "rank": "=87",
+    "name": "Uppsala University",
+    "color": "#e3929a",
+    "logo": "/assets/runner/qs2027/qs089.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/uppsala-university_643_small.jpg"
+  },
+  {
+    "id": "qs090",
+    "rank": "=90",
+    "name": "Nanjing University",
+    "color": "#d7d2e3",
+    "logo": "/assets/runner/qs2027/qs090.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/nanjing-university_430_small.jpg"
+  },
+  {
+    "id": "qs091",
+    "rank": "=90",
+    "name": "University of Copenhagen",
+    "color": "#b34562",
+    "logo": "/assets/runner/qs2027/qs091.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-of-copenhagen_141_small.jpg"
+  },
+  {
+    "id": "qs092",
+    "rank": "=92",
+    "name": "Pennsylvania State University",
+    "color": "#acc4d8",
+    "logo": "/assets/runner/qs2027/qs092.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/pennsylvania-state-university_494_small.jpg"
+  },
+  {
+    "id": "qs093",
+    "rank": "=92",
+    "name": "University of Washington",
+    "color": "#35086e",
+    "logo": "/assets/runner/qs2027/qs093.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240709093150am256263W-Logo-Purple-RGB-resized-48x48.jpg"
+  },
+  {
+    "id": "qs094",
+    "rank": "94",
+    "name": "Boston University",
+    "color": "#c74e47",
+    "logo": "/assets/runner/qs2027/qs094.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/boston-university_592560cf2aeae70239af4ac2_small.jpg"
+  },
+  {
+    "id": "qs095",
+    "rank": "95",
+    "name": "The University of Osaka",
+    "color": "#313f8d",
+    "logo": "/assets/runner/qs2027/qs095.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/osaka-university_472_small.jpg"
+  },
+  {
+    "id": "qs096",
+    "rank": "96",
+    "name": "University of Alberta",
+    "color": "#dcebe4",
+    "logo": "/assets/runner/qs2027/qs096.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240306052437pm316638378168-RankingLogo-QS-200x200px-48x48.jpg"
+  },
+  {
+    "id": "qs097",
+    "rank": "=97",
+    "name": "Institute of Science Tokyo",
+    "color": "#3f5087",
+    "logo": "/assets/runner/qs2027/qs097.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250205060513am175429Icon-for-Instagram%2C-Treads%2C-Facebook-320px-48x48.jpg"
+  },
+  {
+    "id": "qs098",
+    "rank": "=97",
+    "name": "University of Nottingham",
+    "color": "#12283d",
+    "logo": "/assets/runner/qs2027/qs098.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/240606102649am426810UoN-NottinghamBlue-CastleBox-RGB-48x48.jpg"
+  },
+  {
+    "id": "qs099",
+    "rank": "=98",
+    "name": "Freie Universitaet Berlin",
+    "color": "#203563",
+    "logo": "/assets/runner/qs2027/qs099.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/freie-universitaet-berlin_215_small.jpg"
+  },
+  {
+    "id": "qs100",
+    "rank": "=98",
+    "name": "University of Zurich",
+    "color": "#687b92",
+    "logo": "/assets/runner/qs2027/qs100.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/250124123220pm124063Logo-48x48.jpg"
+  }
+]
