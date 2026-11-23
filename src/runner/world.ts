@@ -7,7 +7,7 @@
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
 export type RunMode = "challenge" | "endless";
-export type RunObstacleKind = "block" | "gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
+export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
 export type CoinTier = "silver" | "gold" | "diamond";
 export type RunPowerKind = "magnet" | "shield" | "boost";
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
@@ -17,7 +17,7 @@ export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; 
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "beam", "spikes", "boulder", "fire", "trap"];
+const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap"];
 const POWERS: readonly string[] = ["magnet", "shield", "boost"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => POWERS.includes(kind);
@@ -31,6 +31,7 @@ export const SCENE_LENGTH = 450;
 export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
 export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
 export const CHALLENGE_DISTANCE = 1000;
+export const LONG_GAP_START = 600;
 
 // Movement tuning (metres, seconds).
 export const LANE_WIDTH = 2.4;
@@ -48,9 +49,18 @@ const TURN_LATE = 1.5;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35 };
 /** Half depth along the route. */
-const DEPTH: Record<RunObstacleKind, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.25 };
+const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75 };
+const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
+export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
+  // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
+  return kind === "long-gap" ? baseSpeedAt(distance) * .39 : DEPTH[kind];
+}
+export const isFallObstacle = (kind: RunItemKind): kind is "gap" | "long-gap" | "trap" => kind === "gap" || kind === "long-gap" || kind === "trap";
+export function coversLane(item: RunItem, lane: number, margin = 0) {
+  return item.span === 3 || (lane >= item.lane - margin && lane <= item.lane + (item.span ?? 1) - 1 + margin);
+}
 
 export function weatherAt(seed: number, distance: number): RunWeather {
   let hash = (seed ^ Math.imul(Math.floor(distance / 300) + 1, 0x45d9f3b)) >>> 0;
@@ -74,6 +84,7 @@ export function readRunRecord(raw: string | null): RunRecord {
 const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   block: ["撞上了倒木", "整条路的倒木要跳过去。"],
   gap: ["掉进了裂缝", "看到裂缝提前起跳，空中还能再跳一次。"],
+  "long-gap": ["没跳过长落穴", "从边缘起跳，飞到坑上方时在空中再跳一次。"],
   beam: ["撞上了低门", "整条路的低门要下滑钻过去。"],
   spikes: ["绊倒在乱石枯枝上", "看清路上的乱石和枯枝，换道或跳过去。"],
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
@@ -92,7 +103,8 @@ export class RunnerWorld {
   silver = 0;
   gold = 0;
   diamond = 0;
-  trapFall = false;
+  fallObstacle?: RunItem;
+  fallVelocity = 0;
   coinScore = 0;
   streak = 0;
   /** Seconds of jump left (kept for animation); 0 when grounded. */
@@ -135,6 +147,7 @@ export class RunnerWorld {
   private powerIndex = 0;
   private nextRow = 90;
   private nextTurn = 300;
+  private nextLongGap = LONG_GAP_START;
 
   constructor(seed = 1, mode: RunMode = "challenge", startScene = 0) {
     this.seed = seed >>> 0 || 1;
@@ -145,9 +158,9 @@ export class RunnerWorld {
   }
 
   get speed() {
-    const base = Math.min(MAX_SPEED, BASE_SPEED + this.distance / 110);
-    return base * (this.boost > 0 ? 1.5 : this.stumble > 0 ? .7 : 1);
+    return baseSpeedAt(this.distance) * (this.boost > 0 ? 1.5 : this.stumble > 0 ? .7 : 1);
   }
+  get trapFall() { return !!this.fallObstacle; }
   get jumpHeight() { return this.altitude; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
@@ -161,7 +174,7 @@ export class RunnerWorld {
   /** Next obstacle the player still has to deal with. */
   get nextObstacle() {
     let best: RunItem | undefined;
-    for (const item of this.items) if (!item.done && isRunObstacle(item.kind) && item.z > this.distance - 1 && (!best || item.z < best.z)) best = item;
+    for (const item of this.items) if (!item.done && isRunObstacle(item.kind) && item.z + obstacleHalfDepth(item.kind, item.z) >= this.distance && (!best || item.z < best.z)) best = item;
     return best;
   }
 
@@ -219,11 +232,13 @@ export class RunnerWorld {
     this.position += (this.lane - this.position) * Math.min(1, dt * LANE_RATE);
     if (Math.abs(this.lane - this.position) < .002) this.position = this.lane;
 
+    let landingVelocity = 0;
     if (this.airborne) {
       this.verticalSpeed -= GRAVITY * dt;
       this.altitude = Math.max(0, this.altitude + this.verticalSpeed * dt);
       this.jump = Math.max(0, this.jump - dt);
       if (this.altitude === 0 && this.verticalSpeed < 0) {
+        landingVelocity = this.verticalSpeed;
         this.verticalSpeed = 0; this.jumpCount = 0; this.jump = 0;
         if (this.jumpBuffer > 0) { this.jumpBuffer = 0; this.action("jump"); }
       }
@@ -239,11 +254,11 @@ export class RunnerWorld {
       if (item.done) continue;
       if (item.kind === "coin") this.touchCoin(item, dt);
       else if (isRunPower(item.kind)) this.touchPower(item, item.kind);
-      else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind)) return;
+      else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind, landingVelocity)) return;
     }
 
     if (!this.endless && this.distance >= CHALLENGE_DISTANCE) { this.distance = CHALLENGE_DISTANCE; this.phase = "won"; }
-    this.items = this.items.filter(item => item.z > this.distance - 10);
+    this.items = this.items.filter(item => item.z + (item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0) > this.distance - 10);
     this.turns = this.turns.filter(t => t.z > this.distance - 30);
     this.populate();
   }
@@ -275,18 +290,25 @@ export class RunnerWorld {
   }
 
   /** Returns false when the run ended. */
-  private touchObstacle(item: RunItem, kind: RunObstacleKind) {
-    const ahead = item.z - this.distance, depth = DEPTH[kind];
+  private touchObstacle(item: RunItem, kind: RunObstacleKind, landingVelocity: number) {
+    const ahead = item.z - this.distance, depth = obstacleHalfDepth(kind, item.z);
     if (ahead < -depth) { item.done = true; return true; }
     if (ahead > depth) return true;
-    if (item.span !== 3 && (item.span === 2 ? this.position < item.lane - .6 || this.position > item.lane + 1.6 : Math.abs(item.lane - this.position) > .6)) return true;
+    if (!coversLane(item, this.position, .6)) return true;
     const clear = kind === "beam" ? this.slide > 0 && !this.airborne : this.altitude > CLEARANCE[kind];
     if (clear || this.boost > 0 || this.grace > 0) return true;
 
     item.done = true; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
     if (this.shield > 0) { this.shield = 0; this.grace = GRACE_TIME; this.shieldSaves++; return true; }
     const recoverable = item.span !== 3 && (kind === "block" || kind === "beam");
-    if (!recoverable) { const [reason, hint] = FAIL_TEXT[kind]; this.trapFall = kind === "trap" || kind === "gap"; this.fail(reason, hint); return false; }
+    if (!recoverable) {
+      if (isFallObstacle(kind)) {
+        this.fallObstacle = item;
+        this.fallVelocity = Math.min(0, this.verticalSpeed, landingVelocity);
+      }
+      this.fail(...FAIL_TEXT[kind]);
+      return false;
+    }
     if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
     this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
     // Bumping a lane obstacle knocks the dog back toward the lane it came from.
@@ -314,12 +336,13 @@ export class RunnerWorld {
     }
     while (this.nextRow < this.distance + 150) {
       const z = this.nextRow;
-      const speed = Math.min(MAX_SPEED, BASE_SPEED + z / 110);
+      const speed = baseSpeedAt(z);
       const milestone = !this.endless && z > CHALLENGE_DISTANCE - 40 && z < CHALLENGE_DISTANCE + 20;
-      if (!this.nearTurn(z) && !milestone) this.row(z);
+      const longGap = !this.nearTurn(z) && !milestone && this.row(z);
       // Leave at least ~1.15 s of reaction time between rows, a bit more early on.
       const early = Math.max(0, 1 - z / 600);
-      this.nextRow += speed * (1.15 + early * .6) + this.random() * 8;
+      const landingSpace = longGap ? .42 : 0;
+      this.nextRow += speed * (1.15 + early * .6 + landingSpace) + this.random() * 8;
     }
   }
 
@@ -330,8 +353,14 @@ export class RunnerWorld {
     const pattern = this.rows++;
     let free = Math.floor(this.random() * 3);
     let jumpArc = false;
+    const longGapDepth = obstacleHalfDepth("long-gap", z);
+    const longGap = z - longGapDepth >= this.nextLongGap;
 
-    if (pattern < 2) {
+    if (longGap) {
+      this.add(z, 1, "long-gap", { span: 3 });
+      this.nextLongGap = z + 165 + this.random() * 65;
+      free = 1;
+    } else if (pattern < 2) {
       // Warm-up: one fallen-log obstacle in the middle lane, then one on a side.
       this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "block");
       free = pattern === 0 ? this.pick([0, 2]) : 1;
@@ -347,7 +376,14 @@ export class RunnerWorld {
       }
     } else if (roll < .62) {
       // Two lanes blocked, one way through.
-      for (const lane of [0, 1, 2]) if (lane !== free) this.add(z, lane, this.pick(scene === 2 ? ["block", "boulder", "beam"] as const : ["block", "boulder", "spikes"] as const));
+      const kinds = scene === 2 ? ["block", "boulder", "beam"] as const : ["block", "boulder", "spikes"] as const;
+      const [first, second] = [0, 1, 2].filter(lane => lane !== free);
+      const firstKind = this.pick(kinds), secondKind = this.pick(kinds);
+      if (second === first + 1 && firstKind === secondKind) this.add(z, first, firstKind, { span: 2 });
+      else {
+        this.add(z, first, firstKind);
+        this.add(z, second, secondKind);
+      }
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
       const kind = this.pick(scene === 0 ? ["gap", "gap", "block", "beam"] as const : scene === 1 ? ["block", "beam", "beam", "gap"] as const : ["beam", "block", "gap"] as const);
@@ -356,10 +392,12 @@ export class RunnerWorld {
     }
 
     // Coins: a line leading into the free lane, or an arc over a jump.
-    if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
+    if (longGap) for (let i = -2; i <= 2; i++) this.addCoin(z + i * longGapDepth / 2, free, { y: 1 + 1.2 * (1 - (i / 2) ** 2) });
+    else if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
     else for (let i = 0; i < 5; i++) this.addCoin(z - 10 + i * 2.6, free);
 
-    if (pattern > 3 && pattern % 6 === 0) this.add(z + 9, free, (["shield", "magnet", "boost"] as const)[this.powerIndex++ % 3]);
+    if (pattern > 3 && pattern % 6 === 0) this.add(z + (longGap ? longGapDepth + 4 : 9), free, (["shield", "magnet", "boost"] as const)[this.powerIndex++ % 3]);
+    return longGap;
   }
 }
 

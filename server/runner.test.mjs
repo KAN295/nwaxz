@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, readRunRecord, isRunObstacle, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
-import { dogPose, chaserFrame } from '../src/runner/animation.ts';
+import { RunnerWorld, LONG_GAP_START, readRunRecord, isRunObstacle, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
+import { dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
@@ -40,7 +40,7 @@ test('the opening stretch has no obstacles and starts gently', () => {
   }
 });
 
-test('a crate causes a recoverable stumble; jumping or dodging avoids it', () => {
+test('a fallen log causes a recoverable stumble; jumping or dodging avoids it', () => {
   const hit = place('block'); run(hit, .6); assert.equal(hit.phase, 'running'); assert.ok(hit.danger > 0); assert.ok(hit.speed < 13);
   const jump = place('block'); run(jump, .1); jump.action('jump'); run(jump, .5); assert.equal(jump.danger, 0);
   const dodge = place('block'); dodge.action('left'); run(dodge, .6); assert.equal(dodge.danger, 0);
@@ -83,6 +83,16 @@ test('two-lane fire and debris collide across both lanes and leave the third cle
   }
 });
 
+test('a joined log hits either occupied lane as one recoverable obstacle', () => {
+  for (const lane of [0, 1, 2]) {
+    const w = place('block', { lane: 1, span: 2 });
+    w.lane = w.position = lane;
+    run(w, .6);
+    assert.equal(w.phase, 'running');
+    assert.equal(w.stumbles, lane === 0 ? 0 : 1);
+  }
+});
+
 test('jump arc, double jump, landing buffer and air slide', () => {
   const w = new RunnerWorld(); w.start(); w.items = []; w.turns = [];
   w.action('jump'); run(w, .3); const h = w.jumpHeight; assert.ok(h > 1);
@@ -121,6 +131,45 @@ test('silver starts the run; gold arrives later and diamonds remain rare', () =>
 test('falling through a gap or trap plays the fall, while other hits do not', () => {
   for (const kind of ['gap', 'trap']) { const world = place(kind); run(world, .6); assert.equal(world.phase, 'caught'); assert.equal(world.trapFall, true); }
   const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
+});
+
+test('a long gap needs two jumps at both introduction and top speed, in all lanes', () => {
+  for (const z of [640, 2500]) for (const lane of [0, 1, 2]) {
+    const half = obstacleHalfDepth('long-gap', z), edge = z - half;
+    const attempt = (double) => {
+      const w = place('long-gap', { z, span: 3 });
+      w.endless = true;
+      w.lane = w.position = lane;
+      w.distance = edge;
+      w.distance -= w.speed * .13;
+      w.nextRow = w.nextTurn = Infinity;
+      w.action('jump'); run(w, .34);
+      if (double) w.action('jump');
+      run(w, .81);
+      return w;
+    };
+    const single = attempt(false);
+    assert.equal(single.phase, 'caught'); assert.equal(single.fallObstacle.kind, 'long-gap');
+    assert.ok(single.distance > edge && single.distance < z + half);
+    assert.ok(single.fallVelocity < 0);
+    const double = attempt(true);
+    assert.equal(double.phase, 'running'); assert.ok(double.distance > z + half);
+  }
+});
+
+test('fall animation keeps the initial contact pose, decelerates forward and never drifts beyond the far lip', () => {
+  const w = place('trap');
+  while (w.phase === 'running') run(w, 1 / 120);
+  const atContact = dogFall(w, false);
+  assert.deepEqual(atContact, { forward: 0, drop: 0, roll: 0, tucked: false });
+  run(w, .15); const early = dogFall(w, false);
+  run(w, .15); const later = dogFall(w, false);
+  assert.ok(later.forward - early.forward < early.forward);
+  assert.ok(later.drop - early.drop > early.drop);
+  assert.ok(later.roll > 0 && later.tucked);
+  assert.equal(dogFall(w, true).roll, 0);
+  w.distance = w.fallObstacle.z + obstacleHalfDepth('trap', 0) - .1;
+  assert.equal(dogFall(w, false).forward, 0);
 });
 
 test('QS 2027 shop includes both tied rank-100 schools and a sprite atlas for every look', () => {
@@ -169,8 +218,13 @@ test('long frames are clamped and fixed steps prevent tunnelling', () => {
 /** Simple bot that reads the course the way a player would. */
 function drive(w) {
   const turn = w.approachingTurn; if (turn && w.turnWindow && turn.z - w.distance <= 12) w.action(turn.direction);
-  const ahead = w.items.filter(i => isRunObstacle(i.kind) && !i.done && i.z > w.distance - 1).sort((a, b) => a.z - b.z);
+  const ahead = w.items.filter(i => isRunObstacle(i.kind) && !i.done && i.z + obstacleHalfDepth(i.kind, i.z) >= w.distance).sort((a, b) => a.z - b.z);
   const next = ahead[0]; if (!next) return;
+  if (next.kind === 'long-gap') {
+    const toLip = next.z - obstacleHalfDepth(next.kind, next.z) - w.distance;
+    if ((w.jumpCount === 0 && toLip < w.speed * .13) || (w.jumpCount === 1 && w.jump < .3)) w.action('jump');
+    return;
+  }
   if (next.span === 3) { if (next.z - w.distance < w.speed * .28 + 1) w.action(next.kind === 'beam' ? 'slide' : 'jump'); return; }
   if (next.z - w.distance < Math.max(14, w.speed * .9)) {
     const blocked = ahead.filter(i => Math.abs(i.z - next.z) < .01).flatMap(i => i.span === 2 ? [i.lane, i.lane + 1] : [i.lane]);
@@ -179,18 +233,26 @@ function drive(w) {
   }
 }
 test('40 seeded courses are solvable for 3 km with bounded memory and keep corners clear', () => {
+  let sawJoinedLogs = false;
   for (let seed = 1; seed <= 40; seed++) {
-    const w = new RunnerWorld(seed, 'endless', seed % 3); w.start(); let full = 0; const seen = new Set();
+    const w = new RunnerWorld(seed, 'endless', seed % 3); w.start(); let full = 0, long = 0; const seen = new Set();
     for (let tick = 0; tick < 120 * 150 && w.phase === 'running' && w.distance < 3000; tick++) {
       for (const i of w.items) if (isRunObstacle(i.kind)) {
         for (const t of w.turns) assert.ok(i.z < t.z - 45 || i.z > t.z + 25, `seed ${seed}: obstacle ${i.z} near corner ${t.z}`);
-        if (i.span === 3 && !seen.has(i.id)) { full++; seen.add(i.id); }
+        if (i.span === 2 && i.kind === 'block') sawJoinedLogs = true;
+        if (!seen.has(i.id)) {
+          if (i.kind === 'long-gap') { assert.ok(i.z - obstacleHalfDepth(i.kind, i.z) >= LONG_GAP_START); assert.equal(i.span, 3); long++; }
+          if (i.span === undefined) assert.ok(!w.items.some(other => other.kind === i.kind && other.z === i.z && other.lane === i.lane + 1 && other.span === undefined));
+          if (i.span === 3) full++;
+          seen.add(i.id);
+        }
       }
       drive(w); w.advance(1 / 120);
     }
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
-    assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
+    assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
   }
+  assert.ok(sawJoinedLogs);
 });
 
 test('1000 m challenge stops for the laugh and can continue endlessly', () => {

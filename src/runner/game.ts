@@ -6,7 +6,7 @@ import { RunnerTilt } from "./tilt.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, readRunRecord,
+  RunnerWorld, RUN_SCENES, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, obstacleHalfDepth, readRunRecord,
   type RunAction, type RunPhase, type RunMode,
 } from "./world.ts";
 
@@ -336,7 +336,7 @@ export class RunnerGame {
       this.seenEvents.stumble = w.stumbles;
       this.audio.haunt({ allowNormalMode: true });
     }
-    el.capture.hidden = w.phase !== "caught";
+    el.capture.hidden = w.phase !== "caught" || (w.trapFall && w.captureTime < .48);
     if (w.phase === "caught") set(el.capture.querySelector("strong")!, w.reason);
 
     if (this.ready && this.shownPhase !== w.phase) {
@@ -356,14 +356,24 @@ export class RunnerGame {
     let html = "", urgent = false;
     if (w.phase === "running" && w.boost === 0) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
-      if (turn && toTurn < 55) {
+      const next = w.nextObstacle;
+      const longGap = next?.kind === "long-gap" ? next : undefined;
+      const toLip = longGap ? longGap.z - obstacleHalfDepth("long-gap", longGap.z) - w.distance : Infinity;
+      if (longGap && toLip < w.speed * 1.75) {
+        if (toLip >= 0) {
+          urgent = w.jumpCount === 0 && toLip < w.speed * .19;
+          html = `<b>▲▲</b><span>${urgent ? "现在起跳" : "前方长落穴"}</span><small>二段跳</small>`;
+        } else if (w.jumpCount === 1) {
+          urgent = w.jump < .39;
+          html = `<b>▲</b><span>${urgent ? "再跳一次" : "空中准备再跳"}</span>`;
+        }
+      } else if (turn && toTurn < 55) {
         urgent = w.turnWindow;
         const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
         html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>`;
         if (this.warnedTurn !== turn.z) { this.warnedTurn = turn.z; this.audio.effect("coin"); }
         if (urgent && this.urgentTurn !== turn.z) { this.urgentTurn = turn.z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
       } else {
-        const next = w.nextObstacle;
         if (next?.span === 3 && next.z - w.distance < w.speed * 1.6) {
           const slide = next.kind === "beam";
           urgent = next.z - w.distance < w.speed * .55;
@@ -546,6 +556,7 @@ export class RunnerGame {
       <ul>
         <li>电脑：方向键或 WASD，空格跳，Esc 暂停，回车开始。手机：在画面上滑动，或用底部按钮。</li>
         <li>整条路的<b>倒木、裂缝</b>要跳过，<b>低门</b>要下滑；屏幕中间会提示。</li>
+        <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道的倒木、栏杆撞到会踉跄，恐怖奶蛙会笑着追上来——8秒内再撞就被抓。乱石枯枝有单道和双道两种，火焰覆盖两道；都要躲开或跳过（巨石要二段跳）。</li>
         <li>路尽头立着<b>箭头墙</b>时，按箭头方向转弯。</li>
         <li>先收银币，400米后开始出现金币；1800米后才有极少量钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>

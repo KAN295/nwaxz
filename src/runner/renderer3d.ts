@@ -17,10 +17,10 @@ import "@babylonjs/core/Particles/particleSystemComponent.js";
 import type { Settings } from "../settings.ts";
 import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
-import { chaserFrame, dogPose } from "./animation.ts";
+import { chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { isRunObstacle, LANE_WIDTH, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
+import { coversLane, isFallObstacle, isRunObstacle, LANE_WIDTH, obstacleHalfDepth, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -28,6 +28,7 @@ import { isRunObstacle, LANE_WIDTH, RUN_SCENES, sceneAt, type RunItem, type RunP
  * once when a slot is recycled, so static scenery costs almost nothing per frame.
  */
 const TILE = 4;
+const TILE_DEPTH = TILE + .45; // Overlap hides seams on curves.
 const SLOTS = 44;
 const BEHIND = 16;
 const ROAD_HALF = LANE_WIDTH * 1.5 + .2;
@@ -41,7 +42,8 @@ const POWER_COLORS: Record<RunPowerKind, [string, string]> = { magnet: ["#ff5a4a
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: TransformNode[][]; decor: Decor[]; theme: number; open: boolean[] };
+type RoadLane = { main: TransformNode; otherSide?: TransformNode };
+type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; decor: Decor[]; theme: number; holes: (RunItem | undefined)[]; pierCut: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 
@@ -372,8 +374,15 @@ export class RunnerRenderer3D {
     const make = (name: string, build: (root: TransformNode) => void) => {
       const root = new TransformNode(`tpl-${name}`, this.scene); root.parent = stash; build(root); this.templates.set(name, root);
     };
-    const L = LANE_WIDTH, W = ROAD_HALF * 2, D = TILE + .45; // a little overlap hides seams on curves
-    for (const theme of ["aqueduct", "temple", "mine"]) make(`lane-${theme}`, r => this.box("lane", r, [L, .5, D], [0, -.25, 0], `road-${theme}`));
+    const L = LANE_WIDTH, W = ROAD_HALF * 2, D = TILE_DEPTH;
+    for (const theme of RUN_SCENES) make(`lane-${theme.id}`, r => {
+      this.box("lane", r, [L, .5, D], [0, -.25, 0], `road-${theme.id}`);
+      // Track follows each floor segment so rails stop at the edges of a pit.
+      if (theme.id === "mine") {
+        for (const side of [-1, 1]) this.box("rail", r, [.1, .1, D], [side * .55, .05, 0], "rail");
+        for (const z of [-1, 1]) this.box("sleeper", r, [1.6, .06, .28], [0, .01, z], "wood");
+      }
+    });
     make("aqueduct-wall", r => { for (const s of [-1, 1]) { this.box("parapet", r, [.45, .8, D], [s * (ROAD_HALF + .2), .15, 0], "stone"); this.box("coping", r, [.6, .14, D], [s * (ROAD_HALF + .2), .6, 0], "stone-dark"); } });
     make("aqueduct-pier", r => { this.box("pier", r, [W + 1.4, 9, 1.6], [0, -5, 0], "stone-dark"); for (const s of [-1, 1]) this.box("buttress", r, [1.4, 9, 2.2], [s * (ROAD_HALF + .3), -5, 0], "stone-dark"); });
     make("temple-ledge", r => { for (const s of [-1, 1]) { this.box("ledge", r, [.9, .55, D], [s * (ROAD_HALF + .45), .02, 0], "moss-stone"); this.box("hedge", r, [1.4, 1.1, D], [s * (ROAD_HALF + 1.6), .3, 0], "foliage-dark"); } });
@@ -386,8 +395,6 @@ export class RunnerRenderer3D {
     make("mine-wall", r => {
       for (const s of [-1, 1]) this.box("rock-wall", r, [1.6, 8, D], [s * (ROAD_HALF + 1.2), 3.6, 0], "rock");
       this.box("ceiling", r, [W + 4, 1, D], [0, 7.4, 0], "rock");
-      for (const lane of [-1, 0, 1]) for (const s of [-1, 1]) this.box("rail", r, [.1, .1, D], [lane * L + s * .55, .05, 0], "rail");
-      for (const lane of [-1, 0, 1]) for (const z of [-1, 1]) this.box("sleeper", r, [1.6, .06, .28], [lane * L, .01, z], "wood");
     });
     make("mine-frame", r => {
       for (const s of [-1, 1]) this.box("post", r, [.38, 6.6, .38], [s * (ROAD_HALF + .15), 3.1, 0], "wood");
@@ -420,6 +427,16 @@ export class RunnerRenderer3D {
         stone.parent = r; stone.position.set(x, size * .35, z); stone.rotation.y = x; stone.material = this.mats["moss-stone"];
       }
     });
+    make("block-double", r => {
+      const trunk = this.cylinder("joined-log", r, { diameterTop: .62, diameterBottom: .86, height: 4.72, tessellation: 15 }, [0, .42, -.04], "wood");
+      trunk.rotation.set(0, -.08, Math.PI / 2 + .035);
+      const limb = this.cylinder("broken-limb", r, { diameterTop: .12, diameterBottom: .35, height: 1.9, tessellation: 11 }, [.5, .55, .13], "wood");
+      limb.rotation.set(.16, .54, Math.PI / 2 - .23);
+      for (const [x, z] of [[-1.8, -.43], [1.62, .33]] as const) {
+        const stone = MeshBuilder.CreatePolyhedron("nesting-rock", { type: 2, size: .42 }, this.scene);
+        stone.parent = r; stone.position.set(x, .13, z); stone.material = this.mats["moss-stone"];
+      }
+    });
     make("block-wide", r => {
       for (const [z, y, length, thick, angle] of [[0, .55, W + .75, 1.08, .03], [-.62, .28, W - .5, .45, -.1], [.58, .25, W - .8, .38, .12]] as const) {
         const log = this.cylinder("fallen-log", r, { diameterTop: thick * .8, diameterBottom: thick, height: length, tessellation: 15 }, [0, y, z], "wood");
@@ -431,27 +448,38 @@ export class RunnerRenderer3D {
       }
       for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["moss-stone"]; }
     });
-    make("beam", r => {
-      for (const s of [-1, 1]) this.box("post", r, [.16, 1.5, .16], [s * .95, .75, 0], "metal");
-      this.box("bar", r, [2.1, .38, .3], [0, 1.25, 0], "warning");
-      for (const x of [-.6, 0, .6]) this.box("stripe", r, [.22, .4, .32], [x, 1.25, 0], "pit");
+    for (const [name, width] of [["beam", 2.1], ["beam-double", 4.65]] as const) make(name, r => {
+      for (const s of [-1, 1]) this.box("post", r, [.16, 1.5, .16], [s * (width / 2 - .1), .75, 0], "metal");
+      this.box("bar", r, [width, .38, .3], [0, 1.25, 0], "warning");
+      for (let x = -width / 2 + .45; x < width / 2 - .2; x += .6) this.box("stripe", r, [.22, .4, .32], [x, 1.25, 0], "pit");
     });
     make("beam-wide", r => {
       for (const s of [-1, 1]) this.box("gate-post", r, [.6, 2.6, .6], [s * (ROAD_HALF + .1), 1.1, 0], "stone-dark");
       this.box("gate-bar", r, [W + 1.2, .55, .5], [0, 1.3, 0], "wood");
       for (let x = -3; x <= 3; x += 1.5) this.box("hanging", r, [.08, .5, .08], [x, .85, 0], "metal");
     });
-    for (const [name, width] of [["gap", L], ["gap-wide", W]] as const) make(name, r => {
-      for (const x of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, 4], [x * (width / 2 + .13), -3.2, 0], "rock");
-      this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, 1.9], "stone-dark");
-      for (const s of [-1, 1]) this.box("lip", r, [width, .2, .3], [0, -.08, s * 1.55], "stone-dark");
-      for (const s of [-1, 1]) this.box("edge", r, [width - .2, .04, .12], [0, .02, s * 1.75], "warning");
+    for (const [name, width] of [["gap", L], ["gap-wide", W], ["long-gap-wide", W]] as const) make(name, r => {
+      for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, 3], [side * (width / 2 + .13), -3.2, 0], "rock");
+      this.box("pit-shadow", r, [width, .06, 3], [0, -2.12, 0], "pit");
+      for (const side of [-1, 1]) {
+        this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, side * 1.62], "stone-dark");
+        this.box("lip", r, [width, .2, .25], [0, -.09, side * 1.62], "stone-dark");
+        this.box("edge", r, [width - .16, .04, .14], [0, .02, side * 1.64], "warning");
+        if (name === "long-gap-wide") for (const x of [-1, 1]) {
+          const edge = this.box("long-gap-marker", r, [.34, .58, .26], [x * (width / 2 - .22), .32, side * 1.83], "warning");
+          edge.rotation.z = x * .1;
+        }
+      }
     });
     make("trap", r => {
-      for (const x of [-.75, -.25, .25, .75]) this.box("trap-plank", r, [.46, .13, 3.5], [x, .02, 0], "wood");
-      for (const x of [-1.08, 1.08]) this.box("trap-shaft-wall", r, [.25, 6.4, 4], [x, -3.2, 0], "rock");
-      this.box("trap-shaft-end", r, [2.1, 6.4, .25], [0, -3.2, 1.9], "stone-dark");
-      for (const z of [-1.96, 1.96]) this.box("trap-rim", r, [2.1, .13, .15], [0, .04, z], "warning");
+      const halfDepth = obstacleHalfDepth("trap", 0);
+      for (const x of [-.885, -.295, .295, .885]) this.box("trap-plank", r, [.56, .13, halfDepth * 2], [x, .02, 0], "wood");
+      for (const side of [-1, 1]) {
+        this.box("trap-shaft-wall", r, [.25, 6.4, halfDepth * 2], [side * (L / 2 + .13), -3.2, 0], "rock");
+        this.box("trap-shaft-end", r, [L, 6.4, .24], [0, -3.2, side * (halfDepth + .12)], "stone-dark");
+        this.box("trap-rim", r, [L, .13, .15], [0, .04, side * (halfDepth + .085)], "warning");
+      }
+      this.box("pit-shadow", r, [L, .06, halfDepth * 2], [0, -2.12, 0], "pit");
     });
     for (const [name, width] of [["spikes", 2], ["spikes-double", 4.5]] as const) make(name, r => {
       const count = width > 3 ? 11 : 6;
@@ -468,9 +496,9 @@ export class RunnerRenderer3D {
         branch.rotation.z = Math.PI / 2 + (i % 2 ? -.34 : .25); branch.rotation.y = i * .71;
       }
     });
-    make("boulder", r => {
+    for (const [name, width] of [["boulder", 1.05], ["boulder-double", 2.26]] as const) make(name, r => {
       const rock = MeshBuilder.CreatePolyhedron("boulder", { type: 2, size: 1 }, this.scene);
-      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(1.05, 1.1, 1); rock.material = this.mats["moss-stone"];
+      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(width, 1.1, 1); rock.material = this.mats["moss-stone"];
     });
     const flameMaterial = new StandardMaterial("runner-fire-billboard", this.scene);
     flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v1.png");
@@ -528,17 +556,21 @@ export class RunnerRenderer3D {
   private buildSlots() {
     for (let i = 0; i < SLOTS; i++) {
       const root = new TransformNode(`road-slot-${i}`, this.scene);
-      const themes: TransformNode[] = [], lanes: TransformNode[][] = [], decor: Decor[] = [];
+      const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
       const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1) decor.push({ node, every, offset }); return node; };
       ["aqueduct", "temple", "mine"].forEach((theme, t) => {
         const group = new TransformNode(`slot-${i}-${theme}`, this.scene); group.parent = root; themes.push(group);
-        lanes.push([0, 1, 2].map(lane => { const node = add(`lane-${theme}`, group); node.position.x = (lane - 1) * LANE_WIDTH; return node; }));
+        lanes.push([0, 1, 2].map(lane => {
+          const main = add(`lane-${theme}`, group);
+          main.position.x = (lane - 1) * LANE_WIDTH;
+          return { main };
+        }));
         if (t === 0) { add("aqueduct-wall", group); add("aqueduct-pier", group, 5, 0); add("lamp-post", group, 5, 3); }
         if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("temple-tree", group, 3, 1); add("lamp-post", group, 5, 3); }
         if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); }
         group.setEnabled(false);
       });
-      this.slots.push({ n: -1, root, themes, lanes, decor, theme: -1, open: [false, false, false] });
+      this.slots.push({ n: -1, root, themes, lanes, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false });
     }
   }
 
@@ -602,18 +634,20 @@ export class RunnerRenderer3D {
     const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), fx = Math.sin(centre.heading), fz = Math.cos(centre.heading);
     const player = new Vector3(centre.x + rx * lateral, 0, centre.z + rz * lateral);
 
-    const pose = dogPose(world, this.settings.reducedMotion);
     const falling = world.trapFall && capture;
+    const pose = dogPose(world, this.settings.reducedMotion, falling);
+    const fall = dogFall(world, this.settings.reducedMotion);
     if (this.schoolSheet) {
       let frame = pose.sheet === "run" ? Math.floor(pose.frame / 2) : 4 + pose.frame;
-      if (falling || (!capture && world.airborne && world.jumpCount === 2)) frame = 6;
+      if (fall.tucked || (!capture && world.airborne && world.jumpCount === 2)) frame = 6;
       this.dog.frame(this.schoolSheet, frame, 4, 2);
     } else {
-      this.dog.frame(falling || pose.sheet === "actions" ? this.sheets.actions! : this.sheets.run!, falling ? 7 : pose.frame, 4, 2);
+      this.dog.frame(fall.tucked || pose.sheet === "actions" ? this.sheets.actions! : this.sheets.run!, fall.tucked ? 6 : pose.frame, 4, 2);
     }
-    const squash = pose.sheet === "actions" && pose.frame === 3 && !capture ? .1 : 0;
-    const drop = falling ? Math.min(6.2, 3 * world.captureTime * world.captureTime) : 0;
-    this.dog.root.position.set(player.x + fx * Math.min(1.1, world.captureTime * 2), DOG_SIZE * DOG_FEET + world.jumpHeight - squash - drop, player.z + fz * Math.min(1.1, world.captureTime * 2));
+    const squash = pose.sheet === "actions" && pose.frame === 3 && (!capture || falling) ? .1 : 0;
+    this.dog.root.position.set(player.x + fx * fall.forward, DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
+    this.dog.root.rotation.z = fall.roll * (lateral > 0 ? -1 : 1);
+    this.dog.root.setEnabled(!falling || fall.drop < world.jumpHeight + 3.6);
     this.dog.root.scaling.setAll(1);
     this.skinHalo.setEnabled(this.dogLook !== "original" && !falling);
     if (this.skinHalo.isEnabled()) {
@@ -622,10 +656,10 @@ export class RunnerRenderer3D {
       this.skinHalo.position.set(player.x, .08 + world.jumpHeight, player.z);
       this.skinHalo.scaling.setAll(1 + Math.sin(t * 5) * .07);
     }
-    const overGap = world.items.some(gap => gap.kind === "gap" && Math.abs(gap.z - world.distance) < 1.5 && (gap.span === 3 || Math.abs(gap.lane - world.position) < .6));
+    const overGap = world.items.some(gap => (gap.kind === "gap" || gap.kind === "long-gap") && Math.abs(gap.z - world.distance) < obstacleHalfDepth(gap.kind, gap.z) && coversLane(gap, world.position, .6));
     this.shadow.position.set(player.x, .03, player.z); this.shadow.rotation.y = centre.heading;
     this.shadow.scaling.setAll(Math.max(.4, 1 - world.jumpHeight * .25));
-    this.shadow.setEnabled(!falling && (!overGap || world.jumpHeight > 0));
+    this.shadow.setEnabled(!falling && !overGap);
 
     this.drawEffects(world, player, t, dt, capture);
 
@@ -695,28 +729,65 @@ export class RunnerRenderer3D {
   /** Recycle slots only when the window moves; then fix up gap holes. */
   private drawRoad(world: RunnerWorld) {
     const first = Math.floor((world.distance - BEHIND) / TILE);
+    const openings = world.items.flatMap(item => {
+      if (!isFallObstacle(item.kind)) return [];
+      const depth = obstacleHalfDepth(item.kind, item.z);
+      return [{ item, start: item.z - depth, end: item.z + depth }];
+    });
     if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = -1; }
     for (let n = first; n < first + SLOTS; n++) {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
-      if (slot.n === n) continue;
-      slot.n = n;
-      const at = n * TILE + TILE / 2, p = this.route.sample(at);
-      slot.root.position.set(p.x, 0, p.z); slot.root.rotation.y = p.heading;
-      const theme = sceneAt(at, world.startScene);
-      if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
-      for (const d of slot.decor) d.node.setEnabled(((n % d.every) + d.every) % d.every === d.offset);
-      slot.open = [false, false, false];
-      for (const lanes of slot.lanes) for (const lane of lanes) lane.setEnabled(true);
-    }
-    const gaps = world.items.filter(item => item.kind === "gap" || item.kind === "trap");
-    for (const slot of this.slots) {
-      if (slot.n < 0) continue;
-      const at = slot.n * TILE + TILE / 2;
+      const recycled = slot.n !== n;
+      const at = n * TILE + TILE / 2;
+      if (recycled) {
+        slot.n = n;
+        const p = this.route.sample(at);
+        slot.root.position.set(p.x, 0, p.z); slot.root.rotation.y = p.heading;
+        const theme = sceneAt(at, world.startScene);
+        if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
+      }
+      const half = TILE_DEPTH / 2;
+      const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
+      const pierCut = here.some(gap => gap.item.kind === "long-gap");
+      if (recycled || pierCut !== slot.pierCut) {
+        slot.pierCut = pierCut;
+        for (const d of slot.decor) {
+          const inLongGap = pierCut && d.node.name === "tpl-aqueduct-pier";
+          d.node.setEnabled(!inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
+        }
+      }
       for (let lane = 0; lane < 3; lane++) {
-        const open = gaps.some(gap => (gap.span === 3 || gap.lane === lane) && Math.abs(gap.z - at) < (gap.kind === "trap" ? 1.75 : 1.5) + TILE / 2 - .3);
-        if (open !== slot.open[lane]) { slot.open[lane] = open; slot.lanes[slot.theme][lane].setEnabled(!open); }
+        const gap = here.find(opening => coversLane(opening.item, lane));
+        if (!recycled && gap?.item === slot.holes[lane]) continue;
+        slot.holes[lane] = gap?.item;
+        const tile = slot.lanes[slot.theme][lane];
+        if (!gap) {
+          this.sizeLane(tile.main, -half, half);
+          tile.otherSide?.setEnabled(false);
+          continue;
+        }
+        const before = Math.max(-half, gap.start - at), after = Math.min(half, gap.end - at);
+        if (before > -half && after < half) {
+          if (!tile.otherSide) {
+            tile.otherSide = this.instance(`lane-${RUN_SCENES[slot.theme].id}`, slot.themes[slot.theme]);
+            tile.otherSide.position.x = tile.main.position.x;
+          }
+          this.sizeLane(tile.main, -half, before);
+          this.sizeLane(tile.otherSide, after, half);
+        } else {
+          if (before > -half) this.sizeLane(tile.main, -half, before);
+          else this.sizeLane(tile.main, after, half);
+          tile.otherSide?.setEnabled(false);
+        }
       }
     }
+  }
+
+  private sizeLane(node: TransformNode, start: number, end: number) {
+    const length = end - start;
+    node.setEnabled(length > .001);
+    node.position.z = (start + end) / 2;
+    node.scaling.z = length / TILE_DEPTH;
   }
 
   private drawCorners(world: RunnerWorld) {
@@ -740,7 +811,8 @@ export class RunnerRenderer3D {
   private drawProps(world: RunnerWorld, t: number, dt: number) {
     const visible = new Set<number>();
     for (const item of world.items) {
-      if (item.z <= world.distance - 8 || item.z >= world.distance + 155) continue;
+      const depth = item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0;
+      if (item.z + depth <= world.distance - 8 || item.z - depth >= world.distance + 155) continue;
       if (!item.done || isRunObstacle(item.kind)) visible.add(item.id);
     }
     for (const [id, root] of this.props) if (!visible.has(id)) { root.dispose(); this.props.delete(id); }
@@ -751,10 +823,22 @@ export class RunnerRenderer3D {
         const name = item.kind === "coin" ? `coin-${item.tier ?? "silver"}` : item.span === 3 ? `${item.kind}-wide` : item.span === 2 ? `${item.kind}-double` : item.kind;
         prop = new TransformNode(`item-${item.id}`, this.scene);
         this.instance(this.templates.has(name) ? name : item.kind, prop);
+        if (item.kind === "long-gap") {
+          const depth = obstacleHalfDepth(item.kind, item.z);
+          for (const mesh of prop.getChildMeshes()) {
+            if (mesh.name === "fissure-wall" || mesh.name === "pit-shadow") mesh.scaling.z = depth / 1.5;
+            else mesh.position.z += Math.sign(mesh.position.z) * (depth - 1.5);
+          }
+        }
         this.props.set(item.id, prop);
       }
       const p = this.place(item.z, item.span === 3 ? 0 : (item.lane - (item.span === 2 ? .5 : 1)) * LANE_WIDTH);
       prop.position.set(p.x, 0, p.z); prop.rotation.y = p.heading;
+      if (isFallObstacle(item.kind)) {
+        // Only the mouth of the shaft is visible; mask the terrain below it.
+        const shadow = prop.getChildMeshes().find(mesh => mesh.name === "pit-shadow");
+        if (shadow) shadow.position.y = Math.max(-2.12, this.themes[world.sceneIndex].groundY + .05);
+      }
       if (item.kind === "coin") {
         prop.position.y = item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
@@ -768,11 +852,16 @@ export class RunnerRenderer3D {
           mesh.rotation.z = Math.sin(t * 9 + index * 1.7) * .04;
         }
       }
-      else if (item.kind === "trap") for (const [index, plank] of prop.getChildMeshes().filter(mesh => mesh.name === "trap-plank").entries()) {
-        const fall = world.trapFall && item.done ? Math.min(1, world.captureTime * 2) : 0;
-        plank.rotation.z = (index < 2 ? -1 : 1) * fall * 1.15;
-        plank.position.y = .02 - fall * 2.4;
-        plank.setEnabled(fall < .85);
+      else if (item.kind === "trap" && world.fallObstacle === item) {
+        const halfDepth = obstacleHalfDepth("trap", item.z);
+        const planks = prop.getChildMeshes().filter(mesh => mesh.name === "trap-plank");
+        for (const [index, plank] of planks.entries()) {
+          const progress = Math.min(1, Math.max(0, world.captureTime - index * .015) / .39);
+          const angle = 1.48 * progress * progress * (3 - 2 * progress);
+          plank.rotation.x = -angle;
+          plank.position.y = .02 - halfDepth * Math.sin(angle);
+          plank.position.z = halfDepth * (1 - Math.cos(angle));
+        }
       }
     }
     if (world.phase !== "running") return;
