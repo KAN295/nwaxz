@@ -17,8 +17,8 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-COPY server/app.mjs server/index.mjs server/coop-service.mjs server/coop-socket.mjs server/social-service.mjs ./server/
-COPY src/escape/world.ts src/escape/basement-map.ts src/escape/perception.ts src/escape/abilities.ts src/escape/interference.ts src/escape/coop-protocol.ts src/escape/coop-snapshot.ts src/escape/hunter-performance.ts src/escape/hunter-search-model.ts src/escape/hunter-policy-weights.ts ./src/escape/
+COPY server/app.mjs server/index.mjs server/coop-service.mjs server/coop-socket.mjs server/lan-signaling.mjs server/social-service.mjs ./server/
+COPY src/escape/coop-authority.mjs src/escape/coop-wire.mjs src/escape/world.ts src/escape/basement-map.ts src/escape/perception.ts src/escape/abilities.ts src/escape/interference.ts src/escape/coop-protocol.ts src/escape/coop-snapshot.ts src/escape/hunter-performance.ts src/escape/hunter-search-model.ts src/escape/hunter-policy-weights.ts ./src/escape/
 COPY ops/smoke.mjs ./ops/smoke.mjs
 RUN node --input-type=module -e "await import('./server/app.mjs')"
 RUN mkdir -p /app/data && chown 10001:10001 /app/data

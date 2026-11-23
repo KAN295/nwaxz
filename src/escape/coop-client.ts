@@ -5,8 +5,10 @@ export type CoopConnectionState='connecting'|'connected'|'reconnecting'|'offline
 class CommandError extends Error { constructor(message:string,readonly status:number){super(message);} }
 
 /** Bootstrap over HTTPS, then one authenticated WebSocket for inputs, snapshots and RTT. */
+export type CoopSocket = Pick<WebSocket, 'readyState'|'bufferedAmount'|'close'|'onmessage'|'onopen'|'onerror'|'onclose'> & {send(data:string):void};
+export type CoopLink = {open():CoopSocket; close():void};
 export class CoopClient {
- private socket?:WebSocket;
+ private socket?:CoopSocket;
  private alive=false; private connected=false; private inputTimer=0; private pingTimer=0; private retryTimer=0;
  private lastPacketAt=0; private pinging=false;
  private seq=0; private requestId=0; private lastInputAt=0; private lastSignature='';
@@ -16,7 +18,7 @@ export class CoopClient {
  private stateListeners=new Set<(state:CoopConnectionState,message:string,latency?:number)=>void>();
  private pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:number;at:number;ping:boolean}>();
  private lastSnapshot?:CoopSnapshot;
- constructor(readonly session:CoopSessionResponse,private base='/api/coop'){}
+ constructor(readonly session:CoopSessionResponse,private base='/api/coop',private link?:CoopLink){}
  static create(request:CoopCreateRequest,base?:string){const{profileToken,...body}=request;return this.sessionRequest('/rooms',body,base,profileToken);}
  static join(request:CoopJoinRequest,base?:string){const{code,profileToken,...profile}=request;return this.sessionRequest(`/${encodeURIComponent(code)}/join`,profile,base,profileToken);}
  private static async sessionRequest(path:string,body:unknown,base='/api/coop',profileToken?:string){
@@ -32,8 +34,8 @@ export class CoopClient {
   if(!this.alive || this.socket)return;
   this.state(this.lastSnapshot?'reconnecting':'connecting',this.lastSnapshot?'正在重新连接':'正在连接房间');
   const url=new URL(`${this.base}/${encodeURIComponent(this.session.code)}/socket`,location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(url);this.socket=ws;
-  const deadline=window.setTimeout(()=>{if(!this.connected)ws.close();},7000);
+  const ws=this.link ? this.link.open() : new WebSocket(url);this.socket=ws;
+  const deadline=window.setTimeout(()=>{if(!this.connected)ws.close();},this.link ? 40000 : 7000);
   ws.onopen=()=>ws.send(JSON.stringify({type:'auth',token:this.session.token,version:APP_VERSION}));
   ws.onmessage=event=>{
    if(this.socket!==ws)return;
@@ -52,8 +54,9 @@ export class CoopClient {
    else if(packet.type==='error'&&!this.connected){this.stop();this.state('closed',packet.error??'房间已关闭');}
   };
   ws.onerror=()=>{};
-  ws.onclose=()=>{
+  ws.onclose=event=>{
    clearTimeout(deadline);if(this.socket!==ws)return;this.socket=undefined;this.connected=false;this.actions=[];this.rejectPending();
+   if(this.link && event.code===4004){this.stop();this.state('closed',event.reason || '房主已离开');return;}
    if(this.alive){this.state('reconnecting','连接中断，正在重连');this.retryTimer=window.setTimeout(()=>this.connect(),1000);}
   };
  }
@@ -91,8 +94,9 @@ export class CoopClient {
  ready(ready:boolean){return this.request('ready',{ready});}
  startRoom(){return this.request('start');}
  respawn(){return this.request('respawn');}
- async leave(){try{if(this.connected)await this.request('leave');else await fetch(`${this.base}/${encodeURIComponent(this.session.code)}/leave`,{method:'POST',headers:{authorization:`Bearer ${this.session.token}`,'content-type':'application/json'},body:'{}'}).catch(()=>{});}finally{this.stop();}}
+ async leave(){try{if(this.connected)await this.request('leave');else if(!this.link) await fetch(`${this.base}/${encodeURIComponent(this.session.code)}/leave`,{method:'POST',headers:{authorization:`Bearer ${this.session.token}`,'content-type':'application/json'},body:'{}'}).catch(()=>{});}finally{this.stop();}}
  async ping(){const at=performance.now();await this.request('ping');return Math.round(performance.now()-at);}
- reconnect(){this.stop();this.start();this.startInputs();}
- stop(){this.alive=false;this.connected=false;const ws=this.socket;this.socket=undefined;ws?.close();this.rejectPending();clearTimeout(this.retryTimer);clearInterval(this.inputTimer);clearInterval(this.pingTimer);this.inputTimer=this.pingTimer=0;this.latestInput=undefined;this.actions=[];}
+ reconnect(){this.reset();this.start();this.startInputs();}
+ stop(){this.reset();this.link?.close();}
+ private reset(){this.alive=false;this.connected=false;const ws=this.socket;this.socket=undefined;ws?.close();this.rejectPending();clearTimeout(this.retryTimer);clearInterval(this.inputTimer);clearInterval(this.pingTimer);this.inputTimer=this.pingTimer=0;this.latestInput=undefined;this.actions=[];}
 }

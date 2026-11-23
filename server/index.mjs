@@ -16,7 +16,7 @@ const server = app.listen(
   () => console.log("nwaxz server ready"),
 );
 let stopping = false;
-const closeSockets = attachCoopSockets(server,app.locals.coop);
+const closeSockets = attachCoopSockets(server,app.locals.coop,undefined,app.locals.social);
 function stop() {
   if (stopping) return;
   stopping = true;

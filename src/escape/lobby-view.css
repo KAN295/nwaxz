@@ -81,10 +81,6 @@
 .escape-lobby .lv-server{padding:14px 16px;border:1.5px solid var(--ink);background:#ffffff30}
 .escape-lobby .lv-server h3{margin:0;font:700 18px var(--serif);color:var(--ink)}.escape-lobby .lv-server p{margin:2px 0 0;color:var(--ink-soft)}
 .escape-lobby .lv-server footer{margin-top:6px;font-size:14px;color:var(--ink-faint)}.escape-lobby .lv-good{color:#4f6a32!important;font-weight:700}
-.escape-lobby .lv-lan-address{display:block;margin-top:12px;padding:10px 14px;border:1px solid var(--paper-edge);color:var(--ink-soft)}
-.escape-lobby .lv-lan-address summary{color:var(--ink);cursor:pointer;font-weight:700}
-.escape-lobby .lv-lan-address p{margin:6px 0}.escape-lobby .lv-lan-address a{color:var(--ink);text-decoration:underline}
-.escape-lobby .lv-lan-address input{display:block;width:min(100%,300px);margin-top:5px}
 .escape-lobby .lv-room-list,.escape-lobby .lv-friend-list{display:grid;border-top:2px solid var(--ink);border-bottom:2px solid var(--ink)}
 .escape-lobby .lv-room-list article,.escape-lobby .lv-friend-list>div{display:flex;align-items:center;gap:14px;padding:12px 4px;border-bottom:1px dashed #8a766088;color:var(--ink)}
 .escape-lobby .lv-room-list article:last-child,.escape-lobby .lv-friend-list>div:last-child{border-bottom:0}
@@ -171,3 +167,6 @@
   .escape-lobby .lv-room-list article{flex-wrap:wrap}
 }
 @media (prefers-reduced-motion:reduce){.escape-lobby::before{animation:none}.escape-lobby .lv-nav{transition:none}}
+
+.lv-network { display:flex; gap:.5rem; margin-block:0 1rem; }
+.lv-network [aria-pressed="true"] { color:#161811; background:#c5b17e; border-color:#dbc68e; }

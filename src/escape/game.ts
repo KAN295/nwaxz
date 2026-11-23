@@ -83,6 +83,7 @@ export class EscapeGame {
   private noteActive = false;
   private noteReturnToJournal = false;
   private coop?: CoopClient;
+  private lobbyNetwork: "online"|"lan" = "online";
   private coopSnapshot?: CoopSnapshot;
   private coopState: CoopConnectionState = "offline";
   private coopMessage = "";
@@ -226,10 +227,11 @@ export class EscapeGame {
     const room=this.coopSnapshot?.room??(this.coop?{code:this.coop.session.code,phase:'lobby' as const,leaderId:this.coop.session.leader?this.coop.session.playerId:'',players:[]}:undefined);
     const profile=this.social.identity??{uid:'—',name:'幸存者',avatar:0};
     const rootScreen=this.lobbyScreenStack[0]??this.lobbyScreen;
-    const model:LobbyModel={profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
+    const model:LobbyModel={network:this.lobbyNetwork,profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
     this.lobbyDisposer?.();
     const operation=(fn:()=>Promise<unknown>,success:string)=>{void fn().then(()=>{this.socialMessage(success);return this.refreshSocialLobby();}).catch(error=>this.socialMessage(error instanceof Error?error.message:'操作失败'));};
     this.lobbyDisposer=renderLobbyView(this.$('#escape-panel'),model,{
+      network:mode=>{if(this.coop || this.coopRequesting)return;this.lobbyNetwork=mode;this.lobbyMessage=undefined;this.renderSocialLobby();},
       screen:screen=>{this.lobbyMessage=undefined;if(['home','servers','room','friends','profile'].includes(screen)){this.lobbyScreen=screen==='room'&&!this.coop?'servers':screen;this.lobbyScreenStack=[];this.renderSocialLobby();}else this.openLobbyScreen(screen);void this.refreshSocialLobby();},
       single:()=>{const open=()=>this.openLobbyScreen('solo');if(this.coop)void this.leaveCoop().then(open);else open();},controls:()=>this.openLobbyScreen('controls'),settings:()=>this.openLobbyScreen('settings'),
       back:()=>this.backLobbyScreen(),continueGame:()=>void this.start(true),newGame:()=>void this.start(false),exportSave:()=>this.exportSave(),importSave:()=>this.$<HTMLInputElement>('#escape-import').click(),
@@ -243,7 +245,7 @@ export class EscapeGame {
       leave:()=>{void this.leaveCoop();},start:()=>{void this.coop?.startRoom().then(()=>this.startCoopGame()).catch(error=>this.socialMessage(error.message));},
       avatar:avatar=>operation(()=>this.social.update({avatar}),'形象已更换'),rename:name=>operation(()=>this.social.update({name}),'昵称已保存'),
       addFriend:uid=>operation(()=>this.social.requestFriend(uid),'好友申请已发送'),acceptFriend:uid=>operation(()=>this.social.acceptFriend(uid),'已添加好友'),removeFriend:uid=>operation(()=>this.social.removeFriend(uid),'已移除好友'),
-      inviteFriend:uid=>operation(()=>this.coop?this.social.invite(uid,this.coop.session.code):Promise.reject(new Error('先加入一个房间')),'邀请已发送'),acceptInvite:code=>{void this.openSocialRoom('join',{code});},
+      inviteFriend:uid=>operation(()=>this.coop?this.social.invite(uid,this.coop.session.code):Promise.reject(new Error('先加入一个房间')),'邀请已发送'),acceptInvite:code=>{if(!this.coop)this.lobbyNetwork='online';void this.openSocialRoom('join',{code});},
     });
   }
   private async openSocialRoom(kind:'create'|'join',input:{name?:string;visibility?:'public'|'private';password?:string;code?:string}){
@@ -251,7 +253,7 @@ export class EscapeGame {
     if(this.coop){this.socialMessage('先离开当前房间');return;}
     this.coopRequesting=true;
     try{const profile=await this.social.ensure();if(this.disposed||!this.lobbyVisible)return;const common={version:APP_VERSION,name:profile.name,avatar:profile.avatar as 0|1|2|3,profileToken:profile.token,password:input.password};
-      const client=kind==='create'?await CoopClient.create({...common,title:input.name,visibility:input.visibility}):await CoopClient.join({...common,code:input.code??''});
+      const client=this.lobbyNetwork==='lan' ? await (await import('./lan-client.mjs')).openLanRoom(kind,profile,input) : kind==='create'?await CoopClient.create({...common,title:input.name,visibility:input.visibility}):await CoopClient.join({...common,code:input.code??''});
       if(this.disposed||!this.lobbyVisible){await client.leave();return;}this.attachCoop(client);this.showSocialLobby('room');void this.prepareCoopRoom(client);
     }catch(error){this.socialMessage(error instanceof Error?error.message:'无法进入房间');}finally{this.coopRequesting=false;}
   }
