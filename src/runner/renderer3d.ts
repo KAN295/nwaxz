@@ -69,7 +69,8 @@ export class RunnerRenderer3D {
   private skyMat: StandardMaterial;
   private skies: { day: Texture; night: Texture }[] = [];
   private shadow: Mesh;
-  private crest: Mesh;
+  private schoolSheet?: Texture;
+  private schoolLoad = 0;
   private rain: AbstractMesh[] = [];
   private snow: AbstractMesh[] = [];
   private streaks: AbstractMesh[] = [];
@@ -118,11 +119,6 @@ export class RunnerRenderer3D {
 
     this.dog = createRunnerSprite(this.scene, "runner-milk-dog-2d", DOG_SIZE);
     this.chaserSprite = createRunnerSprite(this.scene, "runner-milk-frog-2d", FROG_SIZE);
-    this.crest = MeshBuilder.CreatePlane("runner-dog-school-crest", { size: .46 }, this.scene);
-    this.crest.billboardMode = Mesh.BILLBOARDMODE_Y;
-    const crestMat = new StandardMaterial("runner-dog-crest-ink", this.scene);
-    crestMat.disableLighting = true; crestMat.emissiveColor = Color3.White(); crestMat.backFaceCulling = false;
-    this.crest.material = crestMat; this.crest.isPickable = false; this.crest.setEnabled(false);
     this.shadow = MeshBuilder.CreateGround("runner-dog-shadow", { width: 1.8, height: 1.1 }, this.scene);
     this.shadow.material = this.radialMaterial("blob", "rgba(0,0,0,.55)", false);
 
@@ -349,11 +345,23 @@ export class RunnerRenderer3D {
     const ratio = Math.min(devicePixelRatio || 1, this.settings.quality === "high" ? 2 : 1.25);
     this.engine.setSize(Math.max(1, Math.round(rect.width * ratio)), Math.max(1, Math.round(rect.height * ratio)));
   }
-  setDogLook(id: string) {
+  async setDogLook(id: string) {
     const look = getDogLook(id);
-    this.dogLook = look.id;
-    this.crest.setEnabled(!!look.logo);
-    (this.crest.material as StandardMaterial).diffuseTexture = look.logo ? this.texture(look.logo) : null;
+    const request = ++this.schoolLoad;
+    if (!("sprite" in look)) {
+      this.schoolSheet?.dispose();
+      this.schoolSheet = undefined;
+      this.dogLook = "original";
+      return;
+    }
+    try {
+      const image = await loadImage(look.sprite);
+      if (this.disposed || request !== this.schoolLoad) return;
+      this.schoolSheet?.dispose();
+      this.schoolSheet = sheetTexture(this.scene, image.src);
+      this.dogLook = look.id;
+      return image;
+    } catch { return undefined; }
   }
 
   // ---------- static geometry ----------
@@ -608,13 +616,17 @@ export class RunnerRenderer3D {
 
     const pose = dogPose(world, this.settings.reducedMotion);
     const falling = world.trapFall && capture;
-    this.dog.frame(falling || pose.sheet === "actions" ? this.sheets.actions! : this.sheets.run!, falling ? 7 : pose.frame, 4, 2);
+    if (this.schoolSheet) {
+      let frame = pose.sheet === "run" ? Math.floor(pose.frame / 2) : 4 + pose.frame;
+      if (falling || (!capture && world.airborne && world.jumpCount === 2)) frame = 6;
+      this.dog.frame(this.schoolSheet, frame, 4, 2);
+    } else {
+      this.dog.frame(falling || pose.sheet === "actions" ? this.sheets.actions! : this.sheets.run!, falling ? 7 : pose.frame, 4, 2);
+    }
     const squash = pose.sheet === "actions" && pose.frame === 3 && !capture ? .1 : 0;
     const drop = falling ? Math.min(6.2, 3 * world.captureTime * world.captureTime) : 0;
     this.dog.root.position.set(player.x + fx * Math.min(1.1, world.captureTime * 2), DOG_SIZE * DOG_FEET + world.jumpHeight - squash - drop, player.z + fz * Math.min(1.1, world.captureTime * 2));
     this.dog.root.scaling.setAll(1);
-    this.crest.position.set(this.dog.root.position.x - fx * .07, this.dog.root.position.y + .16, this.dog.root.position.z - fz * .07);
-    this.crest.setEnabled(this.dogLook !== "original" && !capture);
     this.skinHalo.setEnabled(this.dogLook !== "original" && !falling);
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(getDogLook(this.dogLook).color);
@@ -681,8 +693,7 @@ export class RunnerRenderer3D {
     this.sun.intensity = theme === 2 ? .2 : night ? .25 : .95 * dim;
     this.sun.diffuse.set(night ? .6 : 1, night ? .7 : .94, night ? 1 : .82);
     const tint = night ? .8 : theme === 2 ? .85 : weather === "sunny" ? 1 : .9;
-    const color = Color3.Lerp(Color3.White(), Color3.FromHexString(getDogLook(this.dogLook).color), .58);
-    this.dog.material.emissiveColor.set(color.r * tint, color.g * tint, color.b * tint);
+    this.dog.tint(tint);
     this.chaserSprite.tint(tint);
     this.groundPlane.material = look.ground;
     const skies = this.skies[theme];

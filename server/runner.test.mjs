@@ -123,10 +123,13 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
   const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
 });
 
-test('QS 2027 shop has 100 ranked looks with bundled logos, and saves only valid looks', () => {
-  assert.equal(DOG_LOOKS.length, 100); assert.equal(new Set(DOG_LOOKS.map(look => look.id)).size, 100);
+test('QS 2027 shop includes both tied rank-100 schools and a sprite atlas for every look', () => {
+  assert.equal(DOG_LOOKS.length, 102); assert.equal(new Set(DOG_LOOKS.map(look => look.id)).size, 102);
   assert.equal(DOG_LOOKS[0].name, 'Massachusetts Institute of Technology (MIT)');
-  for (const look of DOG_LOOKS) { assert.match(look.color, /^#[0-9a-f]{6}$/i); assert.ok(fs.existsSync(`public${look.logo}`), look.logo); }
+  assert.deepEqual(DOG_LOOKS.slice(-2).map(look => [look.rank, look.name]), [['=100', 'Purdue University'], ['=100', 'University College Dublin']]);
+  for (const look of DOG_LOOKS) { assert.match(look.color, /^#[0-9a-f]{6}$/i); assert.ok(fs.existsSync(`public${look.logo}`), look.logo); assert.ok(fs.existsSync(`public${look.sprite}`), look.sprite); }
+  const spriteHashes = DOG_LOOKS.map(look => createHash('sha256').update(fs.readFileSync(`public${look.sprite}`)).digest('hex'));
+  assert.equal(new Set(spriteHashes).size, DOG_LOOKS.length, 'every school has its own sprite atlas');
   const empty = readWardrobe(null); assert.deepEqual(empty.owned, ['original']); assert.equal(empty.equipped, 'original');
   const saved = readWardrobe(JSON.stringify({ version: 2, silver: 45, gold: 9, diamond: 0, owned: ['original', 'qs001', 'fake', 'qs001'], equipped: 'qs001' }));
   assert.deepEqual(saved.owned, ['original', 'qs001']); assert.equal(saved.equipped, 'qs001');

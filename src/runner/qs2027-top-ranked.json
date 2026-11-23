@@ -798,5 +798,21 @@
     "color": "#687b92",
     "logo": "/assets/runner/qs2027/qs100.jpg",
     "source": "https://www.topuniversities.com/sites/default/files/250124123220pm124063Logo-48x48.jpg"
+  },
+  {
+    "id": "qs101",
+    "rank": "=100",
+    "name": "Purdue University",
+    "color": "#cba052",
+    "logo": "/assets/runner/qs2027/qs101.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/230619052213pm191066PU-SIG-Logo-RGB--PU-V-Full-RGB-48x48.jpg"
+  },
+  {
+    "id": "qs102",
+    "rank": "=100",
+    "name": "University College Dublin",
+    "color": "#104c38",
+    "logo": "/assets/runner/qs2027/qs102.jpg",
+    "source": "https://www.topuniversities.com/sites/default/files/university-college-dublin_166_small.jpg"
   }
 ]

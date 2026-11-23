@@ -1,7 +1,7 @@
-import schools from "./qs2027-top100.json" with { type: "json" };
+import schools from "./qs2027-top-ranked.json" with { type: "json" };
 
 export type CurrencyPurse = { silver: number; gold: number; diamond: number };
-export type DogLook = { id: string; rank: string; name: string; color: string; logo: string; source: string; price: Partial<CurrencyPurse> };
+export type DogLook = { id: string; rank: string; name: string; color: string; logo: string; source: string; sprite: string; price: Partial<CurrencyPurse> };
 export type DogWardrobe = CurrencyPurse & { owned: string[]; equipped: string };
 
 export const WARDROBE_KEY = "nwaxz-runner-skin-shop-v2";
@@ -13,7 +13,7 @@ export const DOG_LOOKS: readonly DogLook[] = schools.map(school => {
     : rank <= 50 ? { gold: 25 + Math.ceil((51 - rank) * 1.5) }
     : rank <= 80 ? { gold: 8 + Math.ceil((81 - rank) / 2) }
     : { silver: 35 + (101 - rank) * 3 };
-  return { ...school, price };
+  return { ...school, sprite: `/assets/runner/qs2027/skins/${school.id}.webp`, price };
 });
 
 const empty = (): DogWardrobe => ({ silver: 0, gold: 0, diamond: 0, owned: [ORIGINAL_LOOK.id], equipped: ORIGINAL_LOOK.id });

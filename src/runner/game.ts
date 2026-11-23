@@ -33,6 +33,7 @@ export class RunnerGame {
   private credited: CurrencyPurse = { silver: 0, gold: 0, diamond: 0 };
   private shopOpen = false;
   private shopQuery = "";
+  private shopObserver?: IntersectionObserver;
   private recordError = false;
   private renderer?: RunnerRenderer3D;
   private tilt = new RunnerTilt();
@@ -46,6 +47,8 @@ export class RunnerGame {
   private last = 0;
   private shownPhase: RunPhase | "loading" = "loading";
   private art: { dog?: HTMLImageElement; frog?: HTMLImageElement; laugh?: HTMLImageElement } = {};
+  private skinPortrait?: HTMLImageElement;
+  private portraitRequest = 0;
   private swipe?: { x: number; y: number; id: number; used: boolean };
   private warnedTurn = -1;
   private urgentTurn = -1;
@@ -128,7 +131,7 @@ export class RunnerGame {
       this.renderer?.dispose();
       this.renderer = new module.RunnerRenderer3D(this.el.canvas, this.settings);
       await this.renderer.load();
-      this.renderer.setDogLook(this.wardrobe.equipped);
+      await this.applyDogLook(this.wardrobe.equipped);
       if (this.destroyed) { this.renderer.dispose(); return; }
       this.el.main.dataset.engine = "babylon";
       this.ready = true; this.shownPhase = "ready"; this.showPanel();
@@ -382,7 +385,7 @@ export class RunnerGame {
       this.wardrobe.owned.push(look.id);
     } else if (!this.wardrobe.owned.includes(look.id)) return;
     this.wardrobe.equipped = look.id;
-    this.renderer?.setDogLook(look.id);
+    void this.applyDogLook(look.id);
     this.persistWardrobe(); this.showPanel();
   }
 
@@ -392,6 +395,12 @@ export class RunnerGame {
       const look = getDogLook(card.dataset.skinId ?? "");
       card.hidden = !!query && !`${look.name} ${"rank" in look ? look.rank : ""}`.toLocaleLowerCase().includes(query);
     }
+  }
+
+  private async applyDogLook(id: string) {
+    const request = ++this.portraitRequest;
+    const image = await this.renderer?.setDogLook(id);
+    if (!this.destroyed && request === this.portraitRequest) this.skinPortrait = image;
   }
 
   private recordKey() { return this.mode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY; }
@@ -425,12 +434,12 @@ export class RunnerGame {
     if (!this.ready) {
       html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div>`}${btn("exit", "返回", "ghost")}`;
     } else if (this.shopOpen) {
-      html = `<h2>皮肤商城</h2><p>QS 2027 · 世界大学前 100 所</p><p>银币 ${this.wardrobe.silver}　金币 ${this.wardrobe.gold}　钻石 ${this.wardrobe.diamond}</p>
+      html = `<h2>皮肤商城</h2><p>QS 2027 · 世界大学前 100 名（含并列 102 所）</p><p>银币 ${this.wardrobe.silver}　金币 ${this.wardrobe.gold}　钻石 ${this.wardrobe.diamond}</p>
         <input class="runner-shop-search" type="search" placeholder="搜索学校或名次" aria-label="搜索学校或名次">
         <div class="runner-shop-list"><div class="runner-shop-item" data-skin-id="original"><span class="runner-shop-swatch" style="--skin:#fff"></span><div><strong>默认奶狗</strong><small>原本的奶狗形象</small></div><button data-run="equip-original" ${this.wardrobe.equipped === "original" ? "disabled" : ""}>${this.wardrobe.equipped === "original" ? "使用中" : "装备"}</button></div>${DOG_LOOKS.map(look => {
           const owned = this.wardrobe.owned.includes(look.id), active = this.wardrobe.equipped === look.id;
           const cost = (Object.entries(look.price) as [keyof CurrencyPurse, number][]).map(([key, n]) => `${n}${{ silver: "银币", gold: "金币", diamond: "钻石" }[key]}`).join(" · ");
-          return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-logo" style="--skin:${look.color}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${active || !owned && !canAfford(this.wardrobe, look.price) ? "disabled" : ""}>${active ? "使用中" : owned ? "装备" : "解锁"}</button></div>`;
+          return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-preview" style="--skin:${look.color}" data-sprite="${look.sprite}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${active || !owned && !canAfford(this.wardrobe, look.price) ? "disabled" : ""}>${active ? "使用中" : owned ? "装备" : "解锁"}</button></div>`;
         }).join("")}</div>${btn("shop-back", "返回", "ghost")}${note}`;
     } else if (w.phase === "ready") {
       const toggle = (action: string, label: string, on: boolean) => `<button data-run="${action}" aria-pressed="${on}">${label}</button>`;
@@ -461,8 +470,21 @@ export class RunnerGame {
         ${best}<p class="runner-record">最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米</p>
         ${won ? btn("continue", "继续无限模式") : ""}${btn("restart", "再跑一次", won ? "ghost" : "primary")}${btn("shop", "皮肤商城", "ghost")}${btn("exit", "主菜单", "ghost")}${note}`;
     }
+    this.shopObserver?.disconnect(); this.shopObserver = undefined;
     panel.innerHTML = `<div class="runner-card">${html}</div>`;
-    if (this.shopOpen) { const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop(); }
+    if (this.shopOpen) {
+      const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop();
+      const list = panel.querySelector(".runner-shop-list");
+      const observer = new IntersectionObserver(entries => {
+        for (const entry of entries) if (entry.isIntersecting) {
+          const node = entry.target as HTMLElement;
+          node.style.setProperty("--sprite", `url('${node.dataset.sprite}')`);
+          observer.unobserve(node);
+        }
+      }, { root: list, rootMargin: "100px" });
+      this.shopObserver = observer;
+      panel.querySelectorAll<HTMLElement>(".runner-shop-preview").forEach(node => observer.observe(node));
+    }
     panel.querySelector<HTMLButtonElement>(".primary")?.focus({ preventScroll: true });
   }
 
@@ -476,7 +498,7 @@ export class RunnerGame {
         <li>单道的倒木、栏杆撞到会踉跄，恐怖奶蛙会笑着追上来——8秒内再撞就被抓。乱石枯枝有单道和双道两种，火焰覆盖两道；都要躲开或跳过（巨石要二段跳）。</li>
         <li>路尽头立着<b>箭头墙</b>时，按箭头方向转弯。</li>
         <li>先收银币，400米后开始出现金币；1800米后才有极少量钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
-        <li>活动木板下面有深坑，跳过或换道；踩翻后奶狗会从原镜头中落下。收集货币可在皮肤商城解锁 100 套 QS 2027 高校主题皮肤。</li>
+        <li>活动木板下面有深坑，跳过或换道；踩翻后奶狗会从原镜头中落下。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
         <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后进入较长的黑夜。</li>
       </ul>
       <button data-run="help-back" class="primary">知道了</button></div>`;
@@ -495,9 +517,9 @@ export class RunnerGame {
       ctx.drawImage(image, (frame % columns) * cw, Math.floor(frame / columns) * ch, cw, ch, (canvas.width - size) / 2, bob, size, size);
     };
     const motion = this.settings.reducedMotion ? 0 : 1;
-    draw("dog", this.art.dog, 4, 4, 2, Math.sin(time * 5) * 2 * motion);
+    draw("dog", this.skinPortrait ?? this.art.dog, 4, 4, 2, Math.sin(time * 5) * 2 * motion);
     draw("frog", this.art.frog, 0, 4, 4, Math.sin(time * 4 + 1) * 2 * motion);
-    draw("dog-win", this.art.dog, 4, 4, 2, -Math.abs(Math.sin(time * 6)) * 8 * motion);
+    draw("dog-win", this.skinPortrait ?? this.art.dog, 4, 4, 2, -Math.abs(Math.sin(time * 6)) * 8 * motion);
     draw("laugh", this.art.laugh, 6, 4, 2, Math.sin(time * 14) * 2 * motion);
   }
 
@@ -505,6 +527,7 @@ export class RunnerGame {
     if (this.destroyed) return;
     if (this.world.phase === "running" || this.world.phase === "paused" || this.world.phase === "caught") this.save();
     this.destroyed = true;
+    this.shopObserver?.disconnect();
     cancelAnimationFrame(this.frame); this.abort.abort(); this.resize.disconnect();
     this.audio.setPlaying(false); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); this.renderer?.dispose();
   }
