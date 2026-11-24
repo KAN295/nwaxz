@@ -3,6 +3,7 @@ import { ROPE_GRAB_DISTANCE, ropeReleaseProgress } from "./course.ts";
 
 export const CAPTURE_GRAB_AT = .38;
 export const CAPTURE_LAUGH_AT = 1.03;
+export const MINECART_SURPRISE_ART = "/assets/runner/milk-dog-minecart-surprise-v1.webp";
 
 export function captureMotion(time: number, reducedMotion: boolean) {
   const ease = (start: number, end: number) => {

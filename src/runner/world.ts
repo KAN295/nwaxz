@@ -63,7 +63,7 @@ const STEP = 1 / 120;
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
 const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48 };
 /** Half depth along the route. */
-const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49 };
+const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49 };
 const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
@@ -178,6 +178,7 @@ export class RunnerWorld {
     this.weatherSeed = seed >>> 0;
     this.endless = mode === "endless";
     this.startScene = Number.isInteger(startScene) && startScene >= 0 && startScene < RUN_SCENES.length ? startScene : 0;
+    this.nextTurn = this.turnOutsideFeature(this.nextTurn, 0);
     this.populate();
   }
 
@@ -418,12 +419,17 @@ export class RunnerWorld {
 
   private nearTurn(z: number) { return this.turns.some(turn => z > turn.z - 45 && z < turn.z + 25); }
 
+  private turnOutsideFeature(z: number, previous: number) {
+    const section = sectionFeature(z, this.startScene);
+    const before = section.start - 48, after = section.end + 34;
+    if (z <= before || z >= after) return z;
+    return before - previous >= 260 ? before : after;
+  }
+
   private populate() {
     while (this.nextTurn < this.distance + 200) {
       this.turns.push({ z: this.nextTurn, direction: this.random() < .5 ? "left" : "right", taken: false });
-      this.nextTurn += 260 + Math.floor(this.random() * 120);
-      const section = sectionFeature(this.nextTurn, this.startScene);
-      if (this.nextTurn > section.start - 48 && this.nextTurn < section.end + 34) this.nextTurn = section.end + 34;
+      this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
     }
     while (this.nextFeatureSection * SCENE_LENGTH + RIDE_START < this.distance + 150) {
       this.addFeatureItems(sectionFeature(this.nextFeatureSection++ * SCENE_LENGTH, this.startScene));
@@ -444,10 +450,11 @@ export class RunnerWorld {
 
   private addFeatureItems(ride: CourseFeature) {
     if (ride.kind === "bridge") {
-      this.add(ride.start + 24, 1, "bridge-branch", { span: 3, feature: "bridge" });
-      for (let i = 0; i < 9; i++) {
-        const z = ride.start + 6 + i * 4.2;
-        this.addCoin(z, 1, { y: Math.abs(z - ride.start - 24) < 6 ? 1.46 : .8, feature: "bridge" });
+      const branches = [ride.start + 24, ride.end - 24];
+      for (const z of branches) this.add(z, 1, "bridge-branch", { span: 3, feature: "bridge" });
+      for (let z = ride.start + 6; z < ride.end - 4; z += 4.2) {
+        const y = branches.some(near => Math.abs(z - near) < 6) ? 1.46 : .8;
+        this.addCoin(z, 1, { y, feature: "bridge" });
       }
       return;
     }
@@ -459,7 +466,7 @@ export class RunnerWorld {
       return;
     }
     const first = this.pick([0, 2]);
-    for (const [i, offset] of [24, 50, 76].entries()) {
+    for (const [i, offset] of [24, 52, 81, 109, 137].entries()) {
       const z = ride.start + offset, clear = i % 2 ? 2 - first : first;
       this.add(z, clear === 0 ? 1 : 0, "cart-block", { span: 2, feature: "cart" });
       for (let j = -3; j <= 1; j++) this.addCoin(z + j * 2, clear, { y: 1.26, feature: "cart" });

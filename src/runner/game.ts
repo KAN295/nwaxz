@@ -3,7 +3,7 @@ import { loadImage } from "../loading.ts";
 import type { Settings } from "../settings.ts";
 import type { AudioManager } from "../audio.ts";
 import { RunnerTilt } from "./tilt.ts";
-import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT } from "./animation.ts";
+import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART } from "./animation.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
@@ -386,6 +386,7 @@ export class RunnerGame {
           urgent = blocked.z - w.distance < w.speed * .8;
           html = blocked.lane === 0 ? "<b>▶</b><span>右侧轨道畅通</span>" : "<b>◀</b><span>左侧轨道畅通</span>";
         } else html = "<b>↔</b><span>左右换轨</span>";
+        if (this.wardrobe.equipped !== ORIGINAL_LOOK.id) html += `<img class="runner-cart-expression" src="${MINECART_SURPRISE_ART}" alt="">`;
       } else if (w.bridge) {
         aboveRoad = true;
         const branch = requiredMove?.kind === "bridge-branch" && !w.invincible ? requiredMove : undefined;

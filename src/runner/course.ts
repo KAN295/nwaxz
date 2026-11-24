@@ -20,8 +20,8 @@ export function sectionFeature(distance: number, startScene: number): CourseFeat
   const theme = sceneAt(distance, startScene);
   const start = sectionAt(distance) * SCENE_LENGTH + RIDE_START;
   if (theme === 0) return { kind: "rope", start, end: start + 54 };
-  if (theme === 1) return { kind: "bridge", start, end: start + 46 };
-  return { kind: "cart", start, end: start + 94 };
+  if (theme === 1) return { kind: "bridge", start, end: start + 82 };
+  return { kind: "cart", start, end: start + 154 };
 }
 
 const unit = (value: number) => Math.max(0, Math.min(1, value));

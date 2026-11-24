@@ -103,6 +103,7 @@ test("complete-offline inventory covers revisioned resources while the startup s
     "assets/runner/obstacle-cedar-ring-v1.webp",
     "assets/runner/obstacle-fractured-rock-v1.webp",
     "assets/runner/mine-amethyst-v1.webp",
+    "assets/runner/milk-dog-minecart-surprise-v1.webp",
     "assets/runner/mine-calcite-v1.webp",
     "assets/runner/mine-malachite-v1.webp",
     "assets/runner/trees/mine-petrified-root-v1.webp",

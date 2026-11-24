@@ -144,7 +144,7 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
 });
 
 test('a long gap needs two jumps at both introduction and top speed, with or without slow time', () => {
-  for (const z of [675, 2500]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
+  for (const z of [705, 2600]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
     const half = obstacleHalfDepth('long-gap', z), edge = z - half;
     const attempt = (double) => {
       const w = place('long-gap', { z, span: 3 });
@@ -165,6 +165,21 @@ test('a long gap needs two jumps at both introduction and top speed, with or wit
     assert.ok(single.fallVelocity < 0);
     const double = attempt(true);
     assert.equal(double.phase, 'running'); assert.ok(double.distance > z + half);
+  }
+});
+
+test('the wider ordinary fissure is still passable with one jump', () => {
+  for (const z of [85, 2600]) {
+    const w = place('gap', { z, span: 3 });
+    w.endless = true; w.nextRow = w.nextTurn = w.nextFeatureSection = Infinity;
+    const half = obstacleHalfDepth('gap', z);
+    assert.equal(half * 2, 4.8);
+    w.distance = z - half - w.speed * .12;
+    w.action('jump');
+    run(w, .65);
+    assert.equal(w.phase, 'running');
+    assert.ok(w.distance > z + half);
+    assert.equal(w.jumpCount, 0);
   }
 });
 
@@ -420,7 +435,7 @@ test('the aqueduct requires grabbing the rope, and the rope can be steered and e
   assert.equal(sectionFeature(0, 1).kind, 'bridge');
 });
 
-test('minecart boarding is automatic, and only the clear track passes each rockfall', () => {
+test('the longer minecart ride has five rockfalls and its next turn starts beyond the exit', () => {
   const board = () => {
     const w = new RunnerWorld(5, 'endless', 2);
     const cart = sectionFeature(0, w.startScene);
@@ -433,10 +448,14 @@ test('minecart boarding is automatic, and only the clear track passes each rockf
   run(blocked, 1.6);
   assert.equal(blocked.reason, '矿车撞上了塌方');
   const { w, cart } = board();
+  assert.equal(cart.end - cart.start, 154);
+  assert.equal(w.items.filter(item => item.kind === 'cart-block').length, 5);
   while (w.distance < cart.end && w.phase === 'running') { drive(w); w.advance(1 / 120); }
   assert.equal(w.phase, 'running');
   assert.equal(w.ride, undefined);
-  assert.ok(w.coins >= 8);
+  assert.ok(w.elapsed > 8.5);
+  assert.ok(w.coins >= 16);
+  assert.ok(w.approachingTurn.z >= cart.end + 34);
 });
 
 test('rope preserves the initial jump height and releases onto the deck with a descending arc', () => {
@@ -449,7 +468,7 @@ test('rope preserves the initial jump height and releases onto the deck with a d
   assert.equal(riderHeightAt(rope.end, rope), 0);
 });
 
-test('log bridge requires the middle and a jump over its transverse branch', () => {
+test('the longer log bridge requires staying in the middle and jumping two branches', () => {
   const approach = (lane) => {
     const w = new RunnerWorld(5, 'endless', 1);
     w.start(); w.distance = 136; w.lane = w.position = lane;
@@ -460,9 +479,13 @@ test('log bridge requires the middle and a jump over its transverse branch', () 
   const branch = approach(1); run(branch, 2.2);
   assert.equal(branch.reason, '撞上了桥上的横枝');
   const clear = approach(1);
-  while (clear.distance < 186 && clear.phase === 'running') { drive(clear); clear.advance(1 / 120); }
+  const bridge = clear.upcomingFeature;
+  assert.equal(bridge.end - bridge.start, 82);
+  assert.equal(clear.items.filter(item => item.kind === 'bridge-branch').length, 2);
+  while (clear.distance < bridge.end && clear.phase === 'running') { drive(clear); clear.advance(1 / 120); }
   assert.equal(clear.phase, 'running');
   assert.equal(clear.bridge, undefined);
+  assert.ok(clear.elapsed > 5);
 });
 
 test('bicycle clears logs and debris and leaves low gates and pits dangerous', () => {

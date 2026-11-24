@@ -17,7 +17,7 @@ import "@babylonjs/core/Particles/particleSystemComponent.js";
 import type { Settings } from "../settings.ts";
 import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
-import { CAPTURE_LAUGH_AT, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
+import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { BRIDGE_RAVINE_HALF_WIDTH, BRIDGE_WATER_Y, elevationAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SCENE_LENGTH, sectionFeature, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
@@ -42,6 +42,7 @@ const DOG_SIZE = 2.1;
 const FROG_SIZE = 2.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
 const DOG_FEET = .39, FROG_FEET = .48;
+const FISSURE_HALF = obstacleHalfDepth("gap", 0);
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
 const FLAMES = [
   [-1.86, -.11, 2.15, 1.14], [-1.24, .24, 2.62, 1.2], [-.62, -.15, 2.31, 1.22], [0, .3, 2.79, 1.13],
@@ -97,7 +98,7 @@ export class RunnerRenderer3D {
   private ropeLanyard: AbstractMesh;
   private cartLane = 0;
   private textures = new Map<string, Texture>();
-  private sheets: Partial<Record<"run" | "actions" | "fall" | "walk" | "grab" | "laugh", Texture>> = {};
+  private sheets: Partial<Record<"run" | "actions" | "fall" | "cart" | "walk" | "grab" | "laugh", Texture>> = {};
   private mats: Record<string, StandardMaterial> = {};
   private themes: Theme[] = [];
   private groundPlane: Mesh;
@@ -340,15 +341,15 @@ export class RunnerRenderer3D {
     ];
   }
   async load() {
-    const [run, actions, fall, walk, grab, laugh] = await Promise.all([
+    const [run, actions, fall, cart, walk, grab, laugh] = await Promise.all([
       loadImage("/assets/runner/milk-dog-run-v2.png"), loadImage("/assets/runner/milk-dog-actions-v2.png"),
-      loadImage("/assets/runner/milk-dog-fall-v1.png"),
+      loadImage("/assets/runner/milk-dog-fall-v1.png"), loadImage(MINECART_SURPRISE_ART),
       loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"),
       loadImage(FROG_EXTRA_ART.directionAttack.url), loadImage(FROG_EXTRA_ART.directionLaugh.url),
     ]);
     this.sheets = {
       run: sheetTexture(this.scene, cleanSheet(run)), actions: sheetTexture(this.scene, cleanSheet(actions)),
-      fall: sheetTexture(this.scene, cleanSheet(fall)),
+      fall: sheetTexture(this.scene, cleanSheet(fall)), cart: sheetTexture(this.scene, cart.src),
       walk: sheetTexture(this.scene, walk.src), grab: sheetTexture(this.scene, grab.src), laugh: sheetTexture(this.scene, laugh.src),
     };
     this.dog.frame(this.sheets.actions!, 0, 4, 2);
@@ -595,14 +596,15 @@ export class RunnerRenderer3D {
       for (let x = -3; x <= 3; x += 1.5) this.box("hanging", r, [.08, .5, .08], [x, .85, 0], "metal");
     });
     for (const [name, width] of [["gap", L], ["gap-wide", W], ["long-gap-wide", W]] as const) make(name, r => {
-      for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, 3], [side * (width / 2 + .13), -3.2, 0], "rock");
-      this.pitSurface(r, width + .05, 3.04, name === "long-gap-wide" ? "long-gap" : "gap");
+      for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, FISSURE_HALF * 2], [side * (width / 2 + .13), -3.2, 0], "rock");
+      this.pitSurface(r, width + .05, FISSURE_HALF * 2 + .04, name === "long-gap-wide" ? "long-gap" : "gap");
       for (const side of [-1, 1]) {
-        this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, side * 1.62], "stone-dark");
-        this.box("lip", r, [width, .2, .25], [0, -.09, side * 1.62], "stone-dark");
-        this.box("edge", r, [width - .16, .04, .14], [0, .02, side * 1.64], "warning");
+        const bank = side * (FISSURE_HALF + .12);
+        this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, bank], "stone-dark");
+        this.box("lip", r, [width, .2, .25], [0, -.09, bank], "stone-dark");
+        this.box("edge", r, [width - .16, .04, .14], [0, .02, side * (FISSURE_HALF + .14)], "warning");
         if (name === "long-gap-wide") for (const x of [-1, 1]) {
-          const edge = this.box("long-gap-marker", r, [.34, .58, .26], [x * (width / 2 - .22), .32, side * 1.83], "warning");
+          const edge = this.box("long-gap-marker", r, [.34, .58, .26], [x * (width / 2 - .22), .32, side * (FISSURE_HALF + .33)], "warning");
           edge.rotation.z = x * .1;
         }
       }
@@ -851,6 +853,8 @@ export class RunnerRenderer3D {
       this.dog.frame(this.schoolSheet, frame, 4, 2);
     } else if (falling && world.captureTime > .045) {
       this.dog.frame(this.sheets.fall!, fall.frame, 4, 2);
+    } else if (world.ride?.kind === "cart" && !capture) {
+      this.dog.frame(this.sheets.cart!, 0, 1, 1);
     } else {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
@@ -1027,12 +1031,12 @@ export class RunnerRenderer3D {
       const section = sectionFeature(at, world.startScene);
       const crossing = section.kind !== "cart" && section.start < at + half && section.end > at - half ? section : undefined;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
-      const pierCut = here.some(gap => gap.item.kind === "long-gap");
+      const pierCut = here.length > 0;
       if (recycled || pierCut !== slot.pierCut || !!crossing !== slot.crossingGap) {
         slot.pierCut = pierCut; slot.crossingGap = !!crossing;
         for (const d of slot.decor) {
-          const inLongGap = pierCut && d.node.name === "tpl-aqueduct-pier";
-          d.node.setEnabled(!crossing && !inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
+          const underOpening = pierCut && d.node.name === "tpl-aqueduct-pier";
+          d.node.setEnabled(!crossing && !underOpening && ((n % d.every) + d.every) % d.every === d.offset);
         }
       }
       for (let lane = 0; lane < 3; lane++) {
@@ -1115,8 +1119,9 @@ export class RunnerRenderer3D {
   private buildBridge(section: Extract<CourseFeature, { kind: "bridge" }>) {
     const root = new TransformNode(`log-bridge-${section.start}`, this.scene);
     const length = section.end - section.start;
-    const path = Array.from({ length: 17 }, (_, i) => {
-      const point = this.place(section.start - 1 + (length + 2) * i / 16);
+    const segments = Math.ceil((length + 2) / 3);
+    const path = Array.from({ length: segments + 1 }, (_, i) => {
+      const point = this.place(section.start - 1 + (length + 2) * i / segments);
       return new Vector3(point.x, point.y - .68, point.z);
     });
     const log = MeshBuilder.CreateTube("bridge-log", { path, radius: .73, tessellation: 18 }, this.scene);
@@ -1242,8 +1247,8 @@ export class RunnerRenderer3D {
         if (item.kind === "long-gap") {
           const depth = obstacleHalfDepth(item.kind, item.z);
           for (const mesh of prop.getChildMeshes()) {
-            if (mesh.name === "fissure-wall" || mesh.name === "pit-water") mesh.scaling.z = depth / 1.5;
-            else mesh.position.z += Math.sign(mesh.position.z) * (depth - 1.5);
+            if (mesh.name === "fissure-wall" || mesh.name === "pit-water") mesh.scaling.z = depth / FISSURE_HALF;
+            else mesh.position.z += Math.sign(mesh.position.z) * (depth - FISSURE_HALF);
           }
         }
         this.props.set(item.id, prop);
