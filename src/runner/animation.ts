@@ -1,5 +1,27 @@
 import { isFallObstacle, obstacleHalfDepth, type RunnerWorld } from "./world.ts";
 
+export const CAPTURE_GRAB_AT = .38;
+export const CAPTURE_LAUGH_AT = 1.03;
+
+export function captureMotion(time: number, reducedMotion: boolean) {
+  const ease = (start: number, end: number) => {
+    const progress = Math.max(0, Math.min(1, (time - start) / (end - start)));
+    return progress * progress * (3 - 2 * progress);
+  };
+  const reach = ease(0, CAPTURE_GRAB_AT);
+  const lift = ease(CAPTURE_GRAB_AT, .94);
+  const settle = ease(.94, 1.19);
+  const sway = reducedMotion ? 0 : Math.sin((time - CAPTURE_GRAB_AT) * 10) * lift * .04;
+  return {
+    reach,
+    lift,
+    height: 1.62 * lift - .13 * settle + sway,
+    tilt: reducedMotion ? 0 : .23 * lift - .11 * settle + sway,
+    orbit: ease(.10, 1.16),
+    focus: ease(.08, .43),
+  };
+}
+
 /** Rear-view walk frames of the haunted frog sheet (4×4), alternating feet. */
 export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number {
   return 4 + (!reducedMotion && Math.floor(world.gait * 2) % 2 ? 8 : 0);
@@ -7,11 +29,12 @@ export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number 
 
 /** Dog sheets are 4×2: `run` holds an eight-frame gallop, `actions` holds jump/land/slide poses. */
 export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = false): { sheet: "run" | "actions"; frame: number } {
-  if (!falling && (world.phase === "lost" || world.phase === "caught")) return { sheet: "actions", frame: 3 };
+  const caught = !falling && (world.phase === "lost" || world.phase === "caught" || (world.phase === "paused" && !!world.reason));
+  if (caught && world.captureTime >= .15) return { sheet: "actions", frame: world.captureTime < CAPTURE_GRAB_AT ? 3 : 2 };
   if (world.slide > 0 && world.jumpHeight === 0) return { sheet: "actions", frame: 3 };
   if (world.jumpHeight > 0 || world.jump > 0) return { sheet: "actions", frame: world.jump > .2 ? 1 : 2 };
   if (world.stumble > 0) return { sheet: "actions", frame: 2 };
-  if (reducedMotion || (!falling && world.phase !== "running")) return { sheet: "actions", frame: 0 };
+  if (reducedMotion || (!falling && !caught && world.phase !== "running")) return { sheet: "actions", frame: 0 };
   return { sheet: "run", frame: Math.floor(world.gait * 8) % 8 };
 }
 

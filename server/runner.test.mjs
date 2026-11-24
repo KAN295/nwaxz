@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { RunnerWorld, LONG_GAP_START, readRunRecord, isRunObstacle, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
-import { dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
+import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
@@ -328,6 +328,25 @@ test('capture pauses independently and settles after the animation or a skip', (
   const w = place('spikes'); run(w, .6); w.pause(); const snapshot = JSON.stringify(w); run(w, 10); assert.equal(JSON.stringify(w), snapshot);
   w.resume(); assert.equal(w.phase, 'caught'); run(w, 3); assert.equal(w.phase, 'lost');
   const skip = place('fire'); run(skip, .6); skip.finishCapture(); assert.equal(skip.phase, 'lost');
+});
+
+test('capture keeps the last running pose before contact and lifts the dog before the laugh', () => {
+  const w = place('beam', { span: 3 });
+  while (w.phase === 'running') run(w, 1 / 120);
+  assert.equal(w.captureTime, 0);
+  assert.equal(dogPose(w, false).sheet, 'run');
+  assert.equal(captureMotion(0, false).orbit, 0);
+  w.captureTime = .2;
+  assert.equal(dogPose(w, false).frame, 3);
+  assert.equal(captureMotion(CAPTURE_GRAB_AT, false).height, 0);
+  w.captureTime = .65;
+  assert.equal(dogPose(w, false).frame, 2);
+  assert.ok(captureMotion(.65, false).height > .5);
+  assert.ok(captureMotion(CAPTURE_LAUGH_AT, false).height > 1.4);
+  w.pause();
+  assert.equal(dogPose(w, false).frame, 2);
+  assert.equal(captureMotion(w.captureTime, true).tilt, 0);
+  assert.equal(captureMotion(2.4, false).orbit, 1);
 });
 
 test('record parser rejects corrupt or foreign records', () => {

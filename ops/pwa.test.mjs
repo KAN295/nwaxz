@@ -97,6 +97,8 @@ test("complete-offline inventory covers revisioned resources while the startup s
     "assets/props/escape-details-v1.webp",
     "assets/audio/haunted-bath-v1.mp3",
     "assets/audio/haunted-laugh-v1.mp3",
+    "assets/audio/runner-puppy-whimper-v1.mp3",
+    "assets/runner/sewer-frog-corner-v1.webp",
     "assets/scenes/haunted-bath-v1.webp",
     "assets/scenes/haunted-corridor-v1.webp",
     "assets/scenes/haunted-machine-v1.webp",

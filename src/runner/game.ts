@@ -3,6 +3,7 @@ import { loadImage } from "../loading.ts";
 import type { Settings } from "../settings.ts";
 import type { AudioManager } from "../audio.ts";
 import { RunnerTilt } from "./tilt.ts";
+import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT } from "./animation.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
@@ -50,6 +51,7 @@ export class RunnerGame {
   private frame = 0;
   private last = 0;
   private shownPhase: RunPhase | "loading" = "loading";
+  private captureAudio: "waiting" | "grab" | "laugh" = "waiting";
   private art: { dog?: HTMLImageElement; frog?: HTMLImageElement; laugh?: HTMLImageElement } = {};
   private skinPortrait?: HTMLImageElement;
   private swipe?: { x: number; y: number; id: number; used: boolean };
@@ -277,6 +279,7 @@ export class RunnerGame {
 
   private newWorld() {
     this.world = new RunnerWorld(newSeed(), this.mode, this.sceneChoice);
+    this.captureAudio = "waiting";
     this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
     this.seenEvents = { power: 0, shield: 0, stumble: 0 };
     this.el.toast.hidden = true;
@@ -344,18 +347,25 @@ export class RunnerGame {
     if (this.ready && this.shownPhase !== w.phase) {
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); }
       if (w.phase === "won") this.audio.effect("win");
-      if (w.phase === "caught" && this.shownPhase === "running") {
-        if (!w.trapFall) this.audio.haunt({ allowNormalMode: true });
-        if (this.settings.vibration) navigator.vibrate?.(180);
-      }
+      if (w.phase === "caught" && this.shownPhase === "running" && this.settings.vibration) navigator.vibrate?.(180);
       this.shownPhase = w.phase; this.showPanel();
+    }
+    if (this.ready && w.phase === "caught" && !w.trapFall) {
+      if (this.captureAudio === "waiting" && w.captureTime >= CAPTURE_GRAB_AT) {
+        this.captureAudio = "grab";
+        this.audio.whimper();
+      }
+      if (this.captureAudio === "grab" && w.captureTime >= CAPTURE_LAUGH_AT) {
+        this.captureAudio = "laugh";
+        this.audio.haunt({ allowNormalMode: true });
+      }
     }
   }
 
   /** One short prompt at a time: corners first, then whole-road obstacles. */
   private syncCue() {
     const w = this.world, cue = this.el.cue;
-    let html = "", urgent = false;
+    let html = "", urgent = false, turning = false;
     if (w.phase === "running" && w.boost === 0) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
       const next = w.nextObstacle;
@@ -370,6 +380,7 @@ export class RunnerGame {
           html = `<b>▲</b><span>${urgent ? "再跳一次" : "空中准备再跳"}</span>`;
         }
       } else if (turn && toTurn < 55) {
+        turning = true;
         urgent = w.turnWindow;
         const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
         html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>`;
@@ -386,6 +397,7 @@ export class RunnerGame {
     cue.hidden = !html;
     if (html && cue.innerHTML !== html) cue.innerHTML = html;
     cue.classList.toggle("now", urgent);
+    cue.classList.toggle("turn", turning);
   }
 
   // ---------- records ----------

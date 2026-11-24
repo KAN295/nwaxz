@@ -17,7 +17,8 @@ import "@babylonjs/core/Particles/particleSystemComponent.js";
 import type { Settings } from "../settings.ts";
 import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
-import { chaserFrame, dogFall, dogPose } from "./animation.ts";
+import { CAPTURE_LAUGH_AT, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
+import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
@@ -38,9 +39,8 @@ const waterDepth = (kind: RunItem["kind"]) => kind === "long-gap" ? 2.65 : 1.55;
 const itemOffset = (item: RunItem) => item.span === 3 ? 0 : (item.lane + ((item.span ?? 1) - 1) / 2 - 1) * LANE_WIDTH;
 const DOG_SIZE = 2.1;
 const FROG_SIZE = 2.4;
-const LAUGH_SIZE = 3.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
-const DOG_FEET = .39, FROG_FEET = .48, LAUGH_FEET = .43;
+const DOG_FEET = .39, FROG_FEET = .48;
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
 const FLAMES = [
   [-1.86, -.11, 2.15, 1.14], [-1.24, .24, 2.62, 1.2], [-.62, -.15, 2.31, 1.22], [0, .3, 2.79, 1.13],
@@ -84,7 +84,7 @@ export class RunnerRenderer3D {
   private props = new Map<number, TransformNode>();
   private corners = new Map<number, TransformNode>();
   private textures = new Map<string, Texture>();
-  private sheets: Record<"run" | "actions" | "fall" | "walk" | "laugh", Texture | undefined> = { run: undefined, actions: undefined, fall: undefined, walk: undefined, laugh: undefined };
+  private sheets: Partial<Record<"run" | "actions" | "fall" | "walk" | "grab" | "laugh", Texture>> = {};
   private mats: Record<string, StandardMaterial> = {};
   private themes: Theme[] = [];
   private groundPlane: Mesh;
@@ -119,6 +119,7 @@ export class RunnerRenderer3D {
   private camLateral = 0;
   private cameraPos = new Vector3(0, 4, -8);
   private cameraTarget = new Vector3(0, 1, 6);
+  private captureCamera?: { position: Vector3; target: Vector3 };
   private lastTime = 0;
   private disposed = false;
 
@@ -253,6 +254,9 @@ export class RunnerRenderer3D {
     this.mat("road-mine", "#8d7f6a", "/assets/materials/escape/07-basement-ceiling-v1.png");
     this.mat("stone", "#d8cfb8", stone);
     this.mat("stone-dark", "#8e8a7c", stone);
+    const cornerFrog = this.mat("corner-frog", "#ffffff", "/assets/runner/sewer-frog-corner-v1.webp");
+    cornerFrog.disableLighting = true;
+    cornerFrog.emissiveColor.setAll(.78);
     this.mat("moss-stone", "#9fa587", rock);
     this.mat("rock", "#6b5d4f", rock);
     this.mat("wood", "#ffffff", wood);
@@ -298,15 +302,16 @@ export class RunnerRenderer3D {
     ];
   }
   async load() {
-    const [run, actions, fall, walk, laugh] = await Promise.all([
+    const [run, actions, fall, walk, grab, laugh] = await Promise.all([
       loadImage("/assets/runner/milk-dog-run-v2.png"), loadImage("/assets/runner/milk-dog-actions-v2.png"),
       loadImage("/assets/runner/milk-dog-fall-v1.png"),
-      loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"), loadImage("/assets/character/milk-frog-atlas.webp"),
+      loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"),
+      loadImage(FROG_EXTRA_ART.directionAttack.url), loadImage(FROG_EXTRA_ART.directionLaugh.url),
     ]);
     this.sheets = {
       run: sheetTexture(this.scene, cleanSheet(run)), actions: sheetTexture(this.scene, cleanSheet(actions)),
       fall: sheetTexture(this.scene, cleanSheet(fall)),
-      walk: sheetTexture(this.scene, walk.src), laugh: sheetTexture(this.scene, laugh.src),
+      walk: sheetTexture(this.scene, walk.src), grab: sheetTexture(this.scene, grab.src), laugh: sheetTexture(this.scene, laugh.src),
     };
     this.dog.frame(this.sheets.actions!, 0, 4, 2);
     this.chaserSprite.frame(this.sheets.walk!, 4, 4, 4);
@@ -442,6 +447,11 @@ export class RunnerRenderer3D {
     make("dead-end", r => {
       this.box("wall", r, [W + 2.5, 3.2, 1], [0, 1.6, 0], "stone-dark");
       for (const s of [-1, 1]) this.box("pillar", r, [1, 4, 1.2], [s * (ROAD_HALF + 1.2), 2, 0], "stone");
+      const portrait = MeshBuilder.CreatePlane("corner-frog-portrait", { width: 2.83, height: 2.85 }, this.scene);
+      portrait.parent = r;
+      portrait.position.set(0, 1.6, -.505);
+      portrait.material = this.mats["corner-frog"];
+      portrait.isPickable = false;
     });
 
     // Obstacles. "-double" covers two lanes and "-wide" spans the road.
@@ -693,6 +703,7 @@ export class RunnerRenderer3D {
     const player = new Vector3(centre.x + rx * lateral, 0, centre.z + rz * lateral);
 
     const falling = world.trapFall && capture;
+    const grab = capture && !falling ? captureMotion(world.captureTime, this.settings.reducedMotion) : undefined;
     const pose = dogPose(world, this.settings.reducedMotion, falling);
     const fall = dogFall(world, this.settings.reducedMotion);
     if (this.schoolSheet) {
@@ -705,10 +716,11 @@ export class RunnerRenderer3D {
     } else {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
-    const squash = pose.sheet === "actions" && pose.frame === 3 && (!capture || falling) ? .1 : 0;
+    const squash = pose.sheet === "actions" && pose.frame === 3 ? .1 : 0;
     this.dog.root.position.set(player.x + fx * fall.forward, DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
-    this.dog.root.rotation.z = roll * (lateral > 0 ? -1 : 1);
+    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1));
+    this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.setAll(1);
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
@@ -723,7 +735,7 @@ export class RunnerRenderer3D {
       }
     }
     this.dog.root.setEnabled(this.dog.material.alpha > 0);
-    this.skinHalo.setEnabled(this.dogLook !== "original" && !falling);
+    this.skinHalo.setEnabled(this.dogLook !== "original" && !capture);
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(getDogLook(this.dogLook).color);
       (this.skinHalo.material as StandardMaterial).emissiveColor.copyFrom(hue);
@@ -737,6 +749,7 @@ export class RunnerRenderer3D {
 
     this.drawEffects(world, player, t, dt, capture);
 
+    if (!falling) this.updateCamera(world, player, centre, grab, dt, t);
     // Chaser: shown for the opening sprint and after a stumble.
     const frog = this.chaserSprite;
     const close = capture ? 1 : world.phase === "ready" ? 0 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
@@ -744,15 +757,16 @@ export class RunnerRenderer3D {
       frog.root.setEnabled(false);
       this.shadow.setEnabled(false);
     } else if (!capture) {
+      frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
+      frog.root.rotation.setAll(0);
       frog.frame(this.sheets.walk!, chaserFrame(world, this.settings.reducedMotion), 4, 4);
       frog.root.scaling.setAll(1);
       const side = world.position > 1.4 ? -1 : 1, back = 2.4 + (1 - close) * 7;
       frog.root.position.set(player.x - fx * back + rx * side * 1.45, FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, player.z - fz * back + rz * side * 1.45);
       frog.root.setEnabled(close > .02);
       frog.material.alpha = Math.min(1, close * 1.5);
-    } else this.drawCapture(world, player, centre.heading);
+    } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
-    if (!falling) this.updateCamera(world, player, centre, capture, dt, t);
     this.sky.position.set(this.camera.position.x, SKY_HEIGHT / 2 - 12, this.camera.position.z);
     const gx = Math.round(this.camera.position.x / 70) * 70, gz = Math.round(this.camera.position.z / 70) * 70;
     this.groundPlane.position.set(gx, look.groundY, gz);
@@ -781,6 +795,7 @@ export class RunnerRenderer3D {
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
+    this.captureCamera = undefined;
     this.cameraPos.set(0, 4.2, -8); this.cameraTarget.set(0, 1.2, 6);
   }
 
@@ -1021,44 +1036,73 @@ export class RunnerRenderer3D {
     if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, .5 + world.jumpHeight, player.z), 2, POWER_COLORS.boost);
   }
 
-  private drawCapture(world: RunnerWorld, player: Vector3, heading: number) {
+  private drawCapture(world: RunnerWorld, player: Vector3, heading: number, motion: ReturnType<typeof captureMotion>) {
     const frog = this.chaserSprite, dog = this.dog.root;
-    const time = world.captureTime, forward = new Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const pounce = Math.min(1, time / .45), ease = pounce * pounce * (3 - 2 * pounce);
-    if (time < .45) {
-      // The frog lunges in from behind with its grinning face.
-      frog.frame(this.sheets.walk!, 0, 4, 4); frog.root.scaling.setAll(1);
-      const at = Vector3.Lerp(player.subtract(forward.scale(4)), player.subtract(forward.scale(.9)), ease);
-      frog.root.position.set(at.x, FROG_SIZE * FROG_FEET + Math.sin(pounce * Math.PI) * 1.2, at.z);
+    const time = world.captureTime, { reach, lift, height, tilt } = motion;
+    const forward = new Vector3(Math.sin(heading), 0, Math.cos(heading));
+    const right = new Vector3(Math.cos(heading), 0, -Math.sin(heading));
+    const side = world.position > 1.4 ? -1 : 1;
+    const scale = 1 + .28 * lift;
+    const startBehind = world.danger > 0 ? 2.4 + 2.6 * (1 - Math.min(1, world.danger / 2)) : 4.5;
+    const frogAt = player.subtract(forward.scale(startBehind + (1.36 - startBehind) * reach + .50 * lift))
+      .add(right.scale(side * (.36 + 1.09 * (1 - reach))));
+    frogAt.y = FROG_SIZE * scale * FROG_FEET + .21 * Math.sin(Math.PI * reach);
+    frog.root.position.copyFrom(frogAt);
+    frog.root.scaling.setAll(scale);
+    const view = this.camera.position.subtract(frogAt);
+    const angle = Math.atan2(Vector3.Dot(view, right), Vector3.Dot(view, forward));
+    const frame = (8 + Math.round(-angle / (Math.PI / 4))) % 8;
+    if (time < .15) {
+      frog.frame(this.sheets.walk!, frame, 4, 4);
     } else {
-      // Then the original belly laugh, large and facing the camera.
-      frog.frame(this.sheets.laugh!, 6, 4, 2);
-      const scale = LAUGH_SIZE / FROG_SIZE * (this.settings.reducedMotion ? 1 : 1 + Math.sin(time * 16) * .02);
-      frog.root.scaling.setAll(scale);
-      const at = player.subtract(forward.scale(1.1));
-      frog.root.position.set(at.x, FROG_SIZE * scale * LAUGH_FEET, at.z);
+      const laughing = time >= CAPTURE_LAUGH_AT;
+      const atlas = laughing ? FROG_EXTRA_ART.directionLaugh : FROG_EXTRA_ART.directionAttack;
+      const rect = atlas.frames[frame];
+      frog.region(this.sheets[laughing ? "laugh" : "grab"]!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
+      frog.root.scaling.x *= rect.width / rect.height;
     }
-    frog.root.setEnabled(true); frog.material.alpha = 1;
-    const shake = this.settings.reducedMotion ? 0 : Math.sin(time * 40) * .05;
-    dog.position.set(player.x + forward.x * .6 + shake, DOG_SIZE * DOG_FEET - .1, player.z + forward.z * .6);
+    frog.root.billboardMode = Mesh.BILLBOARDMODE_NONE;
+    frog.material.alpha = world.danger > 0 || world.elapsed < 3.5 ? 1 : Math.min(1, time / .13);
+    frog.root.setEnabled(frog.material.alpha > 0);
+
+    dog.position.subtractInPlace(forward.scale(.52 * reach + .73 * lift));
+    dog.position.subtractInPlace(right.scale(side * .80 * lift));
+    dog.position.y += height - world.jumpHeight * reach;
+    dog.rotation.z = side * tilt;
+    // Face each sprite toward the moving camera, including when it crosses the side of the road.
+    for (const actor of [frog.root, dog]) {
+      const dx = actor.position.x - this.camera.position.x, dz = actor.position.z - this.camera.position.z;
+      actor.rotation.y = Math.atan2(dx, dz);
+      actor.rotation.x = .45 * Math.atan2(this.camera.position.y - actor.position.y, Math.hypot(dx, dz));
+    }
+    this.shadow.position.x = dog.position.x;
+    this.shadow.position.z = dog.position.z;
+    this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
   }
 
-  private updateCamera(world: RunnerWorld, player: Vector3, centre: RoutePoint, capture: boolean, dt: number, t: number) {
+  private updateCamera(world: RunnerWorld, player: Vector3, centre: RoutePoint, shot: ReturnType<typeof captureMotion> | undefined, dt: number, t: number) {
     const portrait = this.engine.getRenderWidth() / Math.max(1, this.engine.getRenderHeight()) < .85;
     const k = (rate: number) => dt > 0 ? 1 - Math.exp(-rate * dt) : 1;
     // The camera turns a little behind the road, so a corner swings the view round smoothly.
-    this.camYaw += angleTo(this.camYaw, centre.heading) * k(capture ? 2 : 4.5);
-    const fov = (portrait ? 1.08 : .9) + (world.boost > 0 && !capture ? .14 : 0);
+    this.camYaw += angleTo(this.camYaw, centre.heading) * k(shot ? 2 : 4.5);
+    const fov = (portrait ? 1.08 : .9) + (world.boost > 0 && !shot ? .14 : 0);
     this.camera.fov += (fov - this.camera.fov) * k(4);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
-    let position: Vector3, target: Vector3;
-    if (capture) {
+    if (shot) {
       const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), hx = Math.sin(centre.heading), hz = Math.cos(centre.heading);
-      position = new Vector3(player.x + hx * 7.5 + rx * 1.6, 2.6, player.z + hz * 7.5 + rz * 1.6);
-      target = new Vector3(player.x - hx * .6, 1.6, player.z - hz * .6);
-      Vector3.LerpToRef(this.cameraPos, position, k(3.2), this.cameraPos);
-      Vector3.LerpToRef(this.cameraTarget, target, k(3.2), this.cameraTarget);
+      const initial = this.captureCamera ??= { position: this.cameraPos.clone(), target: this.cameraTarget.clone() };
+      const side = world.position > 1.4 ? -1 : 1;
+      const end = new Vector3(player.x + hx * 7.2 + rx * side * 1.05, 3.55, player.z + hz * 7.2 + rz * side * 1.05);
+      const target = new Vector3(player.x - hx * .75, 1.5 + .42 * shot.lift, player.z - hz * .75);
+      Vector3.LerpToRef(initial.position, end, shot.orbit, this.cameraPos);
+      Vector3.LerpToRef(initial.target, target, shot.focus, this.cameraTarget);
+      // The side arc keeps the camera clear of both actors as it swings around.
+      const arc = Math.sin(Math.PI * shot.orbit);
+      this.cameraPos.x += rx * side * 3.35 * arc;
+      this.cameraPos.z += rz * side * 3.35 * arc;
+      this.cameraPos.y += .75 * arc;
     } else {
+      this.captureCamera = undefined;
       // Follow most of the lane offset (smoothed) so the dog stays near the centre of the screen.
       const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .8 : .6);
       this.camLateral += (lateral - this.camLateral) * k(10);

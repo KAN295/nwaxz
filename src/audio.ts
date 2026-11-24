@@ -3,12 +3,14 @@ import { PlaybackSession } from "./ios-audio.ts";
 
 type Effect = "tap" | "coin" | "win" | "dig" | "step" | "door" | "heartbeat" | "noise" | "breath";
 type Voice = { oscillator: OscillatorNode; gain: GainNode };
-type Recording = "normal" | "horror" | "escape" | "laugh";
+type Recording = "normal" | "horror" | "escape" | "laugh" | "whimper";
 const recordingPaths: Record<Recording, string> = {
   normal: "/assets/audio/bubble-day-soft-v1.mp3",
   horror: "/assets/audio/haunted-bath-v1.mp3",
   escape: "/assets/audio/sewer-escape-v1.mp3",
   laugh: "/assets/audio/haunted-laugh-v1.mp3",
+  // “Puppy (8)” by johnnypanic, CC0 (https://freesound.org/s/728029/).
+  whimper: "/assets/audio/runner-puppy-whimper-v1.mp3",
 };
 const unlockEvents = ["pointerdown", "pointerup", "touchend", "click", "keydown"] as const;
 const effectNotes: Record<Effect, { frequencies: number[]; step: number; type: OscillatorType }> = {
@@ -136,15 +138,20 @@ export class AudioManager {
     this.syncMusic();
   }
   haunt({ allowNormalMode = false } = {}): void { void this.playHaunt(false, allowNormalMode); }
-  private async playHaunt(preview = false, allowNormalMode = false): Promise<boolean> {
+  whimper(): void { void this.playSample("whimper", .22, () => this.settings.sound); }
+  private playHaunt(preview: boolean, allowNormalMode = false): Promise<boolean> {
+    return this.playSample("laugh", .32, () => (preview || this.settings.sound) && (allowNormalMode || this.scaryMode));
+  }
+  private async playSample(recording: "laugh" | "whimper", volume: number, permitted: () => boolean): Promise<boolean> {
     const generation = this.effectGeneration;
-    if ((!allowNormalMode && !this.scaryMode) || (!preview && !this.settings.sound) || this.disposed || document.hidden) return false;
+    const canPlay = () => permitted() && !this.disposed && !document.hidden;
+    if (!canPlay()) return false;
     if (!await this.unlock()) return false;
-    const buffer = await this.loadRecording("laugh"), context = this.context;
-    if (!buffer || generation !== this.effectGeneration || (!preview && !this.settings.sound) || (!allowNormalMode && !this.scaryMode) || this.disposed || document.hidden || context?.state !== "running") { this.releasePlaybackIfIdle(); return false; }
+    const buffer = await this.loadRecording(recording), context = this.context;
+    if (!buffer || generation !== this.effectGeneration || !canPlay() || context?.state !== "running") { this.releasePlaybackIfIdle(); return false; }
     this.playback.activate();
     const source = context.createBufferSource(), gain = context.createGain();
-    source.buffer = buffer; gain.gain.setValueAtTime(.32, context.currentTime);
+    source.buffer = buffer; gain.gain.setValueAtTime(volume, context.currentTime);
     source.connect(gain); gain.connect(context.destination);
     this.sampledVoices.set(source, gain);
     source.onended = () => { this.sampledVoices.delete(source); source.disconnect(); gain.disconnect(); this.releasePlaybackIfIdle(); };
