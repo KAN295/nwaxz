@@ -22,7 +22,7 @@ import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { coversLane, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
+import { coversLane, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -580,10 +580,10 @@ export class RunnerRenderer3D {
     const treePlane = MeshBuilder.CreatePlane("runner-tree-source", { size: 1 }, this.scene);
     treePlane.setEnabled(false);
     treePlane.isPickable = false;
-    treePlane.billboardMode = Mesh.BILLBOARDMODE_Y;
     for (let i = 0; i < SLOTS; i++) {
       const root = new TransformNode(`road-slot-${i}`, this.scene);
-      const trees = [treePlane.clone(`runner-tree-${i}-left`, root), treePlane.clone(`runner-tree-${i}-right`, root)];
+      // Babylon billboards ignore the parent's rotation, including when placing local offsets.
+      const trees = [treePlane.clone(`runner-tree-${i}-left`), treePlane.clone(`runner-tree-${i}-right`)];
       for (const tree of trees) tree.setEnabled(false);
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
       const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1) decor.push({ node, every, offset }); return node; };
@@ -603,14 +603,12 @@ export class RunnerRenderer3D {
     }
   }
 
-  private placeTrees(slot: Slot, nearTurn: boolean) {
+  private placeTrees(slot: Slot, at: number, turns: readonly RunTurn[]) {
     const { n, theme } = slot;
     const grove = GROVES[theme];
     for (const [i, tree] of slot.trees.entries()) {
       const offset = i === 0 ? 0 : theme === 2 ? 1 : 2;
-      const visible = n > 0 && !nearTurn && (n + offset) % grove.spacing === 0;
-      tree.setEnabled(visible);
-      if (!visible) continue;
+      if (n <= 0 || (n + offset) % grove.spacing !== 0) { tree.setEnabled(false); continue; }
       const variant = (Math.floor((n + offset) / grove.spacing) + i) % grove.trees.length;
       const style = grove.trees[variant];
       const variation = (Math.imul(n + 13 * i, 2654435761) >>> 0) / 0x100000000;
@@ -618,11 +616,19 @@ export class RunnerRenderer3D {
       const material = this.mats[`tree-${style.name}`];
       const size = material.diffuseTexture!.getBaseSize();
       const width = height * (size.height > 0 ? size.width / size.height : .7);
+      const distance = at + (variation - .5) * 1.8;
+      const turnClearance = Math.max(18, CORNER_RADIUS + TILE_DEPTH / 2 + width / 2);
+      if (turns.some(turn => Math.abs(turn.z - distance) < turnClearance)) { tree.setEnabled(false); continue; }
       const side = i === 0 ? -1 : 1;
       const setback = theme === 2 ? 3.96 : ROAD_HALF + width / 2 + 1.2 + variation * 3.2;
+      const point = this.place(distance, side * setback);
+      // Mine roots follow the wall, so their edges cannot pivot into the track.
+      tree.billboardMode = theme === 2 ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
+      tree.rotation.y = theme === 2 ? point.heading + Math.PI / 2 : 0;
       tree.material = material;
       tree.scaling.set(side * width, height, 1);
-      tree.position.set(side * setback, grove.ground + height * .486, (variation - .5) * 1.8);
+      tree.position.set(point.x, grove.ground + height * .486, point.z);
+      tree.setEnabled(true);
     }
   }
 
@@ -839,7 +845,7 @@ export class RunnerRenderer3D {
         slot.root.position.set(p.x, 0, p.z); slot.root.rotation.y = p.heading;
         const theme = sceneAt(at, world.startScene);
         if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
-        this.placeTrees(slot, world.turns.some(turn => Math.abs(turn.z - at) < 18));
+        this.placeTrees(slot, at, world.turns);
       }
       const half = TILE_DEPTH / 2;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
