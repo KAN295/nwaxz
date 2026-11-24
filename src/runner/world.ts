@@ -4,10 +4,14 @@
  * Coordinates: `distance` runs along the (possibly turning) route, lanes are 0/1/2,
  * `altitude` is metres above the road.
  */
+import { RIDE_LEAD, RIDE_START, SCENE_LENGTH, riderHeightAt, sceneAt, sectionRide, type RideKind, type RideSection } from "./course.ts";
+
+export { SCENE_LENGTH, sceneAt } from "./course.ts";
+
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
 export type RunMode = "challenge" | "endless";
-export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
+export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap" | "cart-block";
 export type CoinTier = "silver" | "gold" | "diamond";
 export const RUN_POWERS = ["shield", "magnet", "slow", "double", "boost"] as const;
 export type RunPowerKind = typeof RUN_POWERS[number];
@@ -15,11 +19,11 @@ export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shi
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier };
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; ride?: RideKind };
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap"];
+const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => (RUN_POWERS as readonly string[]).includes(kind);
 
@@ -28,7 +32,6 @@ export const RUN_SCENES = [
   { id: "temple", name: "遗迹长廊", image: "/assets/runner/temple-scene-v1.png", night: "/assets/runner/temple-night-v1.png" },
   { id: "mine", name: "矿洞轨道", image: "/assets/runner/mine-scene-v1.png", night: "/assets/runner/mine-night-v1.png" },
 ] as const;
-export const SCENE_LENGTH = 450;
 export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
 export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
 export const CHALLENGE_DISTANCE = 1000;
@@ -53,9 +56,9 @@ const TURN_LATE = 1.5;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity };
 /** Half depth along the route. */
-const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75 };
+const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 1.5, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8 };
 const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
@@ -94,6 +97,7 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
   fire: ["碰到了火焰", "换到别的道，或者跳过去。"],
   trap: ["掉进了落穴", "看见活动木板就提前跳过去，或换到空着的跑道。"],
+  "cart-block": ["矿车撞上了塌方", "矿车里要提前换到畅通的轨道。"],
 };
 
 export class RunnerWorld {
@@ -155,6 +159,9 @@ export class RunnerWorld {
   private nextRow = 90;
   private nextTurn = 300;
   private nextLongGap = LONG_GAP_START;
+  private nextRideSection = 0;
+  private mountedRide?: RideSection;
+  private rideTakeoff = 0;
 
   constructor(seed = 1, mode: RunMode = "challenge", startScene = 0) {
     this.seed = seed >>> 0 || 1;
@@ -165,12 +172,17 @@ export class RunnerWorld {
   }
 
   private get courseSpeed() {
-    return baseSpeedAt(this.distance) * (this.boost > 0 ? 1.5 : this.stumble > 0 ? .7 : 1);
+    return baseSpeedAt(this.distance) * (this.boost > 0 ? 1.5 : this.mountedRide ? 1.17 : this.stumble > 0 ? .7 : 1);
   }
   get timeScale() { return this.slow > 0 ? .7 : 1; }
   get speed() { return this.courseSpeed * this.timeScale; }
   get trapFall() { return !!this.fallObstacle; }
-  get jumpHeight() { return this.altitude; }
+  get ride() { return this.mountedRide; }
+  get upcomingRide() {
+    const ride = sectionRide(this.distance, this.startScene);
+    return ride && this.distance >= ride.start - RIDE_LEAD && this.distance < ride.start ? ride : undefined;
+  }
+  get jumpHeight() { return this.mountedRide ? riderHeightAt(this.distance, this.mountedRide, this.rideTakeoff) : this.altitude; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
   get score() { return Math.floor(this.distance) * 10 + this.coinScore + this.bonusDistanceScore; }
@@ -205,7 +217,8 @@ export class RunnerWorld {
         return;
       }
       this.lane = Math.max(0, Math.min(2, this.lane + (action === "left" ? -1 : 1)));
-    } else if (action === "jump") {
+    } else if (this.mountedRide) return;
+    else if (action === "jump") {
       if (this.jumpCount < 2) {
         this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime();
       } else this.jumpBuffer = .15;
@@ -238,6 +251,7 @@ export class RunnerWorld {
     // Scale travel and flight together so the hourglass preserves jump distances.
     const dt = realDt * this.timeScale;
     const speed = this.courseSpeed;
+    const previousDistance = this.distance;
     const previousMetre = Math.floor(this.distance);
     this.elapsed += dt;
     this.distance += speed * dt;
@@ -264,12 +278,14 @@ export class RunnerWorld {
     for (const power of RUN_POWERS) this[power] = Math.max(0, this[power] - realDt);
     if (this.streakTimer === 0) this.streak = 0;
 
+    if (!this.advanceRide(previousDistance)) return;
+
     const turn = this.approachingTurn;
     if (turn && this.boost > 0 && turn.z - this.distance <= 16) this.action(turn.direction);
     if (turn && this.distance > turn.z + TURN_LATE - .01 && !turn.taken) { this.fail("冲出了弯道", "看到屏幕提示后及时转弯。"); return; }
 
     for (const item of this.items) {
-      if (item.done) continue;
+      if (item.done || (item.ride && item.ride !== this.mountedRide?.kind)) continue;
       if (item.kind === "coin") this.touchCoin(item, dt);
       else if (isRunPower(item.kind)) this.touchPower(item, item.kind);
       else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind, landingVelocity)) return;
@@ -281,6 +297,25 @@ export class RunnerWorld {
     this.populate();
   }
 
+  private advanceRide(previousDistance: number) {
+    if (this.mountedRide) {
+      if (this.distance >= this.mountedRide.end) this.mountedRide = undefined;
+      return true;
+    }
+    const ride = sectionRide(this.distance, this.startScene);
+    if (!ride || previousDistance >= ride.start || this.distance < ride.start) return true;
+    if (ride.kind === "rope" && this.altitude < .25 && this.boost <= 0) {
+      this.fallObstacle = { id: -1, kind: "long-gap", z: ride.start + obstacleHalfDepth("long-gap", ride.start), lane: 1, span: 3, done: true, ride: "rope" };
+      this.fallVelocity = Math.min(0, this.verticalSpeed);
+      this.fail("没抓住绳索", "靠近桥沿时跳起来，抓住滑索越过水面。");
+      return false;
+    }
+    this.mountedRide = ride;
+    this.rideTakeoff = this.altitude;
+    this.altitude = this.verticalSpeed = this.jump = this.jumpCount = this.jumpBuffer = this.slide = this.danger = this.stumble = 0;
+    return true;
+  }
+
   private touchCoin(item: RunItem, dt: number) {
     let ahead = item.z - this.distance;
     if (!item.pulled && this.magnet > 0 && ahead > -1 && ahead < 14) item.pulled = true;
@@ -289,10 +324,10 @@ export class RunnerWorld {
       item.z -= 26 * dt; ahead = item.z - this.distance;
       const k = Math.min(1, dt * 9);
       item.lane += (this.position - item.lane) * k;
-      item.y = (item.y ?? .8) + (this.altitude + .9 - (item.y ?? .8)) * k;
+      item.y = (item.y ?? .8) + (this.jumpHeight + .9 - (item.y ?? .8)) * k;
       if (ahead > .6) return;
     } else {
-      const reach = Math.abs(ahead) < .9 && Math.abs(item.lane - this.position) < .5 && Math.abs((item.y ?? .8) - (this.altitude + .8)) < 1.1;
+      const reach = Math.abs(ahead) < .9 && Math.abs(item.lane - this.position) < .5 && Math.abs((item.y ?? .8) - (this.jumpHeight + .8)) < 1.1;
       if (!reach && !(this.boost > 0 && Math.abs(ahead) < .9)) return;
     }
     const tier = item.tier ?? "silver";
@@ -352,16 +387,40 @@ export class RunnerWorld {
     while (this.nextTurn < this.distance + 200) {
       this.turns.push({ z: this.nextTurn, direction: this.random() < .5 ? "left" : "right", taken: false });
       this.nextTurn += 260 + Math.floor(this.random() * 120);
+      const ride = sectionRide(this.nextTurn, this.startScene);
+      if (ride && this.nextTurn > ride.start - 63 && this.nextTurn < ride.end + 51) this.nextTurn = ride.end + 51;
+    }
+    while (this.nextRideSection * SCENE_LENGTH + RIDE_START < this.distance + 150) {
+      const ride = sectionRide(this.nextRideSection++ * SCENE_LENGTH, this.startScene);
+      if (ride) this.addRideItems(ride);
     }
     while (this.nextRow < this.distance + 150) {
       const z = this.nextRow;
       const speed = baseSpeedAt(z);
       const milestone = !this.endless && z > CHALLENGE_DISTANCE - 40 && z < CHALLENGE_DISTANCE + 20;
-      const longGap = !this.nearTurn(z) && !milestone && this.row(z);
+      const ride = sectionRide(z, this.startScene);
+      const nearRide = ride && z > ride.start - 26 && z < ride.end + 23;
+      const longGap = !this.nearTurn(z) && !milestone && !nearRide && this.row(z);
       // Leave at least ~1.15 s of reaction time between rows, a bit more early on.
       const early = Math.max(0, 1 - z / 600);
       const landingSpace = longGap ? .42 : 0;
       this.nextRow += speed * (1.15 + early * .6 + landingSpace) + this.random() * 8;
+    }
+  }
+
+  private addRideItems(ride: RideSection) {
+    if (ride.kind === "rope") {
+      for (let i = 0; i < 12; i++) {
+        const z = ride.start + 8 + i * 3.4;
+        this.addCoin(z, [1, 0, 2, 1][Math.floor(i / 3)], { y: riderHeightAt(z, ride) + .82, ride: "rope" });
+      }
+      return;
+    }
+    const first = this.pick([0, 2]);
+    for (const [i, offset] of [24, 50, 76].entries()) {
+      const z = ride.start + offset, clear = i % 2 ? 2 - first : first;
+      this.add(z, clear === 0 ? 1 : 0, "cart-block", { span: 2, ride: "cart" });
+      for (let j = -3; j <= 1; j++) this.addCoin(z + j * 2, clear, { y: 1.26, ride: "cart" });
     }
   }
 
@@ -404,11 +463,7 @@ export class RunnerWorld {
     else if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
     else for (let i = 0; i < 5; i++) this.addCoin(z - 10 + i * 2.6, free);
 
-    if (pattern > 3 && pattern % 5 === 0) this.add(z + (longGap ? longGapDepth + 4 : 9), free, RUN_POWERS[this.powerIndex++ % RUN_POWERS.length]);
+    if (pattern > 3 && pattern % 4 === 0) this.add(z + (longGap ? longGapDepth + 4 : 9), free, RUN_POWERS[this.powerIndex++ % RUN_POWERS.length]);
     return longGap;
   }
-}
-
-export function sceneAt(distance: number, startScene: number) {
-  return (Math.floor(Math.max(0, distance) / SCENE_LENGTH) + startScene) % RUN_SCENES.length;
 }

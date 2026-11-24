@@ -19,6 +19,7 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
+import { elevationAt, rideLateralScale, ROPE_LANE_SCALE, ropeHeightAt, SCENE_LENGTH, sectionRide, type RideSection } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
@@ -64,7 +65,7 @@ const GROVES = [
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | undefined)[]; pierCut: boolean };
+type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | undefined)[]; pierCut: boolean; ropeGap: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 
@@ -83,6 +84,12 @@ export class RunnerRenderer3D {
   private templates = new Map<string, TransformNode>();
   private props = new Map<number, TransformNode>();
   private corners = new Map<number, TransformNode>();
+  private ropes = new Map<number, TransformNode>();
+  private ropeRouteVersion = -1;
+  private cart: TransformNode;
+  private ropeHandle: TransformNode;
+  private ropeLanyard: AbstractMesh;
+  private cartLane = 0;
   private textures = new Map<string, Texture>();
   private sheets: Partial<Record<"run" | "actions" | "fall" | "walk" | "grab" | "laugh", Texture>> = {};
   private mats: Record<string, StandardMaterial> = {};
@@ -176,6 +183,10 @@ export class RunnerRenderer3D {
     this.coinMats = { silver: this.glow("silver-coin", "#d9e5eb", "#293b44"), gold: this.mats.gold, diamond: this.glow("diamond-coin", "#a9f4ff", "#4794cb") };
 
     this.buildTemplates();
+    this.cart = this.instance("minecart", new TransformNode("runner-minecart", this.scene));
+    this.ropeHandle = this.instance("rope-handle", new TransformNode("runner-rope-handle", this.scene));
+    this.ropeLanyard = this.ropeHandle.getChildMeshes().find(mesh => mesh.name === "rope-lanyard")!;
+    this.cart.setEnabled(false); this.ropeHandle.setEnabled(false);
     this.buildSlots();
     this.buildWeather();
     this.resize();
@@ -260,6 +271,17 @@ export class RunnerRenderer3D {
     this.mat("moss-stone", "#9fa587", rock);
     this.mat("rock", "#6b5d4f", rock);
     this.mat("wood", "#ffffff", wood);
+    this.mat("log-bark", "#e6d2b8", "/assets/runner/obstacle-cedar-bark-v1.webp");
+    this.mat("log-end", "#dbc4a6", "/assets/runner/obstacle-cedar-ring-v1.webp");
+    this.mat("obstacle-rock", "#d6d6c0", "/assets/runner/obstacle-fractured-rock-v1.webp");
+    this.mat("zipline", "#b89a73", wood).emissiveColor.set(.28, .22, .16);
+    const crystal = this.mat("mine-amethyst", "#ffffff", "/assets/runner/mine-amethyst-v1.webp");
+    crystal.diffuseTexture!.hasAlpha = true;
+    crystal.useAlphaFromDiffuseTexture = true;
+    crystal.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST;
+    crystal.alphaCutOff = .28;
+    crystal.disableLighting = true; crystal.backFaceCulling = false;
+    crystal.emissiveColor.set(.72, .65, .79);
     this.mat("metal", "#9a9a9a", rust);
     this.mat("rail", "#b9b4aa", rust);
     this.mat("pit", "#05080a").specularColor.setAll(0);
@@ -393,6 +415,16 @@ export class RunnerRenderer3D {
     return m;
   }
 
+  private fallenLog(name: string, root: TransformNode, length: number, diameter: number, at: [number, number, number]) {
+    const trunk = this.cylinder(name, root, { height: length, diameterBottom: diameter, diameterTop: diameter * .78, tessellation: 24 }, at, "log-bark");
+    for (const side of [-1, 1]) {
+      const end = MeshBuilder.CreateDisc("exposed-growth-rings", { radius: diameter * (side === 1 ? .382 : .49), tessellation: 24, sideOrientation: Mesh.DOUBLESIDE }, this.scene);
+      end.parent = trunk; end.position.y = side * (length / 2 + .007); end.rotation.x = Math.PI / 2;
+      end.material = this.mats["log-end"]; end.isPickable = false;
+    }
+    return trunk;
+  }
+
   private pitSurface(parent: TransformNode, width: number, length: number, kind: RunItem["kind"]) {
     const pool = MeshBuilder.CreateGround("pit-water", { width, height: length }, this.scene);
     pool.parent = parent;
@@ -418,7 +450,7 @@ export class RunnerRenderer3D {
       }
     });
     make("aqueduct-wall", r => { for (const s of [-1, 1]) { this.box("parapet", r, [.45, .8, D], [s * (ROAD_HALF + .2), .15, 0], "stone"); this.box("coping", r, [.6, .14, D], [s * (ROAD_HALF + .2), .6, 0], "stone-dark"); } });
-    make("aqueduct-pier", r => { this.box("pier", r, [W + 1.4, 9, 1.6], [0, -5, 0], "stone-dark"); for (const s of [-1, 1]) this.box("buttress", r, [1.4, 9, 2.2], [s * (ROAD_HALF + .3), -5, 0], "stone-dark"); });
+    make("aqueduct-pier", r => { this.box("pier", r, [W + 1.4, 18, 1.6], [0, -9.5, 0], "stone-dark"); for (const s of [-1, 1]) this.box("buttress", r, [1.4, 18, 2.2], [s * (ROAD_HALF + .3), -9.5, 0], "stone-dark"); });
     make("temple-ledge", r => { for (const s of [-1, 1]) { this.box("ledge", r, [.9, .55, D], [s * (ROAD_HALF + .45), .02, 0], "moss-stone"); this.box("hedge", r, [1.4, 1.1, D], [s * (ROAD_HALF + 1.6), .3, 0], "foliage-dark"); } });
     make("temple-arch", r => {
       for (const s of [-1, 1]) { this.box("column", r, [1.1, 6.4, 1.1], [s * (ROAD_HALF + .9), 3, 0], "moss-stone"); this.box("plinth", r, [1.5, .6, 1.5], [s * (ROAD_HALF + .9), .1, 0], "stone-dark"); }
@@ -434,6 +466,40 @@ export class RunnerRenderer3D {
       this.box("cap", r, [W + .8, .45, .45], [0, 6.4, 0], "wood");
       this.box("lantern", r, [.32, .42, .32], [0, 5.95, 0], "lamp");
       const halo = MeshBuilder.CreatePlane("halo", { size: 2.2 }, this.scene); halo.parent = r; halo.position.set(0, 5.95, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    });
+    for (const side of [-1, 1]) make(side === -1 ? "amethyst-left" : "amethyst-right", r => {
+      for (const [z, y, size, yaw] of [[-.64, .93, 1.9, .9], [1.06, .50, .95, 1.23]] as const) {
+        const crystal = MeshBuilder.CreatePlane("amethyst-vein", { size }, this.scene);
+        crystal.parent = r; crystal.position.set(side * 4.12, y, z); crystal.rotation.y = side * yaw;
+        crystal.scaling.x = side; crystal.material = this.mats["mine-amethyst"]; crystal.isPickable = false;
+      }
+    });
+    make("zipline-anchor", r => {
+      for (const side of [-1, 1]) {
+        this.box("zipline-post", r, [.43, 3.8, .48], [side * 2.95, 1.78, 0], "wood");
+        this.box("zipline-foot", r, [.85, .48, .85], [side * 2.95, .17, 0], "stone-dark");
+      }
+      this.box("zipline-crossbar", r, [6.44, .31, .47], [0, 3.38, 0], "wood");
+      this.box("zipline-bracket", r, [.29, .47, .24], [0, 3.12, 0], "metal");
+    });
+    make("rope-handle", r => {
+      this.cylinder("rope-lanyard", r, { height: 1, diameter: .073, tessellation: 9 }, [0, -.5, 0], "zipline");
+      this.box("rope-pulley", r, [.29, .23, .45], [0, 0, 0], "metal");
+    });
+    make("minecart", r => {
+      this.box("cart-floor", r, [1.55, .26, 1.86], [0, .28, 0], "metal");
+      for (const side of [-1, 1]) {
+        const sideWall = this.box("cart-side", r, [.16, .60, 1.91], [side * .77, .59, 0], "log-bark");
+        sideWall.rotation.z = -side * .18;
+        const endWall = this.box("cart-end", r, [1.66, .59, .16], [0, .59, side * .89], "log-bark");
+        endWall.rotation.x = side * .19;
+        this.box("cart-rim", r, [1.77, .10, .13], [0, .91, side * .96], "metal");
+        for (const z of [-.63, .63]) {
+          const wheel = this.cylinder("cart-wheel", r, { height: .17, diameter: .48, tessellation: 18 }, [side * .61, .25, z], "metal");
+          wheel.rotation.z = Math.PI / 2;
+        }
+      }
+      this.box("cart-lantern", r, [.23, .26, .18], [0, .68, .99], "lamp");
     });
     make("lamp-post", r => {
       for (const s of [-1, 1]) {
@@ -456,25 +522,25 @@ export class RunnerRenderer3D {
 
     // Obstacles. "-double" covers two lanes and "-wide" spans the road.
     make("block-double", r => {
-      const trunk = this.cylinder("joined-log", r, { diameterTop: .62, diameterBottom: .86, height: 4.72, tessellation: 15 }, [0, .42, -.04], "wood");
+      const trunk = this.fallenLog("joined-log", r, 4.72, .86, [0, .42, -.04]);
       trunk.rotation.set(0, -.08, Math.PI / 2 + .035);
-      const limb = this.cylinder("broken-limb", r, { diameterTop: .12, diameterBottom: .35, height: 1.9, tessellation: 11 }, [.5, .55, .13], "wood");
+      const limb = this.cylinder("broken-limb", r, { diameterTop: .12, diameterBottom: .35, height: 1.9, tessellation: 11 }, [.5, .55, .13], "log-bark");
       limb.rotation.set(.16, .54, Math.PI / 2 - .23);
       for (const [x, z] of [[-1.8, -.43], [1.62, .33]] as const) {
         const stone = MeshBuilder.CreatePolyhedron("nesting-rock", { type: 2, size: .42 }, this.scene);
-        stone.parent = r; stone.position.set(x, .13, z); stone.material = this.mats["moss-stone"];
+        stone.parent = r; stone.position.set(x, .13, z); stone.material = this.mats["obstacle-rock"];
       }
     });
     make("block-wide", r => {
-      for (const [z, y, length, thick, angle] of [[0, .55, W + .75, 1.08, .03], [-.62, .28, W - .5, .45, -.1], [.58, .25, W - .8, .38, .12]] as const) {
-        const log = this.cylinder("fallen-log", r, { diameterTop: thick * .8, diameterBottom: thick, height: length, tessellation: 15 }, [0, y, z], "wood");
+      for (const [z, y, length, thick, angle] of [[0, .55, W + .75, 1.08, .03], [-.62, .28, W - 1.5, .45, -.065], [.60, .25, W - 3.2, .39, .10]] as const) {
+        const log = this.fallenLog("fallen-log", r, length, thick, [0, y, z]);
         log.rotation.z = Math.PI / 2 + angle; log.rotation.y = z * .17;
       }
-      for (const [x, z, tilt] of [[-2.5, .1, -.3], [-.8, -.45, .4], [1.45, .1, -.55], [2.5, .4, .26]] as const) {
-        const branch = this.cylinder("broken-branch", r, { diameterTop: .03, diameterBottom: .2, height: 1.25, tessellation: 7 }, [x, 1.06, z], "wood");
-        branch.rotation.z = tilt;
+      for (const [x, z, tilt, length] of [[-2.5, .1, -.53, .78], [-.8, -.38, .52, .46], [1.55, .20, -.71, .62]] as const) {
+        const branch = this.cylinder("broken-branch", r, { diameterTop: .055, diameterBottom: .23, height: length, tessellation: 10 }, [x, .94, z], "log-bark");
+        branch.rotation.set(.28, 0, tilt);
       }
-      for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["moss-stone"]; }
+      for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["obstacle-rock"]; }
     });
     make("beam", r => {
       const width = 2.1;
@@ -518,17 +584,26 @@ export class RunnerRenderer3D {
         const size = .27 + (i % 4) * .09;
         const rock = MeshBuilder.CreatePolyhedron("loose-rock", { type: i % 2 ? 1 : 2, size }, this.scene);
         rock.parent = r; rock.position.set(x, size * .36, z); rock.rotation.set(i * .11, i * 1.7, i * .23);
-        rock.material = this.mats[i % 3 ? "moss-stone" : "rock"];
+        rock.material = this.mats["obstacle-rock"];
       }
       for (let i = 0; i < 6; i++) {
         const x = (i / 5 - .5) * (width - .6), z = i % 2 ? -.38 : .4;
-        const branch = this.cylinder("fallen-twig", r, { diameterTop: .035, diameterBottom: .12, height: .95 + (i % 3) * .18, tessellation: 6 }, [x, .18, z], "wood");
+        const branch = this.cylinder("fallen-twig", r, { diameterTop: .035, diameterBottom: .12, height: .95 + (i % 3) * .18, tessellation: 6 }, [x, .18, z], "log-bark");
         branch.rotation.z = Math.PI / 2 + (i % 2 ? -.34 : .25); branch.rotation.y = i * .71;
       }
     });
     make("boulder", r => {
       const rock = MeshBuilder.CreatePolyhedron("boulder", { type: 2, size: 1 }, this.scene);
-      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(1.05, 1.1, 1); rock.material = this.mats["moss-stone"];
+      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(1.05, 1.1, 1); rock.material = this.mats["obstacle-rock"];
+    });
+    make("cart-block-double", r => {
+      for (let i = 0; i < 6; i++) {
+        const stone = MeshBuilder.CreatePolyhedron("mine-rockfall", { type: i % 2 ? 2 : 1, size: .57 + i % 3 * .17 }, this.scene);
+        stone.parent = r; stone.position.set((i - 2.5) * .74, .44 + i % 3 * .14, Math.sin(i * 2) * .43);
+        stone.rotation.set(i, .4 + i * 1.3, .2); stone.material = this.mats["obstacle-rock"];
+      }
+      this.box("rockfall-crossbar", r, [4.35, .23, .27], [0, .9, -.72], "wood");
+      for (const x of [-1.92, 1.92]) this.box("rockfall-marker", r, [.23, .24, .15], [x, .93, -.895], "warning");
     });
     const flameMaterial = new StandardMaterial("runner-fire-volume", this.scene);
     flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v2.png");
@@ -596,7 +671,7 @@ export class RunnerRenderer3D {
       const trees = [treePlane.clone(`runner-tree-${i}-left`), treePlane.clone(`runner-tree-${i}-right`)];
       for (const tree of trees) tree.setEnabled(false);
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
-      const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1) decor.push({ node, every, offset }); return node; };
+      const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1 || name === "aqueduct-wall") decor.push({ node, every, offset }); return node; };
       ["aqueduct", "temple", "mine"].forEach((theme, t) => {
         const group = new TransformNode(`slot-${i}-${theme}`, this.scene); group.parent = root; themes.push(group);
         lanes.push([0, 1, 2].map(lane => {
@@ -606,10 +681,10 @@ export class RunnerRenderer3D {
         }));
         if (t === 0) { add("aqueduct-wall", group); add("aqueduct-pier", group, 5, 0); add("lamp-post", group, 5, 3); }
         if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("lamp-post", group, 5, 3); }
-        if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); }
+        if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); add("amethyst-left", group, 5, 2); add("amethyst-right", group, 5, 4); }
         group.setEnabled(false);
       });
-      this.slots.push({ n: -1, root, themes, lanes, trees, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false });
+      this.slots.push({ n: -1, root, themes, lanes, trees, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, ropeGap: false });
     }
   }
 
@@ -637,7 +712,7 @@ export class RunnerRenderer3D {
       tree.rotation.y = theme === 2 ? point.heading + Math.PI / 2 : 0;
       tree.material = material;
       tree.scaling.set(side * width, height, 1);
-      tree.position.set(point.x, grove.ground + height * .486, point.z);
+      tree.position.set(point.x, grove.ground + height * .486 + (theme === 2 ? point.y : 0), point.z);
       tree.setEnabled(true);
     }
   }
@@ -659,7 +734,11 @@ export class RunnerRenderer3D {
   /** Point on the route, offset sideways (positive = right of travel). */
   private place(distance: number, lateral = 0): RoutePoint {
     const p = this.route.sample(distance);
-    return { x: p.x + Math.cos(p.heading) * lateral, z: p.z - Math.sin(p.heading) * lateral, heading: p.heading };
+    return { ...p, x: p.x + Math.cos(p.heading) * lateral, z: p.z - Math.sin(p.heading) * lateral };
+  }
+
+  private roadPitch(distance: number, half = .75) {
+    return -Math.atan2(elevationAt(distance + half) - elevationAt(distance - half), half * 2);
   }
   /** Road centre under the dog: straight on into the corner until the turn is actually taken. */
   private dogCentre(world: RunnerWorld): RoutePoint {
@@ -698,9 +777,10 @@ export class RunnerRenderer3D {
     const decay = Math.exp(-dt * 9); this.turnBlend.x *= decay; this.turnBlend.z *= decay;
     const centre = this.dogCentre(world);
     centre.x += this.turnBlend.x; centre.z += this.turnBlend.z;
-    const lateral = (world.position - 1) * LANE_WIDTH;
+    const lateral = (world.position - 1) * LANE_WIDTH * rideLateralScale(world.distance, world.ride);
     const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), fx = Math.sin(centre.heading), fz = Math.cos(centre.heading);
-    const player = new Vector3(centre.x + rx * lateral, 0, centre.z + rz * lateral);
+    const player = new Vector3(centre.x + rx * lateral, centre.y, centre.z + rz * lateral);
+    this.drawRides(world, player, centre, lateral);
 
     const falling = world.trapFall && capture;
     const grab = capture && !falling ? captureMotion(world.captureTime, this.settings.reducedMotion) : undefined;
@@ -710,6 +790,8 @@ export class RunnerRenderer3D {
       let frame = pose.sheet === "run" ? Math.floor(pose.frame / 2) : 4 + pose.frame;
       if (falling && world.captureTime > .06) frame = fall.frame >= 4 ? 7 : 6;
       else if (!capture && world.airborne && world.jumpCount === 2) frame = 6;
+      // Monash has front-facing action art as well as the rear views that show TRX.
+      if (this.dogLook === "qs031" && frame >= 5 && (!grab || grab.orbit < .65)) frame -= 4;
       this.dog.frame(this.schoolSheet, frame, 4, 2);
     } else if (falling && world.captureTime > .045) {
       this.dog.frame(this.sheets.fall!, fall.frame, 4, 2);
@@ -717,35 +799,36 @@ export class RunnerRenderer3D {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
     const squash = pose.sheet === "actions" && pose.frame === 3 ? .1 : 0;
-    this.dog.root.position.set(player.x + fx * fall.forward, DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
+    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
-    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1));
+    const lean = world.ride && !capture && !this.settings.reducedMotion ? (world.lane - world.position) * .13 - (world.ride.kind === "rope" ? lateral * .11 : 0) : 0;
+    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.setAll(1);
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
-      const depth = waterDepth(world.fallObstacle.kind);
-      const below = fall.drop - world.jumpHeight - depth;
+      const surface = world.fallObstacle.ride === "rope" ? -7 : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
+      const below = surface - player.y - world.jumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
         this.waterImpact = true;
         if (!this.settings.reducedMotion) {
-          this.burst(this.magic, new Vector3(this.dog.root.position.x, -depth + .08, this.dog.root.position.z), 12, ["#d7eeee", "#416e72"]);
+          this.burst(this.magic, new Vector3(this.dog.root.position.x, surface + .08, this.dog.root.position.z), 12, ["#d7eeee", "#416e72"]);
         }
       }
     }
     this.dog.root.setEnabled(this.dog.material.alpha > 0);
-    this.skinHalo.setEnabled(this.dogLook !== "original" && !capture);
+    this.skinHalo.setEnabled(this.dogLook !== "original" && !capture && !world.ride);
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(getDogLook(this.dogLook).color);
       (this.skinHalo.material as StandardMaterial).emissiveColor.copyFrom(hue);
-      this.skinHalo.position.set(player.x, .08 + world.jumpHeight, player.z);
+      this.skinHalo.position.set(player.x, player.y + .08 + world.jumpHeight, player.z);
       this.skinHalo.scaling.setAll(1 + Math.sin(t * 5) * .07);
     }
     const overGap = world.items.some(gap => (gap.kind === "gap" || gap.kind === "long-gap") && Math.abs(gap.z - world.distance) < obstacleHalfDepth(gap.kind, gap.z) && coversLane(gap, world.position, .6));
-    this.shadow.position.set(player.x, .03, player.z); this.shadow.rotation.y = centre.heading;
+    this.shadow.position.set(player.x, player.y + .03, player.z); this.shadow.rotation.set(this.roadPitch(world.distance), centre.heading, 0);
     this.shadow.scaling.setAll(Math.max(.4, 1 - world.jumpHeight * .25));
-    this.shadow.setEnabled(!falling && !overGap);
+    this.shadow.setEnabled(!falling && !overGap && !world.ride);
 
     this.drawEffects(world, player, t, dt, capture);
 
@@ -762,8 +845,8 @@ export class RunnerRenderer3D {
       frog.frame(this.sheets.walk!, chaserFrame(world, this.settings.reducedMotion), 4, 4);
       frog.root.scaling.setAll(1);
       const side = world.position > 1.4 ? -1 : 1, back = 2.4 + (1 - close) * 7;
-      frog.root.position.set(player.x - fx * back + rx * side * 1.45, FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, player.z - fz * back + rz * side * 1.45);
-      frog.root.setEnabled(close > .02);
+      frog.root.position.set(player.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, player.z - fz * back + rz * side * 1.45);
+      frog.root.setEnabled(close > .02 && !world.ride);
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
@@ -776,7 +859,7 @@ export class RunnerRenderer3D {
       water.uOffset = drift * .022;
       water.vOffset = drift * .047;
     }
-    this.drawWeather(weather, t, running && world.boost > 0, centre.heading);
+    this.drawWeather(weather, t, running && world.boost > 0, centre.heading, player.y);
     this.scene.render();
   }
 
@@ -784,7 +867,8 @@ export class RunnerRenderer3D {
     this.route = new RunnerRoute3D();
     for (const prop of this.props.values()) prop.dispose();
     for (const corner of this.corners.values()) corner.dispose();
-    this.props.clear(); this.corners.clear();
+    for (const rope of this.ropes.values()) rope.dispose();
+    this.props.clear(); this.corners.clear(); this.ropes.clear();
     for (const slot of this.slots) { slot.n = -1; slot.theme = -1; }
     this.routeVersion = -1;
     this.lastWorld = world;
@@ -796,6 +880,7 @@ export class RunnerRenderer3D {
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
     this.captureCamera = undefined;
+    this.cartLane = 0;
     this.cameraPos.set(0, 4.2, -8); this.cameraTarget.set(0, 1.2, 6);
   }
 
@@ -857,25 +942,29 @@ export class RunnerRenderer3D {
       if (recycled) {
         slot.n = n;
         const p = this.route.sample(at);
-        slot.root.position.set(p.x, 0, p.z); slot.root.rotation.y = p.heading;
+        slot.root.position.set(p.x, p.y, p.z); slot.root.rotation.set(this.roadPitch(at, TILE / 2), p.heading, 0);
         const theme = sceneAt(at, world.startScene);
         if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
         this.placeTrees(slot, at, world.turns);
       }
       const half = TILE_DEPTH / 2;
+      const ride = sectionRide(at, world.startScene);
+      const rope = ride?.kind === "rope" && ride.start < at + half && ride.end > at - half ? ride : undefined;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
       const pierCut = here.some(gap => gap.item.kind === "long-gap");
-      if (recycled || pierCut !== slot.pierCut) {
-        slot.pierCut = pierCut;
+      if (recycled || pierCut !== slot.pierCut || !!rope !== slot.ropeGap) {
+        slot.pierCut = pierCut; slot.ropeGap = !!rope;
         for (const d of slot.decor) {
           const inLongGap = pierCut && d.node.name === "tpl-aqueduct-pier";
-          d.node.setEnabled(!inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
+          d.node.setEnabled(!rope && !inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
         }
       }
       for (let lane = 0; lane < 3; lane++) {
-        const gap = here.find(opening => coversLane(opening.item, lane));
-        if (!recycled && gap?.item === slot.holes[lane]) continue;
-        slot.holes[lane] = gap?.item;
+        const opening = here.find(gap => coversLane(gap.item, lane));
+        const gap = rope ?? opening;
+        const id = rope ? "rope" : opening?.item;
+        if (!recycled && id === slot.holes[lane]) continue;
+        slot.holes[lane] = id;
         const tile = slot.lanes[slot.theme][lane];
         if (!gap) {
           this.sizeLane(tile.main, -half, half);
@@ -916,8 +1005,68 @@ export class RunnerRenderer3D {
       const node = new TransformNode(`corner-${turn.z}`, this.scene);
       this.instance("plaza", node);
       const wall = this.instance("dead-end", node); wall.position.z = ROAD_HALF + 1.4;
-      node.position.set(corner.x, 0, corner.z); node.rotation.y = corner.heading;
+      node.position.set(corner.x, elevationAt(turn.z), corner.z); node.rotation.set(this.roadPitch(turn.z), corner.heading, 0);
       this.corners.set(turn.z, node);
+    }
+  }
+
+  private buildRope(ride: RideSection) {
+    const root = new TransformNode(`zipline-${ride.start}`, this.scene);
+    const start = ride.start - .8, end = ride.end + .8;
+    const path = Array.from({ length: 21 }, (_, i) => {
+      const at = start + (end - start) * i / 20;
+      const point = this.place(at);
+      return new Vector3(point.x, ropeHeightAt(at, ride), point.z);
+    });
+    const cable = MeshBuilder.CreateTube("zipline-cable", { path, radius: .039, tessellation: 10 }, this.scene);
+    cable.parent = root; cable.material = this.mats.zipline; cable.isPickable = false;
+    for (const at of [start, end]) {
+      const point = this.place(at);
+      const anchor = this.instance("zipline-anchor", root);
+      anchor.position.set(point.x, point.y, point.z);
+      anchor.rotation.y = point.heading;
+      anchor.scaling.y = (ropeHeightAt(at, ride) - point.y) / 3.12;
+    }
+    return root;
+  }
+
+  private drawRides(world: RunnerWorld, player: Vector3, centre: RoutePoint, lateral: number) {
+    if (this.ropeRouteVersion !== this.route.version) {
+      this.ropeRouteVersion = this.route.version;
+      for (const rope of this.ropes.values()) rope.dispose();
+      this.ropes.clear();
+    }
+    const live = new Set<number>();
+    const first = Math.floor(Math.max(0, world.distance - BEHIND) / SCENE_LENGTH);
+    const last = Math.floor((world.distance + 168) / SCENE_LENGTH);
+    for (let i = first; i <= last; i++) {
+      const ride = sectionRide(i * SCENE_LENGTH, world.startScene);
+      if (ride?.kind !== "rope" || ride.start > world.distance + 168 || ride.end < world.distance - BEHIND) continue;
+      live.add(ride.start);
+      if (!this.ropes.has(ride.start)) this.ropes.set(ride.start, this.buildRope(ride));
+    }
+    for (const [start, rope] of this.ropes) if (!live.has(start)) { rope.dispose(); this.ropes.delete(start); }
+
+    const mounted = world.ride, local = sectionRide(world.distance, world.startScene);
+    const cart = local?.kind === "cart" && world.distance >= local.start - 36 && world.distance < local.end + 16 ? local : undefined;
+    this.cart.setEnabled(!!cart);
+    if (cart) {
+      if (world.distance < cart.end) this.cartLane = lateral;
+      const at = Math.min(cart.end, Math.max(cart.start, world.distance));
+      const point = this.place(at, this.cartLane);
+      this.cart.position.set(point.x, point.y, point.z);
+      this.cart.rotation.set(this.roadPitch(at), point.heading, mounted && !this.settings.reducedMotion ? (world.lane - world.position) * .14 : 0);
+    }
+
+    this.ropeHandle.setEnabled(mounted?.kind === "rope");
+    if (mounted?.kind === "rope") {
+      const height = ropeHeightAt(world.distance, mounted);
+      const grip = height - player.y - world.jumpHeight - DOG_SIZE * DOG_FEET - .25;
+      this.ropeHandle.position.set(centre.x, height, centre.z);
+      this.ropeHandle.rotation.y = centre.heading;
+      this.ropeLanyard.position.set(lateral / 2, -grip / 2, 0);
+      this.ropeLanyard.rotation.z = Math.atan2(lateral, grip);
+      this.ropeLanyard.scaling.y = Math.hypot(lateral, grip);
     }
   }
 
@@ -945,13 +1094,13 @@ export class RunnerRenderer3D {
         }
         this.props.set(item.id, prop);
       }
-      const p = this.place(item.z, itemOffset(item));
-      prop.position.set(p.x, 0, p.z); prop.rotation.y = p.heading;
+      const p = this.place(item.z, itemOffset(item) * (item.ride === "rope" ? ROPE_LANE_SCALE : 1));
+      prop.position.set(p.x, p.y, p.z); prop.rotation.set(isRunObstacle(item.kind) ? this.roadPitch(item.z) : 0, p.heading, 0);
       if (item.kind === "coin") {
-        prop.position.y = item.y ?? .8; prop.rotation.y += t * 3 + item.id;
+        prop.position.y += item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
       }
-      else if (isRunPower(item.kind)) { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
+      else if (isRunPower(item.kind)) { prop.position.y += Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
         for (const [index, mesh] of prop.getChildMeshes().entries()) {
@@ -989,14 +1138,14 @@ export class RunnerRenderer3D {
     const spreadX = across * 1.9 + forward * .35, spreadZ = forward * 1.9 + across * .35;
     this.fireEmbers.minEmitBox.set(-spreadX, 0, -spreadZ);
     this.fireEmbers.maxEmitBox.set(spreadX, .35, spreadZ);
-    (this.fireEmbers.emitter as Vector3).set(at.x, .52, at.z);
-    (this.fireSmoke.emitter as Vector3).set(at.x, 1.55, at.z);
+    (this.fireEmbers.emitter as Vector3).set(at.x, at.y + .52, at.z);
+    (this.fireSmoke.emitter as Vector3).set(at.x, at.y + 1.55, at.z);
     this.fireEmbers.manualEmitCount += ticks * (this.settings.reducedMotion ? 1 : 5);
     if (!this.settings.reducedMotion) this.fireSmoke.manualEmitCount += ticks;
   }
 
   private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean) {
-    const at = new Vector3(player.x, .9 + world.jumpHeight, player.z);
+    const at = new Vector3(player.x, player.y + .9 + world.jumpHeight, player.z);
     const coinAt = at.add(new Vector3(0, .3, 0));
     for (const [tier, system] of [["silver", this.silverSparks], ["gold", this.sparks], ["diamond", this.diamondSparks]] as const) {
       if (world[tier] > this.seen[tier]) this.burst(system, coinAt, Math.min(30, (world[tier] - this.seen[tier]) * 8));
@@ -1006,7 +1155,7 @@ export class RunnerRenderer3D {
     this.seen.power = world.powerPicked;
     if (world.shieldSaves > this.seen.shield) { this.burst(this.magic, at, 90, POWER_COLORS.shield); this.flash.shield = 1; }
     this.seen.shield = world.shieldSaves;
-    if (world.stumbles > this.seen.stumble) this.burst(this.magic, new Vector3(player.x, .4, player.z), 30, ["#b8a07a", "#6d5a3e"]);
+    if (world.stumbles > this.seen.stumble) this.burst(this.magic, new Vector3(player.x, player.y + .4, player.z), 30, ["#b8a07a", "#6d5a3e"]);
     this.seen.stumble = world.stumbles;
     this.flash.power = Math.max(0, this.flash.power - dt * 2.5);
     this.flash.shield = Math.max(0, this.flash.shield - dt * 2);
@@ -1025,15 +1174,15 @@ export class RunnerRenderer3D {
     const magnetOn = !capture && world.magnet > 0;
     this.magnetRing.setEnabled(magnetOn);
     if (magnetOn) {
-      this.magnetRing.position.set(player.x, .15 + world.jumpHeight + Math.sin(t * 6) * .12 * motion, player.z);
+      this.magnetRing.position.set(player.x, player.y + .15 + world.jumpHeight + Math.sin(t * 6) * .12 * motion, player.z);
       this.magnetRing.rotation.y = t * 4; this.magnetRing.scaling.setAll(1 + Math.sin(t * 9) * .08 * motion);
       (this.magnetRing.material as StandardMaterial).alpha = world.magnet < 3 && Math.floor(t * 8) % 2 === 0 ? .25 : .8;
     }
     // Boost: golden glow under the dog plus speed lines (in drawWeather) and wider FOV.
     const boostOn = !capture && world.boost > 0;
     this.boostGlow.setEnabled(boostOn);
-    if (boostOn) { this.boostGlow.position.set(player.x, .05, player.z); this.boostGlow.rotation.y = Math.atan2(player.x - this.camera.position.x, player.z - this.camera.position.z); }
-    if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, .5 + world.jumpHeight, player.z), 2, POWER_COLORS.boost);
+    if (boostOn) { this.boostGlow.position.set(player.x, player.y + .05 + world.jumpHeight, player.z); this.boostGlow.rotation.y = Math.atan2(player.x - this.camera.position.x, player.z - this.camera.position.z); }
+    if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, player.y + .5 + world.jumpHeight, player.z), 2, POWER_COLORS.boost);
   }
 
   private drawCapture(world: RunnerWorld, player: Vector3, heading: number, motion: ReturnType<typeof captureMotion>) {
@@ -1046,7 +1195,7 @@ export class RunnerRenderer3D {
     const startBehind = world.danger > 0 ? 2.4 + 2.6 * (1 - Math.min(1, world.danger / 2)) : 4.5;
     const frogAt = player.subtract(forward.scale(startBehind + (1.36 - startBehind) * reach + .50 * lift))
       .add(right.scale(side * (.36 + 1.09 * (1 - reach))));
-    frogAt.y = FROG_SIZE * scale * FROG_FEET + .21 * Math.sin(Math.PI * reach);
+    frogAt.y = player.y + FROG_SIZE * scale * FROG_FEET + .21 * Math.sin(Math.PI * reach);
     frog.root.position.copyFrom(frogAt);
     frog.root.scaling.setAll(scale);
     const view = this.camera.position.subtract(frogAt);
@@ -1092,8 +1241,8 @@ export class RunnerRenderer3D {
       const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), hx = Math.sin(centre.heading), hz = Math.cos(centre.heading);
       const initial = this.captureCamera ??= { position: this.cameraPos.clone(), target: this.cameraTarget.clone() };
       const side = world.position > 1.4 ? -1 : 1;
-      const end = new Vector3(player.x + hx * 7.2 + rx * side * 1.05, 3.55, player.z + hz * 7.2 + rz * side * 1.05);
-      const target = new Vector3(player.x - hx * .75, 1.5 + .42 * shot.lift, player.z - hz * .75);
+      const end = new Vector3(player.x + hx * 7.2 + rx * side * 1.05, player.y + 3.55, player.z + hz * 7.2 + rz * side * 1.05);
+      const target = new Vector3(player.x - hx * .75, player.y + 1.5 + .19 * shot.lift, player.z - hz * .75);
       Vector3.LerpToRef(initial.position, end, shot.orbit, this.cameraPos);
       Vector3.LerpToRef(initial.target, target, shot.focus, this.cameraTarget);
       // The side arc keeps the camera clear of both actors as it swings around.
@@ -1104,20 +1253,20 @@ export class RunnerRenderer3D {
     } else {
       this.captureCamera = undefined;
       // Follow most of the lane offset (smoothed) so the dog stays near the centre of the screen.
-      const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .8 : .6);
+      const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .8 : .6) * rideLateralScale(world.distance, world.ride);
       this.camLateral += (lateral - this.camLateral) * k(10);
       const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
       const bx = centre.x + rx * this.camLateral, bz = centre.z + rz * this.camLateral;
       const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * .25;
-      this.cameraPos.set(bx - fx * back, height, bz - fz * back);
-      this.cameraTarget.set(bx + fx * 7, 1.1 + world.jumpHeight * .35, bz + fz * 7);
+      this.cameraPos.set(bx - fx * back, elevationAt(world.distance - back) + height, bz - fz * back);
+      this.cameraTarget.set(bx + fx * 7, elevationAt(world.distance + 7) + 1.1 + world.jumpHeight * .35, bz + fz * 7);
       if (!this.settings.reducedMotion && world.elapsed - world.hitAt < .35) this.cameraPos.x += Math.sin(t * 60) * .12;
     }
     this.camera.position.copyFrom(this.cameraPos);
     this.camera.setTarget(this.cameraTarget);
   }
 
-  private drawWeather(weather: string, t: number, boost: boolean, heading: number) {
+  private drawWeather(weather: string, t: number, boost: boolean, heading: number, ground: number) {
     const cam = this.camera.position;
     const fx = Math.sin(heading), fz = Math.cos(heading), rx = Math.cos(heading), rz = -Math.sin(heading);
     const spread = (i: number, salt: number) => ((Math.sin(i * 12.9898 + salt) * 43758.5453) % 1 + 1) % 1;
@@ -1126,18 +1275,18 @@ export class RunnerRenderer3D {
     if (this.snow[0].isEnabled() !== snowOn) this.snow.forEach(f => f.setEnabled(snowOn));
     if (rainOn) this.rain.forEach((drop, i) => {
       const a = spread(i, 1) * 30 - 4, b = spread(i, 2) * 18 - 9;
-      drop.position.set(cam.x + fx * a + rx * b, ((spread(i, 3) * 12 - t * 16) % 12 + 12) % 12 - 1, cam.z + fz * a + rz * b);
+      drop.position.set(cam.x + fx * a + rx * b, ground + ((spread(i, 3) * 12 - t * 16) % 12 + 12) % 12 - 1, cam.z + fz * a + rz * b);
     });
     if (snowOn) this.snow.forEach((flake, i) => {
       const a = spread(i, 4) * 26 - 3, b = spread(i, 5) * 18 - 9 + Math.sin(t + i) * .4;
-      flake.position.set(cam.x + fx * a + rx * b, ((spread(i, 6) * 10 - t * 1.6) % 10 + 10) % 10 - .5, cam.z + fz * a + rz * b);
+      flake.position.set(cam.x + fx * a + rx * b, ground + ((spread(i, 6) * 10 - t * 1.6) % 10 + 10) % 10 - .5, cam.z + fz * a + rz * b);
     });
     // Speed lines streaming past the camera while boosting.
     if (this.streaks[0].isEnabled() !== boost) this.streaks.forEach(s => s.setEnabled(boost));
     if (boost) this.streaks.forEach((line, i) => {
       const along = ((spread(i, 7) * 30 - t * 60) % 30 + 30) % 30 - 2;
       const side = (spread(i, 8) < .5 ? -1 : 1) * (2.5 + spread(i, 9) * 4), up = .5 + spread(i, 10) * 4.5;
-      line.position.set(cam.x + fx * along + rx * side, up, cam.z + fz * along + rz * side);
+      line.position.set(cam.x + fx * along + rx * side, ground + up, cam.z + fz * along + rz * side);
       line.rotation.y = heading;
     });
   }

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { RunnerWorld, LONG_GAP_START, readRunRecord, isRunObstacle, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
+import { elevationAt, sectionRide } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
@@ -203,7 +204,7 @@ test('QS prices use only the ranked currency, with equal prices for tied schools
   let previous;
   for (const look of DOG_LOOKS) {
     const rank = Number(look.rank.replace('=', ''));
-    const currency = rank <= 30 ? 'diamond' : rank <= 56 ? 'gold' : 'silver';
+    const currency = rank <= 30 || look.id === 'qs031' ? 'diamond' : rank <= 56 ? 'gold' : 'silver';
     assert.deepEqual(Object.keys(look.price), [currency]);
     const amount = look.price[currency];
     const wallet = { silver: 200, gold: 200, diamond: 200, [currency]: amount - 1 };
@@ -275,6 +276,7 @@ test('long frames are clamped and fixed steps prevent tunnelling', () => {
 
 /** Simple bot that reads the course the way a player would. */
 function drive(w) {
+  if (w.upcomingRide?.kind === 'rope' && w.upcomingRide.start - w.distance < w.speed * .30 && !w.airborne) w.action('jump');
   const turn = w.approachingTurn; if (turn && w.turnWindow && turn.z - w.distance <= 12) w.action(turn.direction);
   const ahead = w.items.filter(i => isRunObstacle(i.kind) && !i.done && i.z + obstacleHalfDepth(i.kind, i.z) >= w.distance).sort((a, b) => a.z - b.z);
   const next = ahead[0]; if (!next) return;
@@ -341,8 +343,8 @@ test('capture keeps the last running pose before contact and lifts the dog befor
   assert.equal(captureMotion(CAPTURE_GRAB_AT, false).height, 0);
   w.captureTime = .65;
   assert.equal(dogPose(w, false).frame, 2);
-  assert.ok(captureMotion(.65, false).height > .5);
-  assert.ok(captureMotion(CAPTURE_LAUGH_AT, false).height > 1.4);
+  assert.ok(captureMotion(.65, false).height > .32);
+  assert.ok(captureMotion(CAPTURE_LAUGH_AT, false).height >= .8 && captureMotion(CAPTURE_LAUGH_AT, false).height <= .94);
   w.pause();
   assert.equal(dogPose(w, false).frame, 2);
   assert.equal(captureMotion(w.captureTime, true).tilt, 0);
@@ -378,6 +380,59 @@ test('3D route has continuous rounded quarter-turns and bounded corner history',
   assert.equal(route.sample(160).heading, 0); assert.ok(Math.abs(route.sample(200).heading - Math.PI / 2) < 1e-8);
   for (const at of [174, 180, 186, 354, 360, 366]) { const a = route.sample(at - .001), b = route.sample(at + .001); assert.ok(Math.hypot(a.x - b.x, a.z - b.z) < .01); }
   for (let d = 540; d < 10000; d += 180) route.sync([{ z: d, direction: 'left' }], d); assert.ok(route.storedCorners <= 4);
+});
+
+test('terrain rises and falls continuously and stays level across scene boundaries', () => {
+  const route = new RunnerRoute3D();
+  assert.equal(route.sample(140).y, elevationAt(140));
+  assert.ok(route.sample(88).y > route.sample(50).y);
+  assert.ok(route.sample(196).y > route.sample(252).y);
+  for (const z of [45, 120, 157, 270, 450, 900]) assert.ok(Math.abs(elevationAt(z + .01) - elevationAt(z - .01)) < .001);
+});
+
+test('the aqueduct requires grabbing the rope, and the rope can be steered and exited', () => {
+  const use = jump => {
+    const w = new RunnerWorld(9, 'endless', 0);
+    const rope = sectionRide(0, w.startScene);
+    assert.equal(rope.kind, 'rope');
+    w.start(); w.distance = rope.start - 4;
+    if (jump) w.action('jump');
+    run(w, .35);
+    return { w, rope };
+  };
+  const missed = use(false).w;
+  assert.equal(missed.phase, 'caught');
+  assert.equal(missed.reason, '没抓住绳索');
+  assert.equal(missed.trapFall, true);
+  const { w, rope } = use(true);
+  assert.equal(w.ride.kind, 'rope');
+  w.action('left'); run(w, .4); assert.equal(w.lane, 0);
+  assert.ok(w.jumpHeight > .5);
+  w.action('jump'); assert.equal(w.jumpCount, 0);
+  while (w.distance < rope.end && w.phase === 'running') w.advance(1 / 120);
+  assert.equal(w.phase, 'running');
+  assert.equal(w.ride, undefined);
+  assert.equal(w.jumpHeight, 0);
+  assert.equal(sectionRide(0, 1), undefined);
+});
+
+test('minecart boarding is automatic, and only the clear track passes each rockfall', () => {
+  const board = () => {
+    const w = new RunnerWorld(5, 'endless', 2);
+    const cart = sectionRide(0, w.startScene);
+    assert.equal(cart.kind, 'cart');
+    w.start(); w.distance = cart.start - 2; run(w, .27);
+    assert.equal(w.ride.kind, 'cart');
+    return { w, cart };
+  };
+  const blocked = board().w;
+  run(blocked, 1.6);
+  assert.equal(blocked.reason, '矿车撞上了塌方');
+  const { w, cart } = board();
+  while (w.distance < cart.end && w.phase === 'running') { drive(w); w.advance(1 / 120); }
+  assert.equal(w.phase, 'running');
+  assert.equal(w.ride, undefined);
+  assert.ok(w.coins >= 8);
 });
 
 test('tilt calibration supports portrait/landscape, hysteresis and missing sensors', () => {

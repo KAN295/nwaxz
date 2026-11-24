@@ -15,7 +15,7 @@ export function captureMotion(time: number, reducedMotion: boolean) {
   return {
     reach,
     lift,
-    height: 1.62 * lift - .13 * settle + sway,
+    height: .90 * lift - .08 * settle + sway,
     tilt: reducedMotion ? 0 : .23 * lift - .11 * settle + sway,
     orbit: ease(.10, 1.16),
     focus: ease(.08, .43),
@@ -31,6 +31,7 @@ export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number 
 export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = false): { sheet: "run" | "actions"; frame: number } {
   const caught = !falling && (world.phase === "lost" || world.phase === "caught" || (world.phase === "paused" && !!world.reason));
   if (caught && world.captureTime >= .15) return { sheet: "actions", frame: world.captureTime < CAPTURE_GRAB_AT ? 3 : 2 };
+  if (world.ride) return { sheet: "actions", frame: world.ride.kind === "rope" ? 1 : 0 };
   if (world.slide > 0 && world.jumpHeight === 0) return { sheet: "actions", frame: 3 };
   if (world.jumpHeight > 0 || world.jump > 0) return { sheet: "actions", frame: world.jump > .2 ? 1 : 2 };
   if (world.stumble > 0) return { sheet: "actions", frame: 2 };

@@ -365,13 +365,25 @@ export class RunnerGame {
   /** One short prompt at a time: corners first, then whole-road obstacles. */
   private syncCue() {
     const w = this.world, cue = this.el.cue;
-    let html = "", urgent = false, turning = false;
-    if (w.phase === "running" && w.boost === 0) {
+    let html = "", urgent = false, aboveRoad = false;
+    if (w.phase === "running" && (w.ride || w.boost === 0)) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
       const next = w.nextObstacle;
+      const ride = w.upcomingRide;
+      const requiredMove = next?.span === 3 && next.z - w.distance < w.speed * 1.6 ? next : undefined;
       const longGap = next?.kind === "long-gap" ? next : undefined;
       const toLip = longGap ? longGap.z - obstacleHalfDepth("long-gap", longGap.z) - w.distance : Infinity;
-      if (longGap && toLip < w.speed * 1.75) {
+      if (w.ride?.kind === "rope") {
+        aboveRoad = true;
+        html = "<b>↔</b><span>左右摆动收币</span>";
+      } else if (w.ride?.kind === "cart") {
+        aboveRoad = true;
+        const blocked = next?.kind === "cart-block" && next.z - w.distance < w.speed * 1.85 ? next : undefined;
+        if (blocked) {
+          urgent = blocked.z - w.distance < w.speed * .8;
+          html = blocked.lane === 0 ? "<b>▶</b><span>右侧轨道畅通</span>" : "<b>◀</b><span>左侧轨道畅通</span>";
+        } else html = "<b>↔</b><span>左右换轨</span>";
+      } else if (longGap && toLip < w.speed * 1.75) {
         if (toLip >= 0) {
           urgent = w.jumpCount === 0 && toLip < w.speed * .19;
           html = `<b>▲▲</b><span>${urgent ? "现在起跳" : "前方长落穴"}</span><small>二段跳</small>`;
@@ -379,25 +391,27 @@ export class RunnerGame {
           urgent = w.jump < .39;
           html = `<b>▲</b><span>${urgent ? "再跳一次" : "空中准备再跳"}</span>`;
         }
+      } else if (ride && (!requiredMove || requiredMove.z >= ride.start)) {
+        aboveRoad = true;
+        urgent = ride.start - w.distance < w.speed * .42;
+        html = ride.kind === "rope" ? `<b>▲</b><span>${urgent ? "跳起来抓绳索" : "前方滑索"}</span>` : "<b>↔</b><span>前方矿车</span>";
       } else if (turn && toTurn < 55) {
-        turning = true;
+        aboveRoad = true;
         urgent = w.turnWindow;
         const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
         html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>`;
         if (this.warnedTurn !== turn.z) { this.warnedTurn = turn.z; this.audio.effect("coin"); }
         if (urgent && this.urgentTurn !== turn.z) { this.urgentTurn = turn.z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
-      } else {
-        if (next?.span === 3 && next.z - w.distance < w.speed * 1.6) {
-          const slide = next.kind === "beam";
-          urgent = next.z - w.distance < w.speed * .55;
-          html = `<b>${slide ? "▼" : "▲"}</b><span>${slide ? "下滑" : "跳"}</span><small>${CUE_NAME[next.kind] ?? ""}</small>`;
-        }
+      } else if (requiredMove) {
+        const slide = requiredMove.kind === "beam";
+        urgent = requiredMove.z - w.distance < w.speed * .55;
+        html = `<b>${slide ? "▼" : "▲"}</b><span>${slide ? "下滑" : "跳"}</span><small>${CUE_NAME[requiredMove.kind] ?? ""}</small>`;
       }
     }
     cue.hidden = !html;
     if (html && cue.innerHTML !== html) cue.innerHTML = html;
     cue.classList.toggle("now", urgent);
-    cue.classList.toggle("turn", turning);
+    cue.classList.toggle("above-road", aboveRoad);
   }
 
   // ---------- records ----------
@@ -573,6 +587,7 @@ export class RunnerGame {
         <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
         <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
+        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
         <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
         <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
