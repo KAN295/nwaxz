@@ -110,18 +110,21 @@ test('coins collect once, magnet pulls across lanes, shield absorbs exactly one 
   assert.equal(s.phase, 'running'); assert.equal(s.shield, 0);
 });
 
-test('silver starts the run; gold arrives later and diamonds remain rare', () => {
+test('late-run currency starts at the new distances and diamonds use the rare roll', () => {
   const world = new RunnerWorld(22, 'endless'); world.items = [];
-  for (let n = 0; n < 100; n++) world.addCoin(100, 1);
-  assert.ok(world.items.every(item => item.tier === 'silver'));
-  world.items = [];
-  for (let n = 0; n < 400; n++) world.addCoin(1100, 1);
-  assert.ok(world.items.some(item => item.tier === 'gold'));
-  assert.ok(world.items.every(item => item.tier !== 'diamond'));
-  world.items = [];
-  for (let n = 0; n < 2000; n++) world.addCoin(2200, 1);
-  const diamonds = world.items.filter(item => item.tier === 'diamond').length;
-  assert.ok(diamonds > 0 && diamonds < 35, `${diamonds} diamonds in 2000 items`);
+  const tierAt = (distance, roll) => {
+    world.random = () => roll;
+    world.addCoin(distance, 1);
+    return world.items.pop().tier;
+  };
+  assert.equal(tierAt(1499.9, 0), 'silver');
+  assert.equal(tierAt(1500, .05), 'gold');
+  assert.equal(tierAt(1500, .2), 'silver');
+  assert.equal(tierAt(2000, .2), 'gold');
+  assert.equal(tierAt(3999.9, 0), 'gold');
+  assert.equal(tierAt(4000, .00299), 'diamond');
+  assert.equal(tierAt(4000, .003), 'gold');
+  assert.equal(tierAt(6000, .99), 'silver');
   for (const [tier, points] of [['silver', 50], ['gold', 150], ['diamond', 1000]]) {
     const collected = place('coin', { tier }); run(collected, .6);
     assert.equal(collected[tier], 1); assert.equal(collected.coinScore, points);
@@ -194,6 +197,26 @@ test('QS 2027 shop includes both tied rank-100 schools and a sprite atlas for ev
   const migrated = migrateLegacyWardrobe(JSON.stringify({ version: 1, silver: 7, gold: 4, diamond: 0, owned: ['sunny', 'mint', 'nebula'], equipped: 'mint' }));
   assert.deepEqual(migrated.owned, ['original']); assert.equal(migrated.equipped, 'original');
   assert.equal(migrated.silver, 52); assert.equal(migrated.diamond, 3);
+});
+
+test('QS prices use only the ranked currency, with equal prices for tied schools', () => {
+  let previous;
+  for (const look of DOG_LOOKS) {
+    const rank = Number(look.rank.replace('=', ''));
+    const currency = rank <= 30 ? 'diamond' : rank <= 56 ? 'gold' : 'silver';
+    assert.deepEqual(Object.keys(look.price), [currency]);
+    const amount = look.price[currency];
+    const wallet = { silver: 200, gold: 200, diamond: 200, [currency]: amount - 1 };
+    assert.ok(amount > 0);
+    assert.equal(canAfford(wallet, look.price), false);
+    assert.equal(canAfford({ ...wallet, [currency]: amount }, look.price), true);
+    if (previous) {
+      assert.ok(rank >= previous.rank);
+      if (rank === previous.rank) assert.equal(amount, previous.amount);
+      if (currency === previous.currency) assert.ok(amount <= previous.amount);
+    }
+    previous = { rank, currency, amount };
+  }
 });
 
 test('boost is faster, passes hazards, takes corners itself and expires', () => {

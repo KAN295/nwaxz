@@ -33,6 +33,9 @@ export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
 export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
 export const CHALLENGE_DISTANCE = 1000;
 export const LONG_GAP_START = 600;
+export const GOLD_START = 1500;
+export const DIAMOND_START = 4000;
+const DIAMOND_CHANCE = .003;
 
 // Movement tuning (metres, seconds).
 export const LANE_WIDTH = 2.4;
@@ -338,7 +341,8 @@ export class RunnerWorld {
   private add(z: number, lane: number, kind: RunItemKind, extra: Partial<RunItem> = {}) { this.items.push({ id: this.sequence++, z, lane, kind, done: false, ...extra }); }
   private addCoin(z: number, lane: number, extra: Partial<RunItem> = {}) {
     const roll = this.random();
-    const tier: CoinTier = z >= 1800 && roll < .008 ? "diamond" : z >= 400 && roll < Math.min(.7, (z - 400) / 1300) ? "gold" : "silver";
+    const goldChance = z < GOLD_START ? 0 : Math.min(.7, .1 + (z - GOLD_START) / 1300);
+    const tier: CoinTier = z >= DIAMOND_START && roll < DIAMOND_CHANCE ? "diamond" : roll < goldChance ? "gold" : "silver";
     this.add(z, lane, "coin", { ...extra, tier });
   }
 

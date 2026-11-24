@@ -6,7 +6,7 @@ import { RunnerTilt } from "./tilt.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, obstacleHalfDepth, readRunRecord,
+  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, GOLD_START, DIAMOND_START, obstacleHalfDepth, readRunRecord,
   type RunAction, type RunPhase, type RunMode, type RunPowerKind,
 } from "./world.ts";
 
@@ -561,7 +561,7 @@ export class RunnerGame {
         <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
         <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
-        <li>先收银币，400米后开始出现金币；1800米后才有极少量钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
+        <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
         <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
         <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后进入较长的黑夜。</li>

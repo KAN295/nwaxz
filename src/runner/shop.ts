@@ -9,10 +9,9 @@ export const LEGACY_WARDROBE_KEY = "nwaxz-runner-wardrobe-v1";
 export const ORIGINAL_LOOK = { id: "original", name: "默认奶狗", color: "#ffffff", logo: "" } as const;
 export const DOG_LOOKS: readonly DogLook[] = schools.map(school => {
   const rank = Number(school.rank.replace("=", ""));
-  const price: Partial<CurrencyPurse> = rank <= 20 ? { diamond: 3 + Math.ceil((21 - rank) / 5) }
-    : rank <= 50 ? { gold: 25 + Math.ceil((51 - rank) * 1.5) }
-    : rank <= 80 ? { gold: 8 + Math.ceil((81 - rank) / 2) }
-    : { silver: 35 + (101 - rank) * 3 };
+  const price: Partial<CurrencyPurse> = rank <= 30 ? { diamond: 1 + Math.floor((30 - rank) / 5) }
+    : rank <= 56 ? { gold: 15 + (56 - rank) * 2 }
+    : { silver: 40 + (100 - rank) * 3 };
   return { ...school, sprite: `/assets/runner/qs2027/skins/${school.id}.webp`, price };
 });
 
