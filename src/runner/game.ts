@@ -6,8 +6,8 @@ import { RunnerTilt } from "./tilt.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, obstacleHalfDepth, readRunRecord,
-  type RunAction, type RunPhase, type RunMode,
+  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, obstacleHalfDepth, readRunRecord,
+  type RunAction, type RunPhase, type RunMode, type RunPowerKind,
 } from "./world.ts";
 
 const TITLE = "奶狗快跑";
@@ -18,10 +18,12 @@ const KEYS: Record<string, RunAction> = {
   ArrowUp: "jump", w: "jump", W: "jump", " ": "jump", ArrowDown: "slide", s: "slide", S: "slide",
 };
 const POWER_INFO = {
-  magnet: { name: "磁铁", text: "附近货币自动飞过来", time: 10 },
-  shield: { name: "护盾", text: "可以挡住一次撞击", time: 20 },
-  boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯", time: 5 },
-} as const;
+  magnet: { name: "磁铁", text: "附近货币自动飞过来" },
+  shield: { name: "护盾", text: "可以挡住一次撞击" },
+  boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯" },
+  slow: { name: "沙漏", text: "5 秒内跑动和跳跃变慢" },
+  double: { name: "双倍得分", text: "8 秒内路程和收币得分翻倍" },
+} satisfies Record<RunPowerKind, { name: string; text: string }>;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
 export class RunnerGame {
@@ -317,8 +319,8 @@ export class RunnerGame {
     set(el.coins, `${w.silver}银 · ${w.gold}金 · ${w.diamond}钻`);
     set(el.scene, [RUN_SCENES[w.sceneIndex].name, w.night ? "夜" : "", w.sceneIndex === 2 ? "" : WEATHER_NAME[w.weather]].filter(Boolean).join(" · "));
 
-    const effects = (["magnet", "shield", "boost"] as const).filter(key => w[key] > 0)
-      .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / POWER_INFO[key].time * 100)}%"></u></span>`).join("")
+    const effects = RUN_POWERS.filter(key => w[key] > 0)
+      .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / RUN_POWER_SECONDS[key] * 100)}%"></u></span>`).join("")
       + (w.multiplier > 1 ? `<span class="runner-combo">×${w.multiplier}</span>` : "");
     set(el.effects, effects);
     el.effects.hidden = w.phase !== "running";
@@ -560,6 +562,7 @@ export class RunnerGame {
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
         <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
         <li>先收银币，400米后开始出现金币；1800米后才有极少量钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
+        <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
         <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后进入较长的黑夜。</li>
       </ul>

@@ -33,8 +33,11 @@
 .runner-effect em{font-style:normal;font-weight:600;font-size:12px}
 .runner-effect u{position:absolute;left:0;bottom:0;height:3px;width:var(--left);background:currentColor;transition:width .2s linear}
 .runner-effect-magnet{color:#ff9a8c}.runner-effect-shield{color:#8ff0ff}.runner-effect-boost{color:#ffd66b}
+.runner-effect-slow{color:#d8b5ff}.runner-effect-double{color:#ffcb67}
 .runner-effect i{width:24px;height:24px;background:url('/assets/runner/powerups-v1.png') 0 0/200% 200%}
 .runner-effect-shield i{background-position:100% 0}.runner-effect-boost i{background-position:0 100%}
+.runner-effect-slow i{background:url('/assets/runner/pickup-hourglass-v1.webp') center/contain no-repeat}
+.runner-effect-double i{background:url('/assets/runner/pickup-double-score-v1.webp') center/contain no-repeat}
 .runner-combo{padding:5px 10px;color:var(--gold)}
 
 /* Action prompt: one at a time, low enough not to hide the road ahead. */
@@ -132,6 +135,8 @@
 .runner-toast b{display:block;font-size:22px;margin-bottom:2px;color:var(--gold)}
 .runner-toast[data-kind=magnet]{border-color:#ff7a6a}.runner-toast[data-kind=magnet] b{color:#ff9a8c}
 .runner-toast[data-kind=shield]{border-color:#5fe0ff}.runner-toast[data-kind=shield] b{color:#8ff0ff}
+.runner-toast[data-kind=slow]{border-color:#ba91ee}.runner-toast[data-kind=slow] b{color:#d8b5ff}
+.runner-toast[data-kind=double]{border-color:#e8a344}.runner-toast[data-kind=double] b{color:#ffcb67}
 .runner-toast.show{animation:runner-toast 1.8s ease-out forwards}
 @keyframes runner-toast{0%{opacity:0;transform:translateX(-50%) scale(.7)}12%{opacity:1;transform:translateX(-50%) scale(1.08)}20%{transform:translateX(-50%) scale(1)}80%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-14px)}}
 @media (prefers-reduced-motion:reduce){.runner-toast.show{animation:none}}

@@ -139,19 +139,20 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
   const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
 });
 
-test('a long gap needs two jumps at both introduction and top speed, in all lanes', () => {
-  for (const z of [640, 2500]) for (const lane of [0, 1, 2]) {
+test('a long gap needs two jumps at both introduction and top speed, with or without slow time', () => {
+  for (const z of [640, 2500]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
     const half = obstacleHalfDepth('long-gap', z), edge = z - half;
     const attempt = (double) => {
       const w = place('long-gap', { z, span: 3 });
       w.endless = true;
+      w.slow = slow;
       w.lane = w.position = lane;
       w.distance = edge;
-      w.distance -= w.speed * .13;
+      w.distance -= w.speed * .13 / w.timeScale;
       w.nextRow = w.nextTurn = Infinity;
-      w.action('jump'); run(w, .34);
+      w.action('jump'); run(w, .34 / w.timeScale);
       if (double) w.action('jump');
-      run(w, .81);
+      run(w, .81 / w.timeScale);
       return w;
     };
     const single = attempt(false);
@@ -202,6 +203,34 @@ test('boost is faster, passes hazards, takes corners itself and expires', () => 
   w.items = []; run(w, 4); assert.equal(w.boost, 0);
 });
 
+test('hourglass slows running for five gameplay seconds and pauses with the game', () => {
+  const w = place('slow', { z: .7 });
+  run(w, .1);
+  assert.equal(w.lastPower, 'slow'); assert.equal(w.timeScale, .7);
+  assert.ok(w.slow > 4.9 && w.speed < 10);
+  w.pause(); const held = w.slow; run(w, 2); assert.equal(w.slow, held);
+  w.resume(); run(w, 5);
+  assert.equal(w.slow, 0); assert.equal(w.timeScale, 1);
+});
+
+test('double score doubles running and coin points while leaving the wallet amount unchanged', () => {
+  const withBonus = place('double', { z: .7 });
+  const normal = place('coin'); normal.items = [];
+  for (const w of [withBonus, normal]) {
+    w.nextRow = w.nextTurn = Infinity;
+    w.items.push({ id: 2, kind: 'coin', tier: 'gold', lane: 1, z: 4, done: false });
+    run(w, .6);
+  }
+  assert.equal(withBonus.lastPower, 'double');
+  assert.equal(withBonus.score, normal.score * 2);
+  assert.equal(withBonus.gold, 1); assert.equal(withBonus.coins, 1);
+  run(withBonus, 8); run(normal, 8);
+  assert.equal(withBonus.double, 0);
+  const difference = withBonus.score - normal.score;
+  run(withBonus, 1); run(normal, 1);
+  assert.equal(withBonus.score - normal.score, difference);
+});
+
 test('coin streak multiplies coin score and resets after four seconds', () => {
   const w = place('coin'); w.items = Array.from({ length: 10 }, (_, id) => ({ id, z: 1, lane: 1, kind: 'coin', done: false })); run(w, .2);
   assert.equal(w.coins, 10); assert.equal(w.multiplier, 2); assert.equal(w.coinScore, 550); run(w, 4.1); assert.equal(w.multiplier, 1);
@@ -242,8 +271,11 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
   let sawJoinedLogs = false;
   for (let seed = 1; seed <= 40; seed++) {
     const w = new RunnerWorld(seed, 'endless', seed % 3); w.start(); let full = 0, long = 0; const seen = new Set();
+    const earlyPickups = new Set();
     for (let tick = 0; tick < 120 * 150 && w.phase === 'running' && w.distance < 3000; tick++) {
-      for (const i of w.items) if (isRunObstacle(i.kind)) {
+      for (const i of w.items) {
+        if (i.z < 1000 && (i.kind === 'slow' || i.kind === 'double')) earlyPickups.add(i.kind);
+        if (!isRunObstacle(i.kind)) continue;
         for (const t of w.turns) assert.ok(i.z < t.z - 45 || i.z > t.z + 25, `seed ${seed}: obstacle ${i.z} near corner ${t.z}`);
         if (i.span === 2 && i.kind === 'block') sawJoinedLogs = true;
         if (!seen.has(i.id)) {
@@ -257,6 +289,7 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
     }
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
     assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
+    assert.equal(earlyPickups.size, 2, `seed ${seed}: both new pickups appear before 1000m`);
   }
   assert.ok(sawJoinedLogs);
 });

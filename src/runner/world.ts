@@ -9,7 +9,9 @@ export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost
 export type RunMode = "challenge" | "endless";
 export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap";
 export type CoinTier = "silver" | "gold" | "diamond";
-export type RunPowerKind = "magnet" | "shield" | "boost";
+export const RUN_POWERS = ["shield", "magnet", "slow", "double", "boost"] as const;
+export type RunPowerKind = typeof RUN_POWERS[number];
+export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shield: 20, boost: 5, slow: 5, double: 8 };
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
@@ -18,9 +20,8 @@ export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean }
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
 const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap"];
-const POWERS: readonly string[] = ["magnet", "shield", "boost"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
-export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => POWERS.includes(kind);
+export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => (RUN_POWERS as readonly string[]).includes(kind);
 
 export const RUN_SCENES = [
   { id: "aqueduct", name: "峡谷水渠", image: "/assets/runner/aqueduct-scene-v1.png", night: "/assets/runner/aqueduct-night-v1.png" },
@@ -106,6 +107,7 @@ export class RunnerWorld {
   fallObstacle?: RunItem;
   fallVelocity = 0;
   coinScore = 0;
+  private bonusDistanceScore = 0;
   streak = 0;
   /** Seconds of jump left (kept for animation); 0 when grounded. */
   jump = 0;
@@ -114,6 +116,8 @@ export class RunnerWorld {
   magnet = 0;
   shield = 0;
   boost = 0;
+  slow = 0;
+  double = 0;
   /** Seconds the chaser stays close after a stumble. */
   danger = 0;
   stumble = 0;
@@ -157,14 +161,16 @@ export class RunnerWorld {
     this.populate();
   }
 
-  get speed() {
+  private get courseSpeed() {
     return baseSpeedAt(this.distance) * (this.boost > 0 ? 1.5 : this.stumble > 0 ? .7 : 1);
   }
+  get timeScale() { return this.slow > 0 ? .7 : 1; }
+  get speed() { return this.courseSpeed * this.timeScale; }
   get trapFall() { return !!this.fallObstacle; }
   get jumpHeight() { return this.altitude; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
-  get score() { return Math.floor(this.distance) * 10 + this.coinScore; }
+  get score() { return Math.floor(this.distance) * 10 + this.coinScore + this.bonusDistanceScore; }
   get sceneIndex() { return sceneAt(this.distance, this.startScene); }
   get weather() { return weatherAt(this.weatherSeed, this.distance); }
   get night() { return nightAt(this.distance); }
@@ -225,11 +231,19 @@ export class RunnerWorld {
     return (v + Math.sqrt(v * v + 2 * GRAVITY * this.altitude)) / GRAVITY;
   }
 
-  private step(dt: number) {
+  private step(realDt: number) {
+    // Scale travel and flight together so the hourglass preserves jump distances.
+    const dt = realDt * this.timeScale;
+    const speed = this.courseSpeed;
+    const previousMetre = Math.floor(this.distance);
     this.elapsed += dt;
-    this.distance += this.speed * dt;
-    this.gait += dt * Math.min(3.6, 1.8 + this.speed / 20);
-    this.position += (this.lane - this.position) * Math.min(1, dt * LANE_RATE);
+    this.distance += speed * dt;
+    if (this.double > 0) {
+      const scoredMetre = Math.floor(this.endless ? this.distance : Math.min(this.distance, CHALLENGE_DISTANCE));
+      this.bonusDistanceScore += (scoredMetre - previousMetre) * 10;
+    }
+    this.gait += dt * Math.min(3.6, 1.8 + speed / 20);
+    this.position += (this.lane - this.position) * Math.min(1, realDt * LANE_RATE);
     if (Math.abs(this.lane - this.position) < .002) this.position = this.lane;
 
     let landingVelocity = 0;
@@ -243,7 +257,8 @@ export class RunnerWorld {
         if (this.jumpBuffer > 0) { this.jumpBuffer = 0; this.action("jump"); }
       }
     }
-    for (const key of ["slide", "magnet", "shield", "boost", "danger", "stumble", "grace", "streakTimer", "jumpBuffer"] as const) this[key] = Math.max(0, this[key] - dt);
+    for (const key of ["slide", "danger", "stumble", "grace", "streakTimer", "jumpBuffer"] as const) this[key] = Math.max(0, this[key] - dt);
+    for (const power of RUN_POWERS) this[power] = Math.max(0, this[power] - realDt);
     if (this.streakTimer === 0) this.streak = 0;
 
     const turn = this.approachingTurn;
@@ -279,13 +294,13 @@ export class RunnerWorld {
     }
     const tier = item.tier ?? "silver";
     item.done = true; this.coins++; this[tier]++; this.streak++; this.streakTimer = 4;
-    this.coinScore += (tier === "diamond" ? 1000 : tier === "gold" ? 150 : 50) * this.multiplier;
+    this.coinScore += (tier === "diamond" ? 1000 : tier === "gold" ? 150 : 50) * this.multiplier * (this.double > 0 ? 2 : 1);
   }
 
   private touchPower(item: RunItem, kind: RunPowerKind) {
     if (Math.abs(item.z - this.distance) > .9 || Math.abs(item.lane - this.position) > .55) return;
     item.done = true; this.powerPicked++; this.lastPower = kind;
-    this[kind] = kind === "shield" ? 20 : kind === "magnet" ? 10 : 5;
+    this[kind] = RUN_POWER_SECONDS[kind];
     if (kind === "boost") { this.danger = 0; this.stumble = 0; }
   }
 
@@ -385,7 +400,7 @@ export class RunnerWorld {
     else if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
     else for (let i = 0; i < 5; i++) this.addCoin(z - 10 + i * 2.6, free);
 
-    if (pattern > 3 && pattern % 6 === 0) this.add(z + (longGap ? longGapDepth + 4 : 9), free, (["shield", "magnet", "boost"] as const)[this.powerIndex++ % 3]);
+    if (pattern > 3 && pattern % 5 === 0) this.add(z + (longGap ? longGapDepth + 4 : 9), free, RUN_POWERS[this.powerIndex++ % RUN_POWERS.length]);
     return longGap;
   }
 }

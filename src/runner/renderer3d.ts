@@ -22,7 +22,7 @@ import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { coversLane, isFallObstacle, isRunObstacle, LANE_WIDTH, obstacleHalfDepth, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
+import { coversLane, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -42,13 +42,29 @@ const LAUGH_SIZE = 3.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
 const DOG_FEET = .39, FROG_FEET = .48, LAUGH_FEET = .43;
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
-const FLAME_HEIGHTS = [1.38, 1.84, 1.52, 1.73, 1.44, 1.88, 1.56];
-const POWER_COLORS: Record<RunPowerKind, [string, string]> = { magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"] };
+const FLAMES = [
+  [-1.86, -.11, 2.15, 1.14], [-1.24, .24, 2.62, 1.2], [-.62, -.15, 2.31, 1.22], [0, .3, 2.79, 1.13],
+  [.62, -.12, 2.42, 1.22], [1.24, .12, 2.68, 1.19], [1.86, -.06, 2.18, 1.14],
+  [-1.35, -.44, 1.45, 1.14], [-.06, -.48, 1.68, 1.35], [1.22, -.45, 1.52, 1.22],
+] as const;
+const POWER_COLORS: Record<RunPowerKind, [string, string]> = {
+  magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"],
+  slow: ["#ba91ee", "#ecd6ff"], double: ["#e8a344", "#ffe8ab"],
+};
+const POWER_ART = {
+  magnet: 0, shield: 1, boost: 2,
+  slow: "/assets/runner/pickup-hourglass-v1.webp", double: "/assets/runner/pickup-double-score-v1.webp",
+} satisfies Record<RunPowerKind, number | string>;
+const GROVES = [
+  { ground: -7, spacing: 5, trees: [{ name: "river-cypress", height: 13.2 }, { name: "river-willow", height: 12 }] },
+  { ground: -.35, spacing: 3, trees: [{ name: "temple-banyan", height: 7.8 }, { name: "temple-maple", height: 6.9 }] },
+  { ground: -.35, spacing: 6, trees: [{ name: "mine-dead-birch", height: 2.9 }, { name: "mine-old-root", height: 1.65 }] },
+] as const;
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; decor: Decor[]; theme: number; holes: (RunItem | undefined)[]; pierCut: boolean };
+type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | undefined)[]; pierCut: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 
@@ -148,9 +164,9 @@ export class RunnerRenderer3D {
     this.silverSparks = this.particles("silver-sparks", 240, "#ffffff", "#a8cfdf");
     this.diamondSparks = this.particles("diamond-sparks", 240, "#eaffff", "#6bd6ff");
     this.magic = this.particles("power-sparks", 300, "#ffffff", "#ffffff");
-    this.fireEmbers = this.particles("fire-embers", 160, "#fff0a0", "#ff4c16");
+    this.fireEmbers = this.particles("fire-embers", 220, "#fff0a0", "#ff4c16");
     this.fireEmbers.gravity.set(0, 2.4, 0); this.fireEmbers.minSize = .035; this.fireEmbers.maxSize = .14;
-    this.fireEmbers.minLifeTime = .25; this.fireEmbers.maxLifeTime = .85; this.fireEmbers.minEmitPower = .4; this.fireEmbers.maxEmitPower = 1.8;
+    this.fireEmbers.minLifeTime = .25; this.fireEmbers.maxLifeTime = 1; this.fireEmbers.minEmitPower = .4; this.fireEmbers.maxEmitPower = 2.3;
     this.fireSmoke = this.particles("fire-smoke", 90, "#8e8984", "#514d49");
     this.fireSmoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     this.fireSmoke.color1 = new Color4(.28, .25, .23, .32); this.fireSmoke.color2 = new Color4(.39, .35, .32, .14);
@@ -243,7 +259,6 @@ export class RunnerRenderer3D {
     this.mat("metal", "#9a9a9a", rust);
     this.mat("rail", "#b9b4aa", rust);
     this.mat("pit", "#05080a").specularColor.setAll(0);
-    this.mat("foliage", "#5f7d45", rock, 2).specularColor.setAll(0);
     this.mat("foliage-dark", "#4a6538", rock, 2).specularColor.setAll(0);
     this.glow("gold", "#f2c443", "#7a560a").specularColor.set(.9, .8, .4);
     this.glow("lamp", "#ffe2a0", "#ffc25a");
@@ -252,6 +267,16 @@ export class RunnerRenderer3D {
     for (const [kind, [color]] of Object.entries(POWER_COLORS)) {
       const ring = this.glow(`ring-${kind}`, color, color); ring.alpha = .8; ring.disableLighting = true;
       const beam = this.glow(`beam-${kind}`, color, color); beam.alpha = .18; beam.disableLighting = true; beam.backFaceCulling = false; beam.alphaMode = Engine.ALPHA_ADD;
+    }
+    for (const grove of GROVES) for (const { name } of grove.trees) {
+      const tree = this.mat(`tree-${name}`, "#ffffff", `/assets/runner/trees/${name}-v1.webp`);
+      tree.diffuseTexture!.hasAlpha = true;
+      tree.useAlphaFromDiffuseTexture = true;
+      tree.disableLighting = true;
+      tree.emissiveColor.setAll(1);
+      tree.backFaceCulling = false;
+      tree.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST;
+      tree.alphaCutOff = .29;
     }
     const water = this.mat("water", "#3f6f73", stone, 52);
     water.specularColor.set(.5, .6, .6); water.fogEnabled = false;
@@ -395,7 +420,6 @@ export class RunnerRenderer3D {
       this.box("lintel", r, [W + 3.4, 1, 1.3], [0, 6.6, 0], "moss-stone");
       for (const s of [-1, 1]) { const vine = this.cylinder("vine", r, { diameter: .5, height: 2.4, tessellation: 6 }, [s * (ROAD_HALF + .3), 5.2, .5], "foliage"); vine.scaling.x = .6; }
     });
-    make("temple-tree", r => { for (const s of [-1, 1]) { this.cylinder("trunk", r, { diameter: .7, height: 5 }, [s * (ROAD_HALF + 4.5), 2.2, 0], "wood"); const crown = MeshBuilder.CreateSphere("crown", { diameter: 4.2, segments: 6 }, this.scene); crown.parent = r; crown.position.set(s * (ROAD_HALF + 4.5), 5.6, 0); crown.material = this.mats.foliage; } });
     make("mine-wall", r => {
       for (const s of [-1, 1]) this.box("rock-wall", r, [1.6, 8, D], [s * (ROAD_HALF + 1.2), 3.6, 0], "rock");
       this.box("ceiling", r, [W + 4, 1, D], [0, 7.4, 0], "rock");
@@ -504,11 +528,11 @@ export class RunnerRenderer3D {
     flameMaterial.transparencyMode = StandardMaterial.MATERIAL_ALPHATESTANDBLEND;
     flameMaterial.alphaCutOff = .08;
     make("fire-double", r => {
-      for (let i = 0; i < FLAME_HEIGHTS.length; i++) {
+      for (const [i, [x, z, height, width]] of FLAMES.entries()) {
         const flame = flameMesh(this.scene, i % 2 === 0);
         flame.parent = r;
-        flame.position.set((i - 3) * .62, -.015, Math.sin(i * 2.1) * .31);
-        flame.scaling.set(1.16, FLAME_HEIGHTS[i], .94);
+        flame.position.set(x, -.015, z);
+        flame.scaling.set(width, height, .94);
         flame.rotation.y = i * .64;
         flame.material = flameMaterial;
       }
@@ -526,9 +550,13 @@ export class RunnerRenderer3D {
       gem.parent = r; gem.material = this.coinMats.diamond;
     });
     const powers = this.texture("/assets/runner/powerups-v1.png");
-    (["magnet", "shield", "boost"] as const).forEach((kind, index) => {
-      const texture = powers.clone(); texture.hasAlpha = true;
-      texture.uScale = texture.vScale = .5; texture.uOffset = (index % 2) * .5; texture.vOffset = index < 2 ? .5 : 0;
+    for (const kind of RUN_POWERS) {
+      const art = POWER_ART[kind];
+      const texture = typeof art === "number" ? powers.clone() : this.texture(art);
+      texture.hasAlpha = true;
+      if (typeof art === "number") {
+        texture.uScale = texture.vScale = .5; texture.uOffset = (art % 2) * .5; texture.vOffset = art < 2 ? .5 : 0;
+      }
       const m = new StandardMaterial(`runner-power-${kind}`, this.scene);
       m.diffuseTexture = texture; m.useAlphaFromDiffuseTexture = true; m.disableLighting = true; m.backFaceCulling = false;
       m.emissiveColor = Color3.White(); m.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; m.alphaCutOff = .4;
@@ -539,7 +567,7 @@ export class RunnerRenderer3D {
         // A light pillar so power-ups read from far away.
         this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
       });
-    });
+    }
   }
 
   private instance(name: string, parent: TransformNode) {
@@ -549,8 +577,14 @@ export class RunnerRenderer3D {
   }
 
   private buildSlots() {
+    const treePlane = MeshBuilder.CreatePlane("runner-tree-source", { size: 1 }, this.scene);
+    treePlane.setEnabled(false);
+    treePlane.isPickable = false;
+    treePlane.billboardMode = Mesh.BILLBOARDMODE_Y;
     for (let i = 0; i < SLOTS; i++) {
       const root = new TransformNode(`road-slot-${i}`, this.scene);
+      const trees = [treePlane.clone(`runner-tree-${i}-left`, root), treePlane.clone(`runner-tree-${i}-right`, root)];
+      for (const tree of trees) tree.setEnabled(false);
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
       const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1) decor.push({ node, every, offset }); return node; };
       ["aqueduct", "temple", "mine"].forEach((theme, t) => {
@@ -561,11 +595,34 @@ export class RunnerRenderer3D {
           return { main };
         }));
         if (t === 0) { add("aqueduct-wall", group); add("aqueduct-pier", group, 5, 0); add("lamp-post", group, 5, 3); }
-        if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("temple-tree", group, 3, 1); add("lamp-post", group, 5, 3); }
+        if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("lamp-post", group, 5, 3); }
         if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); }
         group.setEnabled(false);
       });
-      this.slots.push({ n: -1, root, themes, lanes, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false });
+      this.slots.push({ n: -1, root, themes, lanes, trees, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false });
+    }
+  }
+
+  private placeTrees(slot: Slot, nearTurn: boolean) {
+    const { n, theme } = slot;
+    const grove = GROVES[theme];
+    for (const [i, tree] of slot.trees.entries()) {
+      const offset = i === 0 ? 0 : theme === 2 ? 1 : 2;
+      const visible = n > 0 && !nearTurn && (n + offset) % grove.spacing === 0;
+      tree.setEnabled(visible);
+      if (!visible) continue;
+      const variant = (Math.floor((n + offset) / grove.spacing) + i) % grove.trees.length;
+      const style = grove.trees[variant];
+      const variation = (Math.imul(n + 13 * i, 2654435761) >>> 0) / 0x100000000;
+      const height = style.height * (.88 + variation * .24);
+      const material = this.mats[`tree-${style.name}`];
+      const size = material.diffuseTexture!.getBaseSize();
+      const width = height * (size.height > 0 ? size.width / size.height : .7);
+      const side = i === 0 ? -1 : 1;
+      const setback = theme === 2 ? 3.96 : ROAD_HALF + width / 2 + 1.2 + variation * 3.2;
+      tree.material = material;
+      tree.scaling.set(side * width, height, 1);
+      tree.position.set(side * setback, grove.ground + height * .486, (variation - .5) * 1.8);
     }
   }
 
@@ -736,6 +793,10 @@ export class RunnerRenderer3D {
     const tint = night ? .8 : theme === 2 ? .85 : weather === "sunny" ? 1 : .9;
     this.dog.tint(tint);
     this.chaserSprite.tint(tint);
+    for (const [index, grove] of GROVES.entries()) {
+      const shade = index === 2 ? .62 : night ? .62 : weather === "rain" ? .84 : .97;
+      for (const { name } of grove.trees) this.mats[`tree-${name}`].emissiveColor.setAll(shade);
+    }
     this.groundPlane.material = look.ground;
     const skies = this.skies[theme];
     if (skies) this.skyMat.diffuseTexture = night ? skies.night : skies.day;
@@ -778,6 +839,7 @@ export class RunnerRenderer3D {
         slot.root.position.set(p.x, 0, p.z); slot.root.rotation.y = p.heading;
         const theme = sceneAt(at, world.startScene);
         if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
+        this.placeTrees(slot, world.turns.some(turn => Math.abs(turn.z - at) < 18));
       }
       const half = TILE_DEPTH / 2;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
@@ -868,13 +930,14 @@ export class RunnerRenderer3D {
         prop.position.y = item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
       }
-      else if (item.kind === "magnet" || item.kind === "shield" || item.kind === "boost") { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
+      else if (isRunPower(item.kind)) { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
         for (const [index, mesh] of prop.getChildMeshes().entries()) {
           const beat = item.id * .29 + index * 2.3;
-          mesh.scaling.x = 1.16 + Math.sin(phase * 11 + beat) * .12;
-          mesh.scaling.y = FLAME_HEIGHTS[index] * (1 + Math.sin(phase * 9 + beat) * .12 + Math.sin(phase * 17 - beat) * .055);
+          const [, , height, width] = FLAMES[index];
+          mesh.scaling.x = width * (1 + Math.sin(phase * 11 + beat) * .1);
+          mesh.scaling.y = height * (1 + Math.sin(phase * 9 + beat) * .12 + Math.sin(phase * 17 - beat) * .055);
           mesh.rotation.z = Math.sin(phase * 7 + beat) * .09;
         }
       }
@@ -896,14 +959,18 @@ export class RunnerRenderer3D {
     if (world.phase !== "running") return;
     const fire = world.items.find(item => item.kind === "fire" && item.z > world.distance - 2 && item.z < world.distance + 22);
     if (!fire) { this.fireParticleTime = 0; return; }
-    this.fireParticleTime += dt * 60;
+    this.fireParticleTime += dt * 60 * world.timeScale;
     const ticks = Math.floor(this.fireParticleTime);
     if (!ticks) return;
     this.fireParticleTime -= ticks;
     const at = this.place(fire.z, itemOffset(fire));
-    (this.fireEmbers.emitter as Vector3).set(at.x, .35, at.z);
-    (this.fireSmoke.emitter as Vector3).set(at.x, 1.1, at.z);
-    this.fireEmbers.manualEmitCount += ticks * (this.settings.reducedMotion ? 1 : 3);
+    const across = Math.abs(Math.cos(at.heading)), forward = Math.abs(Math.sin(at.heading));
+    const spreadX = across * 1.9 + forward * .35, spreadZ = forward * 1.9 + across * .35;
+    this.fireEmbers.minEmitBox.set(-spreadX, 0, -spreadZ);
+    this.fireEmbers.maxEmitBox.set(spreadX, .35, spreadZ);
+    (this.fireEmbers.emitter as Vector3).set(at.x, .52, at.z);
+    (this.fireSmoke.emitter as Vector3).set(at.x, 1.55, at.z);
+    this.fireEmbers.manualEmitCount += ticks * (this.settings.reducedMotion ? 1 : 5);
     if (!this.settings.reducedMotion) this.fireSmoke.manualEmitCount += ticks;
   }
 
