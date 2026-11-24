@@ -24,7 +24,7 @@ import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { coversLane, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
+import { coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -44,6 +44,12 @@ const FROG_SIZE = 2.4;
 const DOG_FEET = .39, FROG_FEET = .48;
 const FISSURE_HALF = obstacleHalfDepth("gap", 0);
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
+const GROUND_SIZE = 900, GROUND_SNAP = 70;
+// Broken-bridge side of a fork, in metres along that side: the stub road ends where the deck starts,
+// the deck snaps off at the break, and the far end hangs on the other bank.
+const FORK_STUB_START = (ROAD_HALF * 2 + 2) / 2;
+const FORK_GAP_END = 11.5;
+const FORK_CHASM = { start: .25, end: FORK_GAP_END + .75, half: 4.2 };
 const FLAMES = [
   [-1.86, -.11, 2.15, 1.14], [-1.24, .24, 2.62, 1.2], [-.62, -.15, 2.31, 1.22], [0, .3, 2.79, 1.13],
   [.62, -.12, 2.42, 1.22], [1.24, .12, 2.68, 1.19], [1.86, -.06, 2.18, 1.14],
@@ -70,7 +76,7 @@ const GROVES = [
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean };
+type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 
@@ -125,7 +131,7 @@ export class RunnerRenderer3D {
   private fireParticleTime = 0;
   private coinMats: Record<"silver" | "gold" | "diamond", StandardMaterial>;
   private dogLook = "original";
-  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0 };
+  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1 };
   private flash = { shield: 0, power: 0 };
   private turnBlend = { x: 0, z: 0 };
   private camYaw = 0;
@@ -150,7 +156,7 @@ export class RunnerRenderer3D {
     this.sun = new DirectionalLight("runner-sun", new Vector3(-.4, -.85, .35), this.scene);
 
     this.buildMaterials();
-    this.groundPlane = MeshBuilder.CreateGround("runner-ground", { width: 900, height: 900 }, this.scene);
+    this.groundPlane = MeshBuilder.CreateGround("runner-ground", { width: GROUND_SIZE, height: GROUND_SIZE }, this.scene);
     this.groundPlane.isPickable = false;
     this.skyMat = new StandardMaterial("runner-sky-dome", this.scene);
     this.skyMat.disableLighting = true; this.skyMat.emissiveColor = Color3.White(); this.skyMat.fogEnabled = false; this.skyMat.backFaceCulling = false; this.skyMat.useAlphaFromDiffuseTexture = true;
@@ -208,7 +214,8 @@ export class RunnerRenderer3D {
     let texture = this.textures.get(key);
     if (texture) return texture;
     texture = new Texture(path, this.scene, false, true, Texture.TRILINEAR_SAMPLINGMODE);
-    texture.anisotropicFilteringLevel = 4; texture.uScale = texture.vScale = repeat;
+    // Roads and walls are seen at grazing angles; stronger anisotropy keeps them sharp into the distance.
+    texture.anisotropicFilteringLevel = this.settings.quality === "high" ? 16 : 8; texture.uScale = texture.vScale = repeat;
     this.textures.set(key, texture);
     return texture;
   }
@@ -237,6 +244,24 @@ export class RunnerRenderer3D {
     m.emissiveColor = additive ? Color3.White() : Color3.Black(); m.zOffset = -2; m.backFaceCulling = false;
     if (additive) m.alphaMode = Engine.ALPHA_ADD;
     this.mats[name] = m;
+    return m;
+  }
+  /** Painted warning board at the broken-bridge side of a fork. */
+  private signMaterial() {
+    const texture = new DynamicTexture("runner-fork-sign-tex", { width: 512, height: 256 }, this.scene, true);
+    const ctx = texture.getContext() as CanvasRenderingContext2D;
+    ctx.fillStyle = "#f3e2b4"; ctx.fillRect(0, 0, 512, 256);
+    ctx.fillStyle = "#a3231a"; ctx.fillRect(14, 14, 484, 228);
+    ctx.strokeStyle = "#f7e9c2"; ctx.lineWidth = 8; ctx.strokeRect(30, 30, 452, 196);
+    ctx.fillStyle = "#fff6dc"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = "900 112px 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif";
+    ctx.fillText("断桥", 256, 112);
+    ctx.font = "700 46px 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif";
+    ctx.fillText("危险 · 此路不通", 256, 196);
+    texture.update();
+    const m = new StandardMaterial("runner-fork-sign", this.scene);
+    m.diffuseTexture = texture; m.disableLighting = true; m.emissiveColor = Color3.White();
+    this.mats["fork-sign"] = m;
     return m;
   }
   private dotTexture() {
@@ -305,6 +330,8 @@ export class RunnerRenderer3D {
     this.glow("gold", "#f2c443", "#7a560a").specularColor.set(.9, .8, .4);
     this.glow("lamp", "#ffe2a0", "#ffc25a");
     this.glow("warning", "#f2c443", "#3a2a00");
+    this.glow("fork-flag", "#d8342a", "#5a0d08").backFaceCulling = false;
+    this.signMaterial();
     this.radialMaterial("lamp-halo", "rgba(255,200,110,.9)", true);
     for (const [kind, [color]] of Object.entries(POWER_COLORS)) {
       const ring = this.glow(`ring-${kind}`, color, color); ring.alpha = .8; ring.disableLighting = true;
@@ -321,8 +348,12 @@ export class RunnerRenderer3D {
       tree.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST;
       tree.alphaCutOff = .29;
     }
-    const water = this.mat("water", "#3f6f73", stone, 52);
-    water.specularColor.set(.5, .6, .6); water.fogEnabled = false;
+    // The ground plane re-centres on a 70 m grid, so each ground texture repeats a whole number of
+    // times per 70 m: otherwise the pattern visibly jumps whenever the plane moves.
+    const groundRepeat = (tilesPer70m: number) => GROUND_SIZE / (GROUND_SNAP / tilesPer70m);
+    const water = this.mat("water", "#9cbdb8", "/assets/runner/pit-water-v1.png", groundRepeat(3));
+    water.emissiveTexture = water.diffuseTexture; water.emissiveColor.set(.42, .48, .48);
+    water.specularColor.set(.55, .62, .62); water.specularPower = 48; water.fogEnabled = false;
     for (const [name, repeat] of [["pit-water", 1], ["pit-water-long", 2]] as const) {
       const pool = this.mat(name, "#91aba8", "/assets/runner/pit-water-v1.png", repeat);
       pool.emissiveTexture = pool.diffuseTexture;
@@ -330,8 +361,8 @@ export class RunnerRenderer3D {
       pool.specularColor.set(.35, .42, .43);
       if (name === "pit-water-long") (pool.diffuseTexture as Texture).vScale = 6;
     }
-    const grass = this.mat("grass", "#6f8251", rock, 75); grass.specularColor.setAll(0);
-    const cave = this.mat("cave-floor", "#2c241d", rock, 75); cave.specularColor.setAll(0);
+    const grass = this.mat("grass", "#6f8251", rock, groundRepeat(6)); grass.specularColor.setAll(0);
+    const cave = this.mat("cave-floor", "#2c241d", rock, groundRepeat(6)); cave.specularColor.setAll(0);
     new GroundOpenings(grass, this.groundCuts);
     new GroundOpenings(cave, this.groundCuts);
     this.themes = [
@@ -472,7 +503,7 @@ export class RunnerRenderer3D {
     make("temple-arch", r => {
       for (const s of [-1, 1]) { this.box("column", r, [1.1, 6.4, 1.1], [s * (ROAD_HALF + .9), 3, 0], "moss-stone"); this.box("plinth", r, [1.5, .6, 1.5], [s * (ROAD_HALF + .9), .1, 0], "stone-dark"); }
       this.box("lintel", r, [W + 3.4, 1, 1.3], [0, 6.6, 0], "moss-stone");
-      for (const s of [-1, 1]) { const vine = this.cylinder("vine", r, { diameter: .5, height: 2.4, tessellation: 6 }, [s * (ROAD_HALF + .3), 5.2, .5], "foliage"); vine.scaling.x = .6; }
+      for (const s of [-1, 1]) { const vine = this.cylinder("vine", r, { diameter: .5, height: 2.4, tessellation: 6 }, [s * (ROAD_HALF + .3), 5.2, .5], "foliage-dark"); vine.scaling.x = .6; }
     });
     make("mine-wall", r => {
       for (const s of [-1, 1]) this.box("rock-wall", r, [1.6, 8, D], [s * (ROAD_HALF + 1.2), 3.6, 0], "rock");
@@ -560,6 +591,72 @@ export class RunnerRenderer3D {
       portrait.position.set(0, 1.6, -.505);
       portrait.material = this.mats["corner-frog"];
       portrait.isPickable = false;
+    });
+    // Fork, broken side. Local +Z runs away from the corner; y = 0 is the road surface.
+    make("fork-stub", r => {
+      const length = FORK_BRIDGE_START - FORK_STUB_START;
+      this.box("fork-stub-base", r, [W, 24, length], [0, -12.5, length / 2], "stone-dark");
+      for (const s of [-1, 1]) this.box("fork-stub-curb", r, [.4, .3, length], [s * (ROAD_HALF + .05), .1, length / 2], "stone");
+    });
+    make("fork-sign", r => {
+      this.box("fork-sign-post", r, [.18, 2.3, .18], [0, 1.1, .08], "wood");
+      this.box("fork-sign-back", r, [1.86, .98, .08], [0, 1.78, .06], "wood");
+      const board = MeshBuilder.CreatePlane("fork-sign-board", { width: 1.72, height: .86 }, this.scene);
+      board.parent = r; board.position.set(0, 1.78, 0); board.material = this.mats["fork-sign"]; board.isPickable = false;
+    });
+    make("fork-bridge", r => {
+      const deck = FORK_BRIDGE_BREAK - FORK_BRIDGE_START, half = 1.85;
+      const rope = (x: number, a: [number, number], b: [number, number], diameter = .065) => {
+        const dy = b[0] - a[0], dz = b[1] - a[1];
+        const part = this.cylinder("fork-rope", r, { height: Math.hypot(dy, dz), diameter, tessellation: 8 }, [x, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2], "zipline");
+        part.rotation.x = Math.atan2(dz, dy);
+      };
+      // Stone abutments drop out of sight below each bank.
+      this.box("fork-abutment", r, [half * 2 + 1.3, 24, 1.4], [0, -12.25, -.7], "stone-dark");
+      this.box("fork-abutment", r, [half * 2 + 1.3, 24, 1.6], [0, -12.25, FORK_GAP_END + 1.3], "stone-dark");
+      // Near side: two log stringers carry the planks and snap at the break.
+      for (const s of [-1, 1]) {
+        const beam = this.cylinder("fork-stringer", r, { diameter: .3, height: deck + .35, tessellation: 10 }, [s * 1.15, -.27, (deck + .35) / 2 - .1], "log-bark");
+        beam.rotation.x = Math.PI / 2 + s * .05;
+      }
+      const planks: [width: number, x: number, z: number, drop: number, pitch: number, roll: number][] = [
+        [3.7, 0, .25, 0, 0, 0], [3.7, .02, .8, 0, 0, .01], [3.66, -.03, 1.35, 0, 0, 0],
+        [3.1, .3, 1.9, -.02, .04, .03], [2.2, -.5, 2.45, -.08, .13, -.04], [1.3, .7, 3.02, -.24, .38, -.2],
+      ];
+      for (const [width, x, z, drop, pitch, roll] of planks) {
+        const plank = this.box("fork-plank", r, [width, .12, .46], [x, -.06 + drop, z], "wood");
+        plank.rotation.set(pitch, 0, roll);
+      }
+      for (const s of [-1, 1]) {
+        this.box("fork-post", r, [.26, 1.55, .26], [s * (half + .15), .55, .05], "wood");
+        const flag = MeshBuilder.CreatePlane("fork-flag", { width: .52, height: .32 }, this.scene);
+        flag.parent = r; flag.position.set(s * (half + .15) + s * .29, 1.13, .05); flag.rotation.set(0, Math.PI / 2, s * .14);
+        flag.material = this.mats["fork-flag"]; flag.isPickable = false;
+        // Hand ropes sag over the near deck, then hang loose from where it broke.
+        rope(s * (half + .15), [1.25, .05], [1.02, 2.6]);
+        rope(s * (half + .1), [1.02, 2.6], [-.95, 3.05]);
+      }
+      // Far side: the rest of the bridge hangs down the far bank.
+      const far = FORK_GAP_END;
+      for (const s of [-1, 1]) {
+        this.box("fork-post", r, [.26, 1.55, .26], [s * (half + .15), .55, far + .7], "wood");
+        rope(s * (half + .15), [1.25, far + .7], [-1.3, far + .12]);
+      }
+      for (const [i, z] of [far + .55, far + 1.1, far + 1.65, far + 2.2].entries()) this.box("fork-plank", r, [3.6 - i * .05, .12, .46], [0, -.06, z], "wood");
+      for (const [i, [x, y, pitch, roll]] of ([[-.35, -.42, 1.36, .06], [.18, -1.12, 1.47, -.09], [-.12, -1.82, 1.52, .12], [.3, -2.5, 1.43, -.05]] as const).entries()) {
+        const plank = this.box("fork-plank", r, [3.2 - i * .45, .12, .46], [x, y, far - .06 - i * .04], "wood");
+        plank.position.z = far + .4 - i * .03;
+        plank.rotation.set(pitch, 0, roll);
+      }
+      // Ravine under the gap, for banks that sit on solid ground. Placed in ground heights after instancing.
+      const chasm = new TransformNode("fork-chasm", this.scene); chasm.parent = r;
+      const length = FORK_CHASM.end - FORK_CHASM.start, middle = (FORK_CHASM.start + FORK_CHASM.end) / 2;
+      for (const s of [-1, 1]) {
+        this.box("fork-chasm-side", chasm, [.5, 4.52, length + .5], [s * FORK_CHASM.half, -2.57, middle], "obstacle-rock");
+        this.box("fork-chasm-end", chasm, [FORK_CHASM.half * 2 + .5, 4.52, .5], [0, -2.57, s > 0 ? FORK_CHASM.end : FORK_CHASM.start], "obstacle-rock");
+      }
+      const water = MeshBuilder.CreateGround("fork-chasm-water", { width: FORK_CHASM.half * 2, height: length }, this.scene);
+      water.parent = chasm; water.position.set(0, BRIDGE_WATER_Y, middle); water.material = this.mats["pit-water-long"]; water.isPickable = false;
     });
 
     // Obstacles. "-double" covers two lanes and "-wide" spans the road.
@@ -721,7 +818,7 @@ export class RunnerRenderer3D {
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
       const add = (name: string, group: TransformNode, every = 1, offset = 0) => {
         const node = this.instance(name, group);
-        if (every > 1 || name === "aqueduct-wall" || name === "temple-ledge") decor.push({ node, every, offset });
+        if (every > 1 || name === "aqueduct-wall" || name === "temple-ledge" || name === "mine-wall") decor.push({ node, every, offset });
         return node;
       };
       ["aqueduct", "temple", "mine"].forEach((theme, t) => {
@@ -742,7 +839,7 @@ export class RunnerRenderer3D {
         ore.setEnabled(false);
         return ore;
       });
-      this.slots.push({ n: -1, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false });
+      this.slots.push({ n: -1, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false, forkCut: false });
     }
   }
 
@@ -800,6 +897,12 @@ export class RunnerRenderer3D {
   }
   /** Road centre under the dog: straight on into the corner until the turn is actually taken. */
   private dogCentre(world: RunnerWorld): RoutePoint {
+    const wrong = world.wrongTurn;
+    if (wrong) {
+      // The broken side is level with the corner plaza.
+      const point = this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
+      if (point) return { ...point, y: elevationAt(Math.min(world.distance, wrong.z)) };
+    }
     const turn = world.approachingTurn;
     if (turn && !turn.taken && world.distance > turn.z - CORNER_RADIUS) return this.route.straight(world.distance, turn.z) ?? this.route.sample(world.distance);
     return this.route.sample(world.distance);
@@ -832,6 +935,14 @@ export class RunnerRenderer3D {
       if (straight) { const arc = this.route.sample(world.distance); this.turnBlend.x += straight.x - arc.x; this.turnBlend.z += straight.z - arc.z; }
       this.seen.turns = world.turnCount;
     }
+    const wrong = world.wrongTurn;
+    if (wrong && this.seen.wrong !== wrong.z) {
+      // Same blend for a late press toward the broken side of a fork.
+      this.seen.wrong = wrong.z;
+      const straight = world.distance > wrong.z - CORNER_RADIUS ? this.route.straight(world.distance, wrong.z) : undefined;
+      const bend = straight && this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
+      if (straight && bend) { this.turnBlend.x += straight.x - bend.x; this.turnBlend.z += straight.z - bend.z; }
+    }
     const decay = Math.exp(-dt * 9); this.turnBlend.x *= decay; this.turnBlend.z *= decay;
     const centre = this.dogCentre(world);
     centre.x += this.turnBlend.x; centre.z += this.turnBlend.z;
@@ -863,21 +974,25 @@ export class RunnerRenderer3D {
     this.bicycle.setEnabled(bike);
     const rope = world.ride?.kind === "rope" ? world.ride : undefined;
     const release = rope ? ropeReleaseProgress(world.distance, rope) : 0;
-    const land = !this.settings.reducedMotion && !capture ? Math.max(0, 1 - (world.elapsed - world.ropeLandedAt) / .16) : 0;
+    // Squash on touchdown (rope release or any jump), stretch just after take-off.
+    const animate = !this.settings.reducedMotion && !capture;
+    const land = animate ? Math.max(0, 1 - (world.elapsed - world.ropeLandedAt) / .16, 1 - (world.elapsed - world.landedAt) / .14) : 0;
+    const takeoff = animate && world.airborne ? Math.max(0, 1 - (world.elapsed - world.jumpedAt) / .18) : 0;
     const squash = (pose.sheet === "actions" && pose.frame === 3 ? .1 : 0) + land * .08;
     this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
     const motion = !capture && !this.settings.reducedMotion;
     const swing = rope ? -lateral * .11 * (1 - release) + Math.sin(Math.PI * release) * .17 : 0;
-    const lean = motion && (world.ride || bike) ? (world.lane - world.position) * .13 + swing : 0;
+    // Lean into lane changes: a little on foot, more on a ride or the bicycle.
+    const lean = motion ? (world.lane - world.position) * (world.ride || bike ? .13 : .07) + swing : 0;
     this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
-    this.dog.root.scaling.setAll(1);
-    this.dog.root.scaling.y -= land * .10;
+    this.dog.root.scaling.set(1 + land * .06 - takeoff * .05, 1 - land * .10 + takeoff * .09, 1);
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
       const feature = world.fallObstacle.feature;
-      const surface = feature === "rope" ? -7 : feature === "bridge" ? BRIDGE_WATER_Y : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
+      const canal = sceneAt(world.wrongTurn?.z ?? world.fallObstacle.z, world.startScene) === 0;
+      const surface = feature === "rope" ? -7 : feature === "bridge" ? BRIDGE_WATER_Y : feature === "fork" ? (canal ? -7 : BRIDGE_WATER_Y) : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
       const below = surface - player.y - world.jumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
@@ -925,11 +1040,11 @@ export class RunnerRenderer3D {
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
     this.sky.position.set(this.camera.position.x, SKY_HEIGHT / 2 - 12, this.camera.position.z);
-    const gx = Math.round(this.camera.position.x / 70) * 70, gz = Math.round(this.camera.position.z / 70) * 70;
+    const gx = Math.round(this.camera.position.x / GROUND_SNAP) * GROUND_SNAP, gz = Math.round(this.camera.position.z / GROUND_SNAP) * GROUND_SNAP;
     this.groundPlane.position.set(gx, look.groundY, gz);
-    for (const name of ["pit-water", "pit-water-long"]) {
+    for (const [name, speed] of [["pit-water", 1], ["pit-water-long", 1], ["water", .35]] as const) {
       const water = this.mats[name].diffuseTexture as Texture;
-      const drift = this.settings.reducedMotion ? 0 : t;
+      const drift = this.settings.reducedMotion ? 0 : t * speed;
       water.uOffset = drift * .022;
       water.vOffset = drift * .047;
     }
@@ -949,7 +1064,7 @@ export class RunnerRenderer3D {
     this.lastTime = 0;
     this.fireParticleTime = 0;
     this.waterImpact = false;
-    this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount };
+    this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1 };
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -983,6 +1098,7 @@ export class RunnerRenderer3D {
     this.skyMat.emissiveColor.setAll(night ? .8 : weather === "sunny" ? 1 : .78);
     this.sky.setEnabled(theme !== 2);
     this.mats["lamp-halo"].alpha = night || theme === 2 ? .9 : 0;
+    this.mats["fork-sign"].emissiveColor.setAll(night ? .62 : theme === 2 ? .78 : .95);
   }
 
   /** Recycle slots only when the window moves; then fix up gap holes. */
@@ -998,6 +1114,11 @@ export class RunnerRenderer3D {
       const section = sectionFeature(world.distance, world.startScene);
       if (section.kind === "bridge" && section.end >= world.distance - BEHIND && section.start <= world.distance + 145) {
         this.cutGround(this.place((section.start + section.end) / 2), BRIDGE_RAVINE_HALF_WIDTH, (section.end - section.start) / 2);
+      }
+      for (const turn of world.turns) {
+        if (!turn.fork || turn.z < world.distance - 30 || turn.z > world.distance + 170 || sceneAt(turn.z, world.startScene) === 0) continue;
+        const chasm = this.forkChasm(turn);
+        if (chasm) this.cutGround(chasm, FORK_CHASM.half, (FORK_CHASM.end - FORK_CHASM.start) / 2);
       }
       for (const { item, start, end } of openings) {
         if (end < world.distance - BEHIND || start > world.distance + 145) continue;
@@ -1022,7 +1143,7 @@ export class RunnerRenderer3D {
         this.placeTrees(slot, at, world.turns);
         for (const [index, ore] of slot.ores.entries()) {
           const every = index === 0 ? 4 : 5, offset = index === 0 ? 1 : 2;
-          const visible = theme === 2 && n >= 0 && (n + offset) % every === 0;
+          const visible = theme === 2 && n >= 0 && (n + offset) % every === 0 && !this.nearFork(world, at);
           ore.setEnabled(visible);
           if (!visible) continue;
           const variant = (Math.floor((n + offset) / every) + index) % ORES.length;
@@ -1036,11 +1157,13 @@ export class RunnerRenderer3D {
       const crossing = section.kind !== "cart" && section.start < at + half && section.end > at - half ? section : undefined;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
       const pierCut = here.length > 0;
-      if (recycled || pierCut !== slot.pierCut || !!crossing !== slot.crossingGap) {
-        slot.pierCut = pierCut; slot.crossingGap = !!crossing;
+      const forkCut = this.nearFork(world, at);
+      if (recycled || pierCut !== slot.pierCut || !!crossing !== slot.crossingGap || forkCut !== slot.forkCut) {
+        slot.pierCut = pierCut; slot.crossingGap = !!crossing; slot.forkCut = forkCut;
         for (const d of slot.decor) {
-          const underOpening = pierCut && d.node.name === "tpl-aqueduct-pier";
-          d.node.setEnabled(!crossing && !underOpening && ((n % d.every) + d.every) % d.every === d.offset);
+          const pier = d.node.name === "tpl-aqueduct-pier";
+          // A fork opens both sides of the bend, so walls, hedges and lamps there would block the other road.
+          d.node.setEnabled(!crossing && !(pierCut && pier) && !(forkCut && !pier) && ((n % d.every) + d.every) % d.every === d.offset);
         }
       }
       for (let lane = 0; lane < 3; lane++) {
@@ -1072,6 +1195,11 @@ export class RunnerRenderer3D {
     }
   }
 
+  /** Road just before and around a fork, kept open so the broken side can be seen on the way in. */
+  private nearFork(world: RunnerWorld, at: number) {
+    return world.turns.some(turn => turn.fork && at > turn.z - CORNER_RADIUS - 16 && at < turn.z + CORNER_RADIUS + 4);
+  }
+
   private cutGround(point: RoutePoint, halfWidth: number, halfDepth: number) {
     const across = Math.abs(Math.cos(point.heading)), forward = Math.abs(Math.sin(point.heading));
     const x = across * halfWidth + forward * halfDepth, z = forward * halfWidth + across * halfDepth;
@@ -1093,11 +1221,45 @@ export class RunnerRenderer3D {
       const corner = this.route.corner(turn.z);
       if (!corner) continue;
       const node = new TransformNode(`corner-${turn.z}`, this.scene);
-      this.instance("plaza", node);
-      const wall = this.instance("dead-end", node); wall.position.z = ROAD_HALF + 1.4;
-      node.position.set(corner.x, elevationAt(turn.z), corner.z); node.rotation.set(this.roadPitch(turn.z), corner.heading, 0);
+      const deck = new TransformNode(`corner-deck-${turn.z}`, this.scene);
+      deck.parent = node; deck.rotation.x = this.roadPitch(turn.z);
+      this.instance("plaza", deck);
+      const wall = this.instance("dead-end", deck); wall.position.z = ROAD_HALF + 1.4;
+      node.position.set(corner.x, elevationAt(turn.z), corner.z); node.rotation.y = corner.heading;
+      if (turn.fork) this.buildFork(node, turn, sceneAt(turn.z, world.startScene));
       this.corners.set(turn.z, node);
     }
+  }
+
+  /** The other side of a fork: a short road out of the plaza that ends at a broken bridge over a ravine. */
+  private buildFork(corner: TransformNode, turn: RunTurn, theme: number) {
+    const side = turn.direction === "left" ? 1 : -1;
+    const branch = new TransformNode(`fork-${turn.z}`, this.scene);
+    branch.parent = corner; branch.rotation.y = side * Math.PI / 2;
+    const lane = `lane-${RUN_SCENES[theme].id}`, stub = FORK_BRIDGE_START - FORK_STUB_START;
+    for (let row = 0; row < 2; row++) for (let i = 0; i < 3; i++) {
+      const tile = this.instance(lane, branch);
+      tile.position.set((i - 1) * LANE_WIDTH, 0, FORK_STUB_START + stub * (row + .5) / 2);
+      tile.scaling.z = stub / 2 / TILE_DEPTH;
+    }
+    this.instance("fork-stub", branch).position.z = FORK_STUB_START;
+    const bridge = this.instance("fork-bridge", branch);
+    bridge.position.z = FORK_BRIDGE_START;
+    const chasm = bridge.getChildTransformNodes(true).find(node => node.name === "fork-chasm");
+    // Over the canal the bridge spans open water; elsewhere a ravine is cut into the ground.
+    if (chasm) { chasm.position.y = -elevationAt(turn.z); chasm.setEnabled(theme !== 0); }
+    const sign = this.instance("fork-sign", corner);
+    // Faces the oncoming dog from the start of the broken side, clear of the line the dog would run.
+    sign.position.set(side * (FORK_STUB_START + 3.4), 0, -ROAD_HALF + .5);
+  }
+
+  /** World footprint of the ravine under a fork's broken bridge, for cutting the ground. */
+  private forkChasm(turn: RunTurn): RoutePoint | undefined {
+    const corner = this.route.corner(turn.z);
+    if (!corner) return undefined;
+    const heading = corner.heading + (turn.direction === "left" ? 1 : -1) * Math.PI / 2;
+    const along = FORK_BRIDGE_START + (FORK_CHASM.start + FORK_CHASM.end) / 2;
+    return { x: corner.x + Math.sin(heading) * along, y: 0, z: corner.z + Math.cos(heading) * along, heading };
   }
 
   private buildRope(ride: Extract<CourseFeature, { kind: "rope" }>) {
@@ -1428,7 +1590,12 @@ export class RunnerRenderer3D {
       const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * .25;
       this.cameraPos.set(bx - fx * back, elevationAt(world.distance - back) + height, bz - fz * back);
       this.cameraTarget.set(bx + fx * 7, elevationAt(world.distance + 7) + 1.1 + world.jumpHeight * .35, bz + fz * 7);
-      if (!this.settings.reducedMotion && world.elapsed - world.hitAt < .35) this.cameraPos.x += Math.sin(t * 60) * .12;
+      const sinceHit = world.elapsed - world.hitAt;
+      if (!this.settings.reducedMotion && sinceHit < .35) {
+        // Shake sideways to the view (not along world X, which is forward after a turn) and settle out.
+        const shake = Math.sin(t * 60) * .14 * (1 - sinceHit / .35);
+        this.cameraPos.x += rx * shake; this.cameraPos.z += rz * shake;
+      }
     }
     this.camera.position.copyFrom(this.cameraPos);
     this.camera.setTarget(this.cameraTarget);

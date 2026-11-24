@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
+import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, FORK_BRIDGE_BREAK, FORK_CHANCE, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature } from '../src/runner/course.ts';
@@ -283,6 +283,52 @@ test('corners: left/right turns inside the window, wrong or missed turns fail', 
   const missed = new RunnerWorld(); missed.start(); missed.items = []; missed.turns = [{ z: 1, direction: 'left', taken: false }]; run(missed, .3); assert.equal(missed.phase, 'caught');
 });
 
+test('forks: the wrong side runs onto the broken bridge and falls; the right side carries on', () => {
+  const fork = (lane = 0) => {
+    const w = new RunnerWorld(3); w.start(); w.nextRow = w.nextTurn = Infinity; w.lane = w.position = lane;
+    w.items = [{ id: 1, kind: 'coin', lane: 1, z: 40, done: false }];
+    w.turns = [{ z: 30, direction: 'right', taken: false, fork: true }];
+    w.distance = 15;
+    return w;
+  };
+  const wrong = fork();
+  wrong.action('left');
+  assert.equal(wrong.phase, 'running'); assert.equal(wrong.wrongTurn?.z, 30); assert.equal(wrong.turnCount, 0);
+  run(wrong, .5);
+  assert.equal(wrong.phase, 'running'); assert.equal(wrong.lane, 1, 'the dog lines up with the narrow bridge');
+  while (wrong.phase === 'running' && wrong.distance < 60) wrong.advance(1 / 120);
+  assert.equal(wrong.reason, '走上了断桥'); assert.equal(wrong.trapFall, true);
+  assert.ok(Math.abs(wrong.distance - (30 + FORK_BRIDGE_BREAK)) < .5);
+  assert.equal(wrong.coins, 0, 'nothing on the safe side is collected from the broken side');
+
+  const right = fork(1);
+  right.action('right'); assert.equal(right.turnCount, 1); assert.equal(right.wrongTurn, undefined);
+  run(right, 2.5); assert.equal(right.phase, 'running'); assert.equal(right.coins, 1);
+
+  // The golden fruit still steers round any corner, forks included.
+  const golden = fork(); golden.fruit = 5; golden.action('left');
+  assert.equal(golden.wrongTurn, undefined); assert.equal(golden.phase, 'running');
+});
+
+test('forks are common after the first corner and lay a coin trail into the safe side', () => {
+  let corners = 0, forks = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    const w = new RunnerWorld(seed, 'endless', seed % 3); w.start();
+    const seen = [];
+    for (let tick = 0; tick < 120 * 140 && w.phase === 'running' && w.distance < 2600; tick++) {
+      for (const t of w.turns) if (!seen.some(s => s.z === t.z)) {
+        seen.push(t);
+        if (t.fork) assert.equal(w.items.filter(i => i.kind === 'coin' && i.lane === 1 && i.z > t.z && i.z < t.z + 14).length >= 4, true);
+      }
+      drive(w); w.advance(1 / 120);
+    }
+    assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
+    assert.ok(!seen[0].fork, `seed ${seed}: the first corner is a plain one`);
+    corners += seen.length - 1; forks += seen.filter(t => t.fork).length;
+  }
+  assert.ok(Math.abs(forks / corners - FORK_CHANCE) < .12, `fork share ${forks}/${corners}`);
+});
+
 test('long frames are clamped and fixed steps prevent tunnelling', () => {
   const w = new RunnerWorld(); w.start(); w.advance(1000); assert.ok(w.distance < 1.5);
   const a = place('block'), b = place('block'); for (let i = 0; i < 12; i++) a.advance(.05); run(b, .6);
@@ -398,6 +444,18 @@ test('3D route has continuous rounded quarter-turns and bounded corner history',
   assert.equal(route.sample(160).heading, 0); assert.ok(Math.abs(route.sample(200).heading - Math.PI / 2) < 1e-8);
   for (const at of [174, 180, 186, 354, 360, 366]) { const a = route.sample(at - .001), b = route.sample(at + .001); assert.ok(Math.hypot(a.x - b.x, a.z - b.z) < .01); }
   for (let d = 540; d < 10000; d += 180) route.sync([{ z: d, direction: 'left' }], d); assert.ok(route.storedCorners <= 4);
+});
+
+test('the broken side of a fork mirrors the bend and runs straight out the other way', () => {
+  const route = new RunnerRoute3D(); route.sync([{ z: 180, direction: 'right' }], 0);
+  const corner = route.corner(180);
+  for (const at of [150, 169]) { const a = route.branch(at, 180, 'left'), b = route.sample(at); assert.ok(Math.hypot(a.x - b.x, a.z - b.z) < 1e-9 && Math.abs(a.heading - b.heading) < 1e-9); }
+  for (const at of [169, 175, 180, 186, 191]) { const a = route.branch(at - .001, 180, 'left'), b = route.branch(at + .001, 180, 'left'); assert.ok(Math.hypot(a.x - b.x, a.z - b.z) < .01); }
+  const out = route.branch(200, 180, 'left');
+  assert.ok(Math.abs(out.heading + Math.PI / 2) < 1e-9);
+  assert.ok(Math.abs(out.x - (corner.x - 20)) < 1e-9 && Math.abs(out.z - corner.z) < 1e-9);
+  const safe = route.sample(200);
+  assert.ok(Math.abs(safe.x - (corner.x + 20)) < 1e-9, 'the safe side goes the opposite way');
 });
 
 test('terrain rises and falls continuously and stays level across scene boundaries', () => {

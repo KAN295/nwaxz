@@ -369,7 +369,7 @@ export class RunnerGame {
   private syncCue() {
     const w = this.world, cue = this.el.cue;
     let html = "", urgent = false, aboveRoad = false;
-    if (w.phase === "running" && (w.ride || w.bridge || !w.invincible)) {
+    if (w.phase === "running" && !w.wrongTurn && (w.ride || w.bridge || !w.invincible)) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
       const next = w.nextObstacle;
       const feature = w.upcomingFeature;
@@ -392,7 +392,8 @@ export class RunnerGame {
         const branch = requiredMove?.kind === "bridge-branch" && !w.invincible ? requiredMove : undefined;
         urgent = !!branch && branch.z - w.distance < w.speed * .55;
         html = branch ? "<b>▲</b><span>跳过横枝</span>" : "<b>│</b><span>走桥中央</span>";
-      } else if (longGap && toLip < w.speed * 1.75) {
+      } else if (longGap && toLip < w.speed * 1.75 && !(toTurn < 55 && toTurn < toLip)) {
+        // A long pit just past a corner waits until the corner is taken.
         if (toLip >= 0) {
           urgent = w.jumpCount === 0 && toLip < w.speed * .19;
           html = `<b>▲▲</b><span>${urgent ? "现在起跳" : "前方长落穴"}</span><small>二段跳</small>`;
@@ -410,7 +411,9 @@ export class RunnerGame {
         aboveRoad = true;
         urgent = w.turnWindow;
         const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
-        html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>`;
+        // At a fork, first ask the player to read the scene; the arrow only shows once the turn is due.
+        if (turn.fork && !urgent) html = "<b>◀▶</b><span>前方岔路</span><small>避开断桥</small>";
+        else html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>${turn.fork ? `<small>${turn.direction === "left" ? "右" : "左"}边是断桥</small>` : ""}`;
         if (this.warnedTurn !== turn.z) { this.warnedTurn = turn.z; this.audio.effect("coin"); }
         if (urgent && this.urgentTurn !== turn.z) { this.urgentTurn = turn.z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
       } else if (requiredMove) {
@@ -597,7 +600,7 @@ export class RunnerGame {
         <li>整条路的<b>倒木、裂缝</b>要跳过，<b>低门</b>要下滑；屏幕中间会提示。</li>
         <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
-        <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
+        <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。<b>岔路口</b>两边都有路，其中一边通向<b>断桥</b>，走错会摔下去；银币会引向安全的一边。</li>
         <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。遗迹的<b>独木桥</b>要走中间并跳过横枝。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
         <li>稀有<b>自行车</b>可骑过倒木和乱石枯枝。野生果树极少会滚落<b>金身果实</b>，捡到可获得 15 秒金身、加速、吸币和双倍得分。</li>
         <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>

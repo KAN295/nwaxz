@@ -20,8 +20,9 @@ export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shi
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind };
-export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind | "fork" };
+/** `fork` corners also open the other way, onto a broken bridge; `wrong` marks the dog heading down that side. */
+export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean; fork?: boolean; wrong?: boolean };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
 const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch"];
@@ -58,6 +59,11 @@ const GRACE_TIME = 1;
 const CAPTURE_TIME = 2.4;
 const TURN_WINDOW = 24;
 const TURN_LATE = 1.5;
+/** Share of corners after the first that become forks with a broken-bridge side. */
+export const FORK_CHANCE = .55;
+/** Metres past the corner, along the wrong side of a fork, where the broken bridge deck starts and ends. */
+export const FORK_BRIDGE_START = 12;
+export const FORK_BRIDGE_BREAK = 15.2;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
@@ -80,6 +86,14 @@ export function weatherAt(seed: number, distance: number): RunWeather {
   return (["sunny", "rain", "snow"] as const)[hash % 3];
 }
 export const nightAt = (distance: number) => distance >= 1000 && (distance - 1000) % 2100 < 1500;
+
+/** Hash of the run seed and corner position, so forks never shift the obstacle random stream. */
+export function forkRoll(seed: number, z: number) {
+  let hash = (seed ^ Math.imul(Math.round(z) + 7, 0x2c1b3c6d)) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 15), 0x297a2d39) >>> 0;
+  hash = (hash ^ (hash >>> 13)) >>> 0;
+  return hash / 4294967296;
+}
 
 export function readRunRecord(raw: string | null): RunRecord {
   const empty: RunRecord = { version: 1, distance: 0, coins: 0, score: 0 };
@@ -134,6 +148,9 @@ export class RunnerWorld {
   bike = 0;
   fruit = 0;
   ropeLandedAt = -Infinity;
+  /** Times of the last take-off and touchdown, for squash-and-stretch. */
+  jumpedAt = -Infinity;
+  landedAt = -Infinity;
   /** Seconds the chaser stays close after a stumble. */
   danger = 0;
   stumble = 0;
@@ -145,6 +162,7 @@ export class RunnerWorld {
   items: RunItem[] = [];
   turns: RunTurn[] = [];
   turnCount = 0;
+  private turnsMade = 0;
   lastTurnDirection: "left" | "right" = "left";
   readonly weatherSeed: number;
   readonly startScene: number;
@@ -208,6 +226,8 @@ export class RunnerWorld {
   get weather() { return weatherAt(this.weatherSeed, this.distance); }
   get night() { return nightAt(this.distance); }
   get approachingTurn() { return this.turns.find(turn => !turn.taken && turn.z >= this.distance - TURN_LATE); }
+  /** The fork whose broken-bridge side the dog took, until it falls. */
+  get wrongTurn() { return this.turns.find(turn => turn.wrong); }
   /** True while a left/right input would take the next corner instead of changing lanes. */
   get turnWindow() { const turn = this.approachingTurn; return !!turn && turn.z - this.distance <= TURN_WINDOW; }
   /** Next obstacle the player still has to deal with. */
@@ -230,7 +250,11 @@ export class RunnerWorld {
     if (action === "left" || action === "right") {
       const turn = this.approachingTurn;
       if (turn && turn.z - this.distance <= TURN_WINDOW) {
-        if (action !== turn.direction && this.fruit <= 0) { this.fail("转错了方向", "按屏幕提示的方向转弯。"); return; }
+        if (action !== turn.direction && this.fruit <= 0) {
+          // A fork's other side is real road: the dog runs onto it and falls at the broken bridge.
+          if (turn.fork) { turn.taken = true; turn.wrong = true; return; }
+          this.fail("转错了方向", "按屏幕提示的方向转弯。"); return;
+        }
         turn.taken = true; this.turnCount++; this.lastTurnDirection = turn.direction;
         return;
       }
@@ -238,7 +262,7 @@ export class RunnerWorld {
     } else if (this.mountedRide) return;
     else if (action === "jump") {
       if (this.jumpCount < 2) {
-        this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime();
+        this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime(); this.jumpedAt = this.elapsed;
       } else this.jumpBuffer = .15;
     } else if (this.airborne) {
       // Slide in the air slams the dog down and slides on landing.
@@ -290,7 +314,7 @@ export class RunnerWorld {
       this.jump = Math.max(0, this.jump - dt);
       if (this.altitude === 0 && this.verticalSpeed < 0) {
         landingVelocity = this.verticalSpeed;
-        this.verticalSpeed = 0; this.jumpCount = 0; this.jump = 0;
+        this.verticalSpeed = 0; this.jumpCount = 0; this.jump = 0; this.landedAt = this.elapsed;
         if (this.jumpBuffer > 0) { this.jumpBuffer = 0; this.action("jump"); }
       }
     }
@@ -301,6 +325,15 @@ export class RunnerWorld {
     if (!this.advanceRide(previousDistance, speed)) return;
     if (bridge && Math.abs(this.position - 1) > .37 && this.altitude <= .11 && !this.invincible) {
       this.fallFromCourse("bridge", this.distance, "掉下了独木桥", "过桥时留在中间，跳过横枝。");
+      return;
+    }
+
+    const wrong = this.wrongTurn;
+    if (wrong) {
+      // The bridge is narrower than the road, so the dog lines up with it. Nothing on this side
+      // counts; the run ends where the deck breaks off.
+      this.lane = 1;
+      if (this.distance >= wrong.z + FORK_BRIDGE_BREAK) this.fallFromCourse("fork", this.distance, "走上了断桥", "岔路口要看清：有断桥的一边是死路，走另一边。");
       return;
     }
 
@@ -321,7 +354,7 @@ export class RunnerWorld {
     this.populate();
   }
 
-  private fallFromCourse(kind: FeatureKind, at: number, reason: string, hint: string) {
+  private fallFromCourse(kind: FeatureKind | "fork", at: number, reason: string, hint: string) {
     this.fallObstacle = { id: -1, kind: "long-gap", z: at + obstacleHalfDepth("long-gap", at), lane: 1, span: 3, done: true, feature: kind };
     this.fallVelocity = Math.min(0, this.verticalSpeed);
     this.fail(reason, hint);
@@ -429,7 +462,11 @@ export class RunnerWorld {
 
   private populate() {
     while (this.nextTurn < this.distance + 200) {
-      this.turns.push({ z: this.nextTurn, direction: this.random() < .5 ? "left" : "right", taken: false });
+      const z = this.nextTurn;
+      const fork = this.turnsMade++ > 0 && forkRoll(this.weatherSeed, z) < FORK_CHANCE;
+      this.turns.push({ z, direction: this.random() < .5 ? "left" : "right", taken: false, ...(fork ? { fork } : {}) });
+      // Silver coins curve into the safe side of a fork, like a trail to follow.
+      if (fork) for (let i = 0; i < 4; i++) this.add(z + 2 + i * 3, 1, "coin", { tier: "silver" });
       this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
     }
     while (this.nextFeatureSection * SCENE_LENGTH + RIDE_START < this.distance + 150) {
