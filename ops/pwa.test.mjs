@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { surfacePaths } from "../src/escape/material-assets.ts";
 import { FROG_EXTRA_ART } from "../src/escape/extra-art.ts";
+import { DOG_LOOKS } from "../src/runner/shop.ts";
 
 test("escape lobby does not statically import the 3D renderer or engine", () => {
   const graph = JSON.parse(fs.readFileSync(new URL("../dist/.vite/manifest.json", import.meta.url), "utf8"));
@@ -27,6 +28,11 @@ test("complete-offline inventory covers revisioned resources while the startup s
   assert.ok(startup.every(entry => !/\.(?:mp4|png|glb)$/.test(entry.url)), "unrelated original paintings, models and movies never gate first launch");
   assert.ok(worker.includes("PREPARE_GAME"));
   assert.equal(new Set(manifest.map(entry => entry.url)).size, manifest.length);
+  const offline = new Set(manifest.map(entry => `/${entry.url}`));
+  for (const look of DOG_LOOKS) {
+    assert.ok(offline.has(look.sprite), `${look.name} atlas must be available offline`);
+    assert.ok(offline.has(look.logo), `${look.name} logo must be available offline`);
+  }
   for (const entry of manifest) {
     const content = fs.readFileSync(new URL(`../dist/${entry.url}`, import.meta.url));
     assert.equal(entry.bytes, content.length, `${entry.url} progress size`);
@@ -91,6 +97,21 @@ test("complete-offline inventory covers revisioned resources while the startup s
     "assets/props/escape-details-v1.webp",
     "assets/audio/haunted-bath-v1.mp3",
     "assets/audio/haunted-laugh-v1.mp3",
+    "assets/audio/runner-puppy-whimper-v1.mp3",
+    "assets/runner/sewer-frog-corner-v1.webp",
+    "assets/runner/obstacle-cedar-bark-v1.webp",
+    "assets/runner/obstacle-cedar-ring-v1.webp",
+    "assets/runner/obstacle-fractured-rock-v1.webp",
+    "assets/runner/mine-amethyst-v1.webp",
+    "assets/runner/milk-dog-minecart-surprise-v1.webp",
+    "assets/runner/mine-calcite-v1.webp",
+    "assets/runner/mine-malachite-v1.webp",
+    "assets/runner/trees/mine-petrified-root-v1.webp",
+    "assets/runner/trees/runner-fruit-tree-v1.webp",
+    "assets/runner/trees/river-pine-v1.webp",
+    "assets/runner/trees/temple-ginkgo-v1.webp",
+    "assets/runner/pickup-bicycle-v1.webp",
+    "assets/runner/pickup-sunfruit-v1.webp",
     "assets/scenes/haunted-bath-v1.webp",
     "assets/scenes/haunted-corridor-v1.webp",
     "assets/scenes/haunted-machine-v1.webp",

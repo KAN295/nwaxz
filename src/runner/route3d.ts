@@ -1,10 +1,12 @@
+import { elevationAt } from "./course.ts";
+
 /**
  * Maps route distance to a ground position. Straight runs joined by rounded quarter
  * turns; old corners are folded into the base so memory stays bounded.
  */
 type Turn = { z: number; direction: "left" | "right" };
 type Corner = Turn & { x: number; y: number; heading: number; out: number };
-export type RoutePoint = { x: number; z: number; heading: number };
+export type RoutePoint = { x: number; y: number; z: number; heading: number };
 
 export const CORNER_RADIUS = 11;
 
@@ -45,13 +47,14 @@ export class RunnerRoute3D {
         const dx = Math.sin(c.heading), dz = Math.cos(c.heading), ox = Math.sin(c.out), oz = Math.cos(c.out);
         return {
           x: c.x - dx * r + ox * r - ox * r * Math.cos(angle) + dx * r * Math.sin(angle),
+          y: elevationAt(distance),
           z: c.y - dz * r + oz * r - oz * r * Math.cos(angle) + dz * r * Math.sin(angle),
           heading: c.heading + (c.out - c.heading) * t,
         };
       }
       start = { z: c.z, x: c.x, y: c.y, heading: c.out };
     }
-    return { x: start.x + Math.sin(start.heading) * (distance - start.z), z: start.y + Math.cos(start.heading) * (distance - start.z), heading: start.heading };
+    return { x: start.x + Math.sin(start.heading) * (distance - start.z), y: elevationAt(distance), z: start.y + Math.cos(start.heading) * (distance - start.z), heading: start.heading };
   }
 
   /** Where the dog would be if it ignored the corner at `z` and kept running straight. */
@@ -59,7 +62,7 @@ export class RunnerRoute3D {
     const c = this.corners.find(c => c.z === z);
     if (!c) return undefined;
     const d = distance - c.z;
-    return { x: c.x + Math.sin(c.heading) * d, z: c.y + Math.cos(c.heading) * d, heading: c.heading };
+    return { x: c.x + Math.sin(c.heading) * d, y: elevationAt(distance), z: c.y + Math.cos(c.heading) * d, heading: c.heading };
   }
 
   /** Corner position and incoming heading, for drawing the dead-end wall and arrow. */

@@ -3,24 +3,30 @@ import { loadImage } from "../loading.ts";
 import type { Settings } from "../settings.ts";
 import type { AudioManager } from "../audio.ts";
 import { RunnerTilt } from "./tilt.ts";
+import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART } from "./animation.ts";
+import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, readRunRecord,
-  type RunAction, type RunPhase, type RunMode,
+  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, GOLD_START, DIAMOND_START, obstacleHalfDepth, readRunRecord,
+  type RunAction, type RunPhase, type RunMode, type RunPowerKind,
 } from "./world.ts";
 
 const TITLE = "奶狗快跑";
 const WEATHER_NAME = { sunny: "晴", rain: "雨", snow: "雪" } as const;
-const CUE_NAME: Record<string, string> = { gap: "裂缝", block: "倒木", beam: "低门" };
+const CUE_NAME: Record<string, string> = { gap: "裂缝", block: "倒木", beam: "低门", "bridge-branch": "桥上横枝" };
 const KEYS: Record<string, RunAction> = {
   ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
   ArrowUp: "jump", w: "jump", W: "jump", " ": "jump", ArrowDown: "slide", s: "slide", S: "slide",
 };
 const POWER_INFO = {
-  magnet: { name: "磁铁", text: "附近金币自动飞过来", time: 10 },
-  shield: { name: "护盾", text: "可以挡住一次撞击", time: 20 },
-  boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯", time: 5 },
-} as const;
+  magnet: { name: "磁铁", text: "附近货币自动飞过来" },
+  shield: { name: "护盾", text: "可以挡住一次撞击" },
+  boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯" },
+  slow: { name: "沙漏", text: "5 秒内跑动和跳跃变慢" },
+  double: { name: "双倍得分", text: "8 秒内路程和收币得分翻倍" },
+  bike: { name: "自行车", text: "9 秒内可骑过倒木和乱石枯枝" },
+  fruit: { name: "金身果实", text: "15 秒金身、加速、吸币、双倍得分和自动过弯" },
+} satisfies Record<RunPowerKind, { name: string; text: string }>;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
 export class RunnerGame {
@@ -28,6 +34,13 @@ export class RunnerGame {
   private sceneChoice = 0;
   private world = new RunnerWorld(newSeed(), this.mode, this.sceneChoice);
   private record = readRunRecord(null);
+  private wardrobe = readWardrobe(null);
+  private credited: CurrencyPurse = { silver: 0, gold: 0, diamond: 0 };
+  private shopOpen = false;
+  private shopQuery = "";
+  private shopError = "";
+  private pendingSkin?: { id: string };
+  private shopObserver?: IntersectionObserver;
   private recordError = false;
   private renderer?: RunnerRenderer3D;
   private tilt = new RunnerTilt();
@@ -40,7 +53,9 @@ export class RunnerGame {
   private frame = 0;
   private last = 0;
   private shownPhase: RunPhase | "loading" = "loading";
+  private captureAudio: "waiting" | "grab" | "laugh" = "waiting";
   private art: { dog?: HTMLImageElement; frog?: HTMLImageElement; laugh?: HTMLImageElement } = {};
+  private skinPortrait?: HTMLImageElement;
   private swipe?: { x: number; y: number; id: number; used: boolean };
   private warnedTurn = -1;
   private urgentTurn = -1;
@@ -50,7 +65,7 @@ export class RunnerGame {
     main: HTMLElement; canvas: HTMLCanvasElement; panel: HTMLElement; distance: HTMLElement; score: HTMLElement; coins: HTMLElement;
     scene: HTMLElement; effects: HTMLElement; cue: HTMLElement; danger: HTMLElement; capture: HTMLElement; toast: HTMLElement;
   };
-  private seenEvents = { power: 0, shield: 0 };
+  private seenEvents = { power: 0, shield: 0, stumble: 0 };
   private toastTimer = 0;
 
   constructor(private root: HTMLElement, private audio: AudioManager, private settings: Settings, private exit: () => void) {
@@ -83,8 +98,17 @@ export class RunnerGame {
       danger: $(".runner-danger"), capture: $(".runner-capture"), toast: $(".runner-toast"),
     };
     this.loadRecord();
+    try {
+      const saved = localStorage.getItem(WARDROBE_KEY);
+      this.wardrobe = saved ? readWardrobe(saved) : migrateLegacyWardrobe(localStorage.getItem(LEGACY_WARDROBE_KEY));
+      if (!saved) this.persistWardrobe();
+    } catch { this.recordError = true; }
     const signal = this.abort.signal;
     root.addEventListener("click", this.onClick, { signal });
+    root.addEventListener("input", event => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.matches(".runner-shop-search")) { this.shopQuery = target.value; this.filterShop(); }
+    }, { signal });
     document.addEventListener("keydown", this.onKey, { signal });
     window.addEventListener("deviceorientation", this.onOrientation, { signal });
     document.addEventListener("visibilitychange", () => { if (document.hidden) this.pause(); }, { signal });
@@ -114,6 +138,13 @@ export class RunnerGame {
       this.renderer?.dispose();
       this.renderer = new module.RunnerRenderer3D(this.el.canvas, this.settings);
       await this.renderer.load();
+      const look = getDogLook(this.wardrobe.equipped);
+      if ("sprite" in look) {
+        try {
+          const image = await loadImage(look.sprite, 15000);
+          if (!this.destroyed) this.applyDogLook(look.id, image);
+        } catch { this.shopError = "已装备的皮肤暂时加载失败，请在商城重试。"; }
+      }
       if (this.destroyed) { this.renderer.dispose(); return; }
       this.el.main.dataset.engine = "babylon";
       this.ready = true; this.shownPhase = "ready"; this.showPanel();
@@ -159,6 +190,8 @@ export class RunnerGame {
       case "gyro": void this.toggleGyro(); return;
       case "calibrate": this.tilt.calibrate(); this.gyroMessage = "已重新校准"; this.showPanel(); return;
       case "help": this.showHelp(); return;
+      case "shop": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.shopOpen = true; this.shopQuery = ""; this.showPanel(); } return;
+      case "shop-back": this.closeShop(); return;
       case "help-back": this.showPanel(); return;
       case "retry-art": void this.load(); return;
       case "skip-capture": this.world.finishCapture(); return;
@@ -173,10 +206,19 @@ export class RunnerGame {
       const index = RUN_SCENES.findIndex(scene => `scene-${scene.id}` === action);
       if (index >= 0) { this.sceneChoice = index; this.newWorld(); this.showPanel(); }
     }
+    if (action.startsWith("buy-") || action.startsWith("equip-")) void this.chooseLook(action);
   };
 
   private onKey = (event: KeyboardEvent) => {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.target instanceof HTMLInputElement) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (this.shopOpen) {
+      if (event.key === "Escape" && !event.repeat) {
+        event.preventDefault();
+        this.closeShop();
+      }
+      return;
+    }
+    if (event.target instanceof HTMLInputElement) return;
     const phase = this.world.phase;
     if (event.key === "Escape" || event.key === "p" || event.key === "P") {
       event.preventDefault(); if (event.repeat) return;
@@ -239,7 +281,9 @@ export class RunnerGame {
 
   private newWorld() {
     this.world = new RunnerWorld(newSeed(), this.mode, this.sceneChoice);
-    this.seenEvents = { power: 0, shield: 0 };
+    this.captureAudio = "waiting";
+    this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
+    this.seenEvents = { power: 0, shield: 0, stumble: 0 };
     this.el.toast.hidden = true;
     this.warnedTurn = this.urgentTurn = -1;
   }
@@ -269,18 +313,20 @@ export class RunnerGame {
   /** Pushes world state into the DOM; writes only when something changed. */
   private sync() {
     const w = this.world, el = this.el;
+    this.creditCollectedCoins();
     const set = (node: HTMLElement, html: string) => { if (node.innerHTML !== html) node.innerHTML = html; };
     el.main.dataset.phase = this.ready ? w.phase : "loading";
     el.main.classList.toggle("runner-hit", w.elapsed - w.hitAt < .35);
     el.main.classList.toggle("runner-chased", w.phase === "running" && w.danger > 0);
     el.main.classList.toggle("runner-boost", w.phase === "running" && w.boost > 0);
+    el.main.classList.toggle("runner-golden", w.phase === "running" && w.fruit > 0);
     set(el.distance, `${Math.floor(w.distance)}<small>米</small>`);
     set(el.score, String(w.score));
-    set(el.coins, String(w.coins));
+    set(el.coins, `${w.silver}银 · ${w.gold}金 · ${w.diamond}钻`);
     set(el.scene, [RUN_SCENES[w.sceneIndex].name, w.night ? "夜" : "", w.sceneIndex === 2 ? "" : WEATHER_NAME[w.weather]].filter(Boolean).join(" · "));
 
-    const effects = (["magnet", "shield", "boost"] as const).filter(key => w[key] > 0)
-      .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / POWER_INFO[key].time * 100)}%"></u></span>`).join("")
+    const effects = RUN_POWERS.filter(key => w[key] > 0)
+      .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / RUN_POWER_SECONDS[key] * 100)}%"></u></span>`).join("")
       + (w.multiplier > 1 ? `<span class="runner-combo">×${w.multiplier}</span>` : "");
     set(el.effects, effects);
     el.effects.hidden = w.phase !== "running";
@@ -294,44 +340,162 @@ export class RunnerGame {
       this.audio.effect("coin");
     }
     if (w.shieldSaves !== this.seenEvents.shield) { this.seenEvents.shield = w.shieldSaves; this.toast("<b>护盾</b>挡住了撞击！", "shield"); }
-    el.capture.hidden = w.phase !== "caught";
+    if (w.stumbles > this.seenEvents.stumble) {
+      this.seenEvents.stumble = w.stumbles;
+      this.audio.haunt({ allowNormalMode: true });
+    }
+    el.capture.hidden = w.phase !== "caught" || (w.trapFall && w.captureTime < .48);
     if (w.phase === "caught") set(el.capture.querySelector("strong")!, w.reason);
 
     if (this.ready && this.shownPhase !== w.phase) {
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); }
       if (w.phase === "won") this.audio.effect("win");
-      if (w.phase === "caught" && this.shownPhase === "running") { this.audio.setMode("horror"); this.audio.haunt(); if (this.settings.vibration) navigator.vibrate?.(180); }
+      if (w.phase === "caught" && this.shownPhase === "running" && this.settings.vibration) navigator.vibrate?.(180);
       this.shownPhase = w.phase; this.showPanel();
+    }
+    if (this.ready && w.phase === "caught" && !w.trapFall) {
+      if (this.captureAudio === "waiting" && w.captureTime >= CAPTURE_GRAB_AT) {
+        this.captureAudio = "grab";
+        this.audio.whimper();
+      }
+      if (this.captureAudio === "grab" && w.captureTime >= CAPTURE_LAUGH_AT) {
+        this.captureAudio = "laugh";
+        this.audio.haunt({ allowNormalMode: true });
+      }
     }
   }
 
   /** One short prompt at a time: corners first, then whole-road obstacles. */
   private syncCue() {
     const w = this.world, cue = this.el.cue;
-    let html = "", urgent = false;
-    if (w.phase === "running" && w.boost === 0) {
+    let html = "", urgent = false, aboveRoad = false;
+    if (w.phase === "running" && (w.ride || w.bridge || !w.invincible)) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
-      if (turn && toTurn < 55) {
+      const next = w.nextObstacle;
+      const feature = w.upcomingFeature;
+      const requiredMove = next?.span === 3 && next.z - w.distance < w.speed * 1.6 && !(w.cycling && (next.kind === "block" || next.kind === "spikes")) ? next : undefined;
+      const longGap = next?.kind === "long-gap" ? next : undefined;
+      const toLip = longGap ? longGap.z - obstacleHalfDepth("long-gap", longGap.z) - w.distance : Infinity;
+      if (w.ride?.kind === "rope") {
+        aboveRoad = true;
+        html = "<b>↔</b><span>左右摆动收币</span>";
+      } else if (w.ride?.kind === "cart") {
+        aboveRoad = true;
+        const blocked = next?.kind === "cart-block" && next.z - w.distance < w.speed * 1.85 ? next : undefined;
+        if (blocked) {
+          urgent = blocked.z - w.distance < w.speed * .8;
+          html = blocked.lane === 0 ? "<b>▶</b><span>右侧轨道畅通</span>" : "<b>◀</b><span>左侧轨道畅通</span>";
+        } else html = "<b>↔</b><span>左右换轨</span>";
+        if (this.wardrobe.equipped !== ORIGINAL_LOOK.id) html += `<img class="runner-cart-expression" src="${MINECART_SURPRISE_ART}" alt="">`;
+      } else if (w.bridge) {
+        aboveRoad = true;
+        const branch = requiredMove?.kind === "bridge-branch" && !w.invincible ? requiredMove : undefined;
+        urgent = !!branch && branch.z - w.distance < w.speed * .55;
+        html = branch ? "<b>▲</b><span>跳过横枝</span>" : "<b>│</b><span>走桥中央</span>";
+      } else if (longGap && toLip < w.speed * 1.75) {
+        if (toLip >= 0) {
+          urgent = w.jumpCount === 0 && toLip < w.speed * .19;
+          html = `<b>▲▲</b><span>${urgent ? "现在起跳" : "前方长落穴"}</span><small>二段跳</small>`;
+        } else if (w.jumpCount === 1) {
+          urgent = w.jump < .39;
+          html = `<b>▲</b><span>${urgent ? "再跳一次" : "空中准备再跳"}</span>`;
+        }
+      } else if (feature && (!requiredMove || requiredMove.z >= feature.start)) {
+        aboveRoad = true;
+        urgent = feature.start - w.distance < w.speed * .42;
+        if (feature.kind === "rope") html = `<b>▲</b><span>${urgent ? "跳起来抓绳索" : "前方滑索"}</span>`;
+        else if (feature.kind === "cart") html = "<b>↔</b><span>前方矿车</span>";
+        else html = "<b>│</b><span>前方独木桥</span><small>走中间</small>";
+      } else if (turn && toTurn < 55) {
+        aboveRoad = true;
         urgent = w.turnWindow;
         const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
         html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>`;
         if (this.warnedTurn !== turn.z) { this.warnedTurn = turn.z; this.audio.effect("coin"); }
         if (urgent && this.urgentTurn !== turn.z) { this.urgentTurn = turn.z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
-      } else {
-        const next = w.nextObstacle;
-        if (next?.span === 3 && next.z - w.distance < w.speed * 1.6) {
-          const slide = next.kind === "beam";
-          urgent = next.z - w.distance < w.speed * .55;
-          html = `<b>${slide ? "▼" : "▲"}</b><span>${slide ? "下滑" : "跳"}</span><small>${CUE_NAME[next.kind] ?? ""}</small>`;
-        }
+      } else if (requiredMove) {
+        const slide = requiredMove.kind === "beam";
+        urgent = requiredMove.z - w.distance < w.speed * .55;
+        html = `<b>${slide ? "▼" : "▲"}</b><span>${slide ? "下滑" : "跳"}</span><small>${CUE_NAME[requiredMove.kind] ?? ""}</small>`;
       }
     }
     cue.hidden = !html;
     if (html && cue.innerHTML !== html) cue.innerHTML = html;
     cue.classList.toggle("now", urgent);
+    cue.classList.toggle("above-road", aboveRoad);
   }
 
   // ---------- records ----------
+
+  private persistWardrobe(wardrobe = this.wardrobe) {
+    try {
+      localStorage.setItem(WARDROBE_KEY, JSON.stringify({ version: 2, ...wardrobe }));
+      return true;
+    } catch {
+      this.recordError = true;
+      return false;
+    }
+  }
+  private creditCollectedCoins() {
+    let changed = false;
+    for (const key of ["silver", "gold", "diamond"] as const) {
+      const gained = Math.max(0, this.world[key] - this.credited[key]);
+      if (gained) { this.wardrobe[key] += gained; this.credited[key] = this.world[key]; changed = true; }
+    }
+    if (changed) this.persistWardrobe();
+  }
+  private async chooseLook(action: string) {
+    if (!this.shopOpen || this.pendingSkin) return;
+    const buying = action.startsWith("buy-");
+    const id = action.slice(buying ? 4 : 6);
+    const look = id === ORIGINAL_LOOK.id ? ORIGINAL_LOOK : DOG_LOOKS.find(item => item.id === id);
+    if (!look || buying && id === ORIGINAL_LOOK.id) return;
+    const next = { ...this.wardrobe, owned: [...this.wardrobe.owned], equipped: id };
+    if (buying) {
+      const price = "price" in look ? look.price : {};
+      if (next.owned.includes(id) || !canAfford(next, price)) return;
+      for (const key of ["silver", "gold", "diamond"] as const) next[key] -= price[key] ?? 0;
+      next.owned.push(id);
+    } else if (!next.owned.includes(id)) return;
+
+    const pending = this.pendingSkin = { id };
+    this.shopError = "";
+    this.showPanel();
+    try {
+      const image = "sprite" in look ? await loadImage(look.sprite, 15000) : undefined;
+      if (this.destroyed || this.pendingSkin !== pending) return;
+      if (!this.persistWardrobe(next)) { this.shopError = "皮肤未能保存，请重试。"; return; }
+      this.wardrobe = next;
+      this.applyDogLook(id, image);
+    } catch {
+      if (this.pendingSkin === pending) this.shopError = "皮肤加载失败，请重试。";
+    } finally {
+      if (this.pendingSkin === pending) {
+        this.pendingSkin = undefined;
+        if (!this.destroyed) this.showPanel();
+      }
+    }
+  }
+
+  private closeShop() {
+    this.pendingSkin = undefined;
+    this.shopOpen = false;
+    this.showPanel();
+    this.el.panel.querySelector<HTMLButtonElement>('[data-run="shop"]')?.focus();
+  }
+
+  private filterShop() {
+    const query = this.shopQuery.trim().toLocaleLowerCase();
+    for (const card of this.el.panel.querySelectorAll<HTMLElement>(".runner-shop-item")) {
+      const look = getDogLook(card.dataset.skinId ?? "");
+      card.hidden = !!query && !`${look.name} ${"rank" in look ? look.rank : ""}`.toLocaleLowerCase().includes(query);
+    }
+  }
+
+  private applyDogLook(id: string, image?: HTMLImageElement) {
+    this.renderer?.setDogLook(id, image);
+    this.skinPortrait = image;
+  }
 
   private recordKey() { return this.mode === "endless" ? ENDLESS_RECORD_KEY : RUN_RECORD_KEY; }
   private loadRecord() {
@@ -339,6 +503,7 @@ export class RunnerGame {
     try { this.record = readRunRecord(localStorage.getItem(this.recordKey())); } catch { this.recordError = true; }
   }
   private save() {
+    this.creditCollectedCoins();
     const w = this.world;
     const merge = (a: typeof this.record) => ({ version: 1 as const, distance: Math.max(a.distance, Math.floor(w.distance)), coins: Math.max(a.coins, w.coins), score: Math.max(a.score, w.score) });
     this.record = merge(this.record);
@@ -362,6 +527,20 @@ export class RunnerGame {
     let html: string;
     if (!this.ready) {
       html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div>`}${btn("exit", "返回", "ghost")}`;
+    } else if (this.shopOpen) {
+      const pending = this.pendingSkin?.id;
+      const status = pending ? "正在加载皮肤…" : this.shopError;
+      const originalActive = this.wardrobe.equipped === ORIGINAL_LOOK.id;
+      html = `<h2>皮肤商城</h2><p>QS 2027 · 世界大学前 100 名（含并列 102 所）</p><p>银币 ${this.wardrobe.silver}　金币 ${this.wardrobe.gold}　钻石 ${this.wardrobe.diamond}</p>
+        <input class="runner-shop-search" type="search" placeholder="搜索学校或名次" aria-label="搜索学校或名次">
+        <div class="runner-shop-list"><div class="runner-shop-item" data-skin-id="original"><span class="runner-shop-swatch" style="--skin:#fff"></span><div><strong>默认奶狗</strong><small>原本的奶狗形象</small></div><button data-run="equip-original" ${pending || originalActive ? "disabled" : ""}>${originalActive ? "使用中" : "装备"}</button></div>${DOG_LOOKS.map(look => {
+          const owned = this.wardrobe.owned.includes(look.id);
+          const active = this.wardrobe.equipped === look.id && !!this.skinPortrait;
+          const cost = (Object.entries(look.price) as [keyof CurrencyPurse, number][]).map(([key, n]) => `${n}${{ silver: "银币", gold: "金币", diamond: "钻石" }[key]}`).join(" · ");
+          const disabled = !!pending || active || !owned && !canAfford(this.wardrobe, look.price);
+          const label = active ? "使用中" : owned ? "装备" : "解锁";
+          return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-preview" style="--skin:${look.color}" data-sprite="${look.sprite}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
+        }).join("")}</div>${status ? `<p class="runner-note" role="status">${status}</p>` : ""}${btn("shop-back", "返回", "ghost")}${note}`;
     } else if (w.phase === "ready") {
       const toggle = (action: string, label: string, on: boolean) => `<button data-run="${action}" aria-pressed="${on}">${label}</button>`;
       html = `
@@ -375,6 +554,7 @@ export class RunnerGame {
         <div class="runner-seg runner-seg-3" aria-label="场景">${RUN_SCENES.map((s, i) => toggle(`scene-${s.id}`, s.name, i === this.sceneChoice)).join("")}</div>
         <p class="runner-record">最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米</p>
         ${btn("start", "开始奔跑")}
+        ${btn("shop", "皮肤商城", "ghost")}
         <div class="runner-row">${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
         ${gyroNote}${note}`;
     } else if (w.phase === "paused") {
@@ -386,11 +566,25 @@ export class RunnerGame {
         <h2>${won ? "千米挑战完成！" : "游戏结束"}</h2>
         ${won ? `<div class="runner-celebrate"><canvas width="160" height="140" data-portrait="dog-win" aria-label="奶狗庆祝"></canvas><canvas class="runner-laugh" width="160" height="160" data-portrait="laugh" aria-label="奶蛙捧腹大笑"></canvas></div>`
               : `<p class="runner-reason">${w.reason}</p><p class="runner-hint">${w.deathHint}</p>`}
-        <div class="runner-stats"><span><b>${w.score}</b>得分</span><span><b>${Math.floor(w.distance)}</b>米</span><span><b>${w.coins}</b>金币</span></div>
+        <div class="runner-stats"><span><b>${w.score}</b>得分</span><span><b>${Math.floor(w.distance)}</b>米</span><span><b>${w.coins}</b>货币</span></div>
         ${best}<p class="runner-record">最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米</p>
-        ${won ? btn("continue", "继续无限模式") : ""}${btn("restart", "再跑一次", won ? "ghost" : "primary")}${btn("exit", "主菜单", "ghost")}${note}`;
+        ${won ? btn("continue", "继续无限模式") : ""}${btn("restart", "再跑一次", won ? "ghost" : "primary")}${btn("shop", "皮肤商城", "ghost")}${btn("exit", "主菜单", "ghost")}${note}`;
     }
+    this.shopObserver?.disconnect(); this.shopObserver = undefined;
     panel.innerHTML = `<div class="runner-card">${html}</div>`;
+    if (this.shopOpen) {
+      const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop();
+      const list = panel.querySelector(".runner-shop-list");
+      const observer = new IntersectionObserver(entries => {
+        for (const entry of entries) if (entry.isIntersecting) {
+          const node = entry.target as HTMLElement;
+          node.style.setProperty("--sprite", `url('${node.dataset.sprite}')`);
+          observer.unobserve(node);
+        }
+      }, { root: list, rootMargin: "100px" });
+      this.shopObserver = observer;
+      panel.querySelectorAll<HTMLElement>(".runner-shop-preview").forEach(node => observer.observe(node));
+    }
     panel.querySelector<HTMLButtonElement>(".primary")?.focus({ preventScroll: true });
   }
 
@@ -401,10 +595,15 @@ export class RunnerGame {
       <ul>
         <li>电脑：方向键或 WASD，空格跳，Esc 暂停，回车开始。手机：在画面上滑动，或用底部按钮。</li>
         <li>整条路的<b>倒木、裂缝</b>要跳过，<b>低门</b>要下滑；屏幕中间会提示。</li>
-        <li>单道的木箱、栏杆撞到会踉跄，恐怖奶蛙会追上来——8秒内再撞就被抓。地刺、火焰、巨石要躲开或跳过（巨石要二段跳）。</li>
-        <li>路尽头立着<b>箭头墙</b>时，按箭头方向转弯。</li>
-        <li>磁铁吸金币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收金币分数翻倍，最高×5。</li>
-        <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后昼夜交替。</li>
+        <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
+        <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
+        <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
+        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。遗迹的<b>独木桥</b>要走中间并跳过横枝。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
+        <li>稀有<b>自行车</b>可骑过倒木和乱石枯枝。野生果树极少会滚落<b>金身果实</b>，捡到可获得 15 秒金身、加速、吸币和双倍得分。</li>
+        <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
+        <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
+        <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
+        <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后进入较长的黑夜。</li>
       </ul>
       <button data-run="help-back" class="primary">知道了</button></div>`;
     this.el.panel.querySelector<HTMLButtonElement>(".primary")?.focus({ preventScroll: true });
@@ -422,9 +621,9 @@ export class RunnerGame {
       ctx.drawImage(image, (frame % columns) * cw, Math.floor(frame / columns) * ch, cw, ch, (canvas.width - size) / 2, bob, size, size);
     };
     const motion = this.settings.reducedMotion ? 0 : 1;
-    draw("dog", this.art.dog, 4, 4, 2, Math.sin(time * 5) * 2 * motion);
+    draw("dog", this.skinPortrait ?? this.art.dog, 4, 4, 2, Math.sin(time * 5) * 2 * motion);
     draw("frog", this.art.frog, 0, 4, 4, Math.sin(time * 4 + 1) * 2 * motion);
-    draw("dog-win", this.art.dog, 4, 4, 2, -Math.abs(Math.sin(time * 6)) * 8 * motion);
+    draw("dog-win", this.skinPortrait ?? this.art.dog, 4, 4, 2, -Math.abs(Math.sin(time * 6)) * 8 * motion);
     draw("laugh", this.art.laugh, 6, 4, 2, Math.sin(time * 14) * 2 * motion);
   }
 
@@ -432,6 +631,7 @@ export class RunnerGame {
     if (this.destroyed) return;
     if (this.world.phase === "running" || this.world.phase === "paused" || this.world.phase === "caught") this.save();
     this.destroyed = true;
+    this.shopObserver?.disconnect();
     cancelAnimationFrame(this.frame); this.abort.abort(); this.resize.disconnect();
     this.audio.setPlaying(false); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); this.renderer?.dispose();
   }

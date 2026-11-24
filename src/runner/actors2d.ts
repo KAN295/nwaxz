@@ -45,13 +45,15 @@ export function createRunnerSprite(scene: Scene, name: string, size: number) {
   material.alphaCutOff = .35;
   root.material = material;
   let current: Texture | undefined;
-  function frame(texture: Texture, index: number, columns: number, rows: number) {
+  function region(texture: Texture, u: number, v: number, width: number, height: number) {
     // Each sprite owns its textures, so the UV window can be set on the texture itself.
-    texture.uScale = 1 / columns; texture.vScale = 1 / rows;
-    texture.uOffset = (index % columns) / columns;
-    texture.vOffset = 1 - (Math.floor(index / columns) + 1) / rows;
+    texture.uScale = width; texture.vScale = height;
+    texture.uOffset = u; texture.vOffset = 1 - v - height;
     if (current !== texture) { material.diffuseTexture = texture; current = texture; }
   }
+  function frame(texture: Texture, index: number, columns: number, rows: number) {
+    region(texture, (index % columns) / columns, Math.floor(index / columns) / rows, 1 / columns, 1 / rows);
+  }
   function tint(level: number) { material.emissiveColor.set(level, level, level); }
-  return { root, material, frame, tint };
+  return { root, material, frame, region, tint };
 }
