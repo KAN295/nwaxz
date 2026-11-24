@@ -18,6 +18,8 @@ import type { Settings } from "../settings.ts";
 import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { chaserFrame, dogFall, dogPose } from "./animation.ts";
+import { flameMesh } from "./fire3d.ts";
+import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
 import { coversLane, isFallObstacle, isRunObstacle, LANE_WIDTH, obstacleHalfDepth, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunnerWorld } from "./world.ts";
@@ -32,12 +34,15 @@ const TILE_DEPTH = TILE + .45; // Overlap hides seams on curves.
 const SLOTS = 44;
 const BEHIND = 16;
 const ROAD_HALF = LANE_WIDTH * 1.5 + .2;
+const waterDepth = (kind: RunItem["kind"]) => kind === "long-gap" ? 2.65 : 1.55;
+const itemOffset = (item: RunItem) => item.span === 3 ? 0 : (item.lane + ((item.span ?? 1) - 1) / 2 - 1) * LANE_WIDTH;
 const DOG_SIZE = 2.1;
 const FROG_SIZE = 2.4;
 const LAUGH_SIZE = 3.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
 const DOG_FEET = .39, FROG_FEET = .48, LAUGH_FEET = .43;
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
+const FLAME_HEIGHTS = [1.38, 1.84, 1.52, 1.73, 1.44, 1.88, 1.56];
 const POWER_COLORS: Record<RunPowerKind, [string, string]> = { magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"] };
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
@@ -63,10 +68,12 @@ export class RunnerRenderer3D {
   private props = new Map<number, TransformNode>();
   private corners = new Map<number, TransformNode>();
   private textures = new Map<string, Texture>();
-  private sheets: Record<"run" | "actions" | "walk" | "laugh", Texture | undefined> = { run: undefined, actions: undefined, walk: undefined, laugh: undefined };
+  private sheets: Record<"run" | "actions" | "fall" | "walk" | "laugh", Texture | undefined> = { run: undefined, actions: undefined, fall: undefined, walk: undefined, laugh: undefined };
   private mats: Record<string, StandardMaterial> = {};
   private themes: Theme[] = [];
   private groundPlane: Mesh;
+  private groundCuts: GroundOpening[] = [];
+  private waterImpact = false;
   private sky: Mesh;
   private skyMat: StandardMaterial;
   private skies: { day: Texture; night: Texture }[] = [];
@@ -125,13 +132,13 @@ export class RunnerRenderer3D {
     this.shadow.material = this.radialMaterial("blob", "rgba(0,0,0,.55)", false);
 
     // Power-up effects around the dog.
-    this.bubble = MeshBuilder.CreateSphere("shield-bubble", { diameter: 2.5, segments: 20 }, this.scene);
+    this.bubble = MeshBuilder.CreateSphere("shield-bubble", { diameter: 2.08, segments: 20 }, this.scene);
     const bubbleMat = this.glow("bubble", "#7fe8ff", "#2a9cc4"); bubbleMat.alpha = .22; bubbleMat.specularColor.set(1, 1, 1); bubbleMat.specularPower = 12; bubbleMat.backFaceCulling = false;
     this.bubble.material = bubbleMat; this.bubble.isPickable = false;
-    this.magnetRing = MeshBuilder.CreateTorus("magnet-ring", { diameter: 2.2, thickness: .09, tessellation: 40 }, this.scene);
+    this.magnetRing = MeshBuilder.CreateTorus("magnet-ring", { diameter: 1.88, thickness: .075, tessellation: 40 }, this.scene);
     const ringMat = this.glow("magnet-aura", "#ff6a5a", "#ff3a2a"); ringMat.alpha = .75; ringMat.disableLighting = true;
     this.magnetRing.material = ringMat; this.magnetRing.isPickable = false;
-    this.boostGlow = MeshBuilder.CreateGround("boost-glow", { width: 3.4, height: 5 }, this.scene);
+    this.boostGlow = MeshBuilder.CreateGround("boost-glow", { width: 2.9, height: 4.2 }, this.scene);
     this.boostGlow.material = this.radialMaterial("boost-glow", "rgba(255,205,70,.85)", true);
     this.skinHalo = MeshBuilder.CreateTorus("dog-look-halo", { diameter: 2.2, thickness: .07, tessellation: 40 }, this.scene);
     this.skinHalo.material = this.glow("dog-look-glow", "#b4e3ff", "#8bd4ff");
@@ -240,9 +247,6 @@ export class RunnerRenderer3D {
     this.mat("foliage-dark", "#4a6538", rock, 2).specularColor.setAll(0);
     this.glow("gold", "#f2c443", "#7a560a").specularColor.set(.9, .8, .4);
     this.glow("lamp", "#ffe2a0", "#ffc25a");
-    this.glow("fire", "#ffb03b", "#ff5a12").alpha = .92;
-    this.glow("ember", "#ff7a1a", "#c22d00");
-    this.glow("flame-core", "#fff2a8", "#ffe070");
     this.glow("warning", "#f2c443", "#3a2a00");
     this.radialMaterial("lamp-halo", "rgba(255,200,110,.9)", true);
     for (const [kind, [color]] of Object.entries(POWER_COLORS)) {
@@ -251,39 +255,32 @@ export class RunnerRenderer3D {
     }
     const water = this.mat("water", "#3f6f73", stone, 52);
     water.specularColor.set(.5, .6, .6); water.fogEnabled = false;
+    for (const [name, repeat] of [["pit-water", 1], ["pit-water-long", 2]] as const) {
+      const pool = this.mat(name, "#91aba8", "/assets/runner/pit-water-v1.png", repeat);
+      pool.emissiveTexture = pool.diffuseTexture;
+      pool.emissiveColor.set(.6, .66, .67);
+      pool.specularColor.set(.35, .42, .43);
+      if (name === "pit-water-long") (pool.diffuseTexture as Texture).vScale = 6;
+    }
     const grass = this.mat("grass", "#6f8251", rock, 75); grass.specularColor.setAll(0);
     const cave = this.mat("cave-floor", "#2c241d", rock, 75); cave.specularColor.setAll(0);
+    new GroundOpenings(grass, this.groundCuts);
+    new GroundOpenings(cave, this.groundCuts);
     this.themes = [
       { sky: new Color3(.62, .74, .78), fog: new Color3(.66, .74, .74), nightSky: new Color3(.07, .1, .18), nightFog: new Color3(.1, .13, .2), ground: water, groundY: -7 },
       { sky: new Color3(.66, .76, .62), fog: new Color3(.6, .67, .55), nightSky: new Color3(.06, .09, .1), nightFog: new Color3(.08, .12, .12), ground: grass, groundY: -.35 },
       { sky: new Color3(.09, .07, .06), fog: new Color3(.12, .09, .07), nightSky: new Color3(.04, .03, .03), nightFog: new Color3(.06, .045, .04), ground: cave, groundY: -.35 },
     ];
   }
-  private arrowMaterial(direction: "left" | "right") {
-    const key = `arrow-${direction}`;
-    if (this.mats[key]) return this.mats[key];
-    const texture = new DynamicTexture(`runner-${key}`, { width: 256, height: 128 }, this.scene, true);
-    const ctx = texture.getContext() as CanvasRenderingContext2D;
-    ctx.fillStyle = "#1d2a26"; ctx.fillRect(0, 0, 256, 128);
-    ctx.strokeStyle = "#f6d36b"; ctx.lineWidth = 8; ctx.strokeRect(6, 6, 244, 116);
-    ctx.fillStyle = "#f6d36b";
-    ctx.save(); ctx.translate(128, 64); if (direction === "left") ctx.scale(-1, 1);
-    for (const x of [-70, -10, 50]) { ctx.beginPath(); ctx.moveTo(x - 10, -38); ctx.lineTo(x + 26, 0); ctx.lineTo(x - 10, 38); ctx.lineTo(x - 30, 38); ctx.lineTo(x + 6, 0); ctx.lineTo(x - 30, -38); ctx.closePath(); ctx.fill(); }
-    ctx.restore(); texture.update();
-    const m = new StandardMaterial(`runner-${key}`, this.scene);
-    m.diffuseTexture = texture; m.emissiveColor = new Color3(.8, .8, .8); m.specularColor = Color3.Black(); m.disableLighting = true;
-    m.emissiveTexture = texture;
-    this.mats[key] = m;
-    return m;
-  }
-
   async load() {
-    const [run, actions, walk, laugh] = await Promise.all([
+    const [run, actions, fall, walk, laugh] = await Promise.all([
       loadImage("/assets/runner/milk-dog-run-v2.png"), loadImage("/assets/runner/milk-dog-actions-v2.png"),
+      loadImage("/assets/runner/milk-dog-fall-v1.png"),
       loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"), loadImage("/assets/character/milk-frog-atlas.webp"),
     ]);
     this.sheets = {
       run: sheetTexture(this.scene, cleanSheet(run)), actions: sheetTexture(this.scene, cleanSheet(actions)),
+      fall: sheetTexture(this.scene, cleanSheet(fall)),
       walk: sheetTexture(this.scene, walk.src), laugh: sheetTexture(this.scene, laugh.src),
     };
     this.dog.frame(this.sheets.actions!, 0, 4, 2);
@@ -298,14 +295,13 @@ export class RunnerRenderer3D {
   }
 
   /**
-   * Compile every shader variant before the run starts: instanced props, effects and signs
+   * Compile every shader variant before the run starts: instanced props and effects
    * would otherwise compile the first time they appear and freeze the game for a moment.
    */
   private warmUp() {
     const warm = new TransformNode("runner-warm-up", this.scene);
     warm.position.set(0, 0, 12);
     for (const name of this.templates.keys()) this.instance(name, warm);
-    for (const direction of ["left", "right"] as const) { const sign = MeshBuilder.CreatePlane("warm-sign", { size: 1 }, this.scene); sign.parent = warm; sign.material = this.arrowMaterial(direction); }
     for (const slot of this.slots) slot.themes.forEach(group => group.setEnabled(true));
     const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0]];
     effects.forEach(mesh => { mesh.setEnabled(true); mesh.position.set(0, 1, 10); });
@@ -367,6 +363,14 @@ export class RunnerRenderer3D {
     return m;
   }
 
+  private pitSurface(parent: TransformNode, width: number, length: number, kind: RunItem["kind"]) {
+    const pool = MeshBuilder.CreateGround("pit-water", { width, height: length }, this.scene);
+    pool.parent = parent;
+    pool.position.y = -waterDepth(kind);
+    pool.material = this.mats[kind === "long-gap" ? "pit-water-long" : "pit-water"];
+    pool.isPickable = false;
+  }
+
   /** Off-screen source meshes; every road slot and prop is an instance of these, so they batch. */
   private buildTemplates() {
     const stash = new TransformNode("runner-templates", this.scene);
@@ -416,17 +420,7 @@ export class RunnerRenderer3D {
       for (const s of [-1, 1]) this.box("pillar", r, [1, 4, 1.2], [s * (ROAD_HALF + 1.2), 2, 0], "stone");
     });
 
-    // Obstacles. Lane versions are one lane wide, "-wide" versions span the road.
-    make("block", r => {
-      for (const [z, height, length, angle] of [[-.35, .38, 1.9, .13], [.32, .56, 1.65, -.18]] as const) {
-        const trunk = this.cylinder("fallen-trunk", r, { diameterTop: .38, diameterBottom: .58, height: length, tessellation: 13 }, [0, height, z], "wood");
-        trunk.rotation.z = Math.PI / 2 + angle; trunk.rotation.y = z * .4;
-      }
-      for (const [x, z, size] of [[-.75, -.42, .42], [.72, .38, .35], [.25, -.42, .3]] as const) {
-        const stone = MeshBuilder.CreatePolyhedron("log-side-stone", { type: 2, size }, this.scene);
-        stone.parent = r; stone.position.set(x, size * .35, z); stone.rotation.y = x; stone.material = this.mats["moss-stone"];
-      }
-    });
+    // Obstacles. "-double" covers two lanes and "-wide" spans the road.
     make("block-double", r => {
       const trunk = this.cylinder("joined-log", r, { diameterTop: .62, diameterBottom: .86, height: 4.72, tessellation: 15 }, [0, .42, -.04], "wood");
       trunk.rotation.set(0, -.08, Math.PI / 2 + .035);
@@ -448,7 +442,8 @@ export class RunnerRenderer3D {
       }
       for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["moss-stone"]; }
     });
-    for (const [name, width] of [["beam", 2.1], ["beam-double", 4.65]] as const) make(name, r => {
+    make("beam", r => {
+      const width = 2.1;
       for (const s of [-1, 1]) this.box("post", r, [.16, 1.5, .16], [s * (width / 2 - .1), .75, 0], "metal");
       this.box("bar", r, [width, .38, .3], [0, 1.25, 0], "warning");
       for (let x = -width / 2 + .45; x < width / 2 - .2; x += .6) this.box("stripe", r, [.22, .4, .32], [x, 1.25, 0], "pit");
@@ -460,7 +455,7 @@ export class RunnerRenderer3D {
     });
     for (const [name, width] of [["gap", L], ["gap-wide", W], ["long-gap-wide", W]] as const) make(name, r => {
       for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, 3], [side * (width / 2 + .13), -3.2, 0], "rock");
-      this.box("pit-shadow", r, [width, .06, 3], [0, -2.12, 0], "pit");
+      this.pitSurface(r, width + .05, 3.04, name === "long-gap-wide" ? "long-gap" : "gap");
       for (const side of [-1, 1]) {
         this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, side * 1.62], "stone-dark");
         this.box("lip", r, [width, .2, .25], [0, -.09, side * 1.62], "stone-dark");
@@ -471,18 +466,19 @@ export class RunnerRenderer3D {
         }
       }
     });
-    make("trap", r => {
+    make("trap-double", r => {
       const halfDepth = obstacleHalfDepth("trap", 0);
-      for (const x of [-.885, -.295, .295, .885]) this.box("trap-plank", r, [.56, .13, halfDepth * 2], [x, .02, 0], "wood");
+      const width = 2 * L;
+      for (let i = 0; i < 8; i++) this.box("trap-plank", r, [.57, .13, halfDepth * 2], [(i - 3.5) * .6, .02, 0], "wood");
       for (const side of [-1, 1]) {
-        this.box("trap-shaft-wall", r, [.25, 6.4, halfDepth * 2], [side * (L / 2 + .13), -3.2, 0], "rock");
-        this.box("trap-shaft-end", r, [L, 6.4, .24], [0, -3.2, side * (halfDepth + .12)], "stone-dark");
-        this.box("trap-rim", r, [L, .13, .15], [0, .04, side * (halfDepth + .085)], "warning");
+        this.box("trap-shaft-wall", r, [.25, 6.4, halfDepth * 2], [side * (width / 2 + .13), -3.2, 0], "rock");
+        this.box("trap-shaft-end", r, [width, 6.4, .24], [0, -3.2, side * (halfDepth + .12)], "stone-dark");
+        this.box("trap-rim", r, [width, .13, .15], [0, .04, side * (halfDepth + .085)], "warning");
       }
-      this.box("pit-shadow", r, [L, .06, halfDepth * 2], [0, -2.12, 0], "pit");
+      this.pitSurface(r, width + .05, halfDepth * 2 + .04, "trap");
     });
-    for (const [name, width] of [["spikes", 2], ["spikes-double", 4.5]] as const) make(name, r => {
-      const count = width > 3 ? 11 : 6;
+    make("spikes-double", r => {
+      const width = 4.5, count = 11;
       for (let i = 0; i < count; i++) {
         const x = (i / (count - 1) - .5) * (width - .25), z = Math.sin(i * 2.3) * .48;
         const size = .27 + (i % 4) * .09;
@@ -490,31 +486,30 @@ export class RunnerRenderer3D {
         rock.parent = r; rock.position.set(x, size * .36, z); rock.rotation.set(i * .11, i * 1.7, i * .23);
         rock.material = this.mats[i % 3 ? "moss-stone" : "rock"];
       }
-      for (let i = 0; i < (width > 3 ? 6 : 3); i++) {
-        const x = (i / (width > 3 ? 5 : 2) - .5) * (width - .6), z = i % 2 ? -.38 : .4;
+      for (let i = 0; i < 6; i++) {
+        const x = (i / 5 - .5) * (width - .6), z = i % 2 ? -.38 : .4;
         const branch = this.cylinder("fallen-twig", r, { diameterTop: .035, diameterBottom: .12, height: .95 + (i % 3) * .18, tessellation: 6 }, [x, .18, z], "wood");
         branch.rotation.z = Math.PI / 2 + (i % 2 ? -.34 : .25); branch.rotation.y = i * .71;
       }
     });
-    for (const [name, width] of [["boulder", 1.05], ["boulder-double", 2.26]] as const) make(name, r => {
+    make("boulder", r => {
       const rock = MeshBuilder.CreatePolyhedron("boulder", { type: 2, size: 1 }, this.scene);
-      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(width, 1.1, 1); rock.material = this.mats["moss-stone"];
+      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(1.05, 1.1, 1); rock.material = this.mats["moss-stone"];
     });
-    const flameMaterial = new StandardMaterial("runner-fire-billboard", this.scene);
-    flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v1.png");
+    const flameMaterial = new StandardMaterial("runner-fire-volume", this.scene);
+    flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v2.png");
     flameMaterial.diffuseTexture.hasAlpha = true;
     flameMaterial.useAlphaFromDiffuseTexture = true; flameMaterial.disableLighting = true;
     flameMaterial.emissiveColor = Color3.White(); flameMaterial.backFaceCulling = false;
-    flameMaterial.transparencyMode = StandardMaterial.MATERIAL_ALPHABLEND;
-    for (const [name, width] of [["fire", 2.1], ["fire-double", 4.55]] as const) make(name, r => {
-      this.box("brazier", r, [width, .3, 1.4], [0, .15, 0], "metal");
-      this.box("coals", r, [width - .2, .06, 1.2], [0, .31, 0], "ember");
-      const count = width > 3 ? 7 : 3;
-      for (let i = 0; i < count; i++) {
-        const x = (i / (count - 1) - .5) * (width - .75), z = i % 2 ? -.2 : .18;
-        const size = 1.85 + (i % 3) * .25;
-        const flame = MeshBuilder.CreatePlane("flame-billboard", { width: size * .78, height: size }, this.scene);
-        flame.parent = r; flame.position.set(x, .3 + size * .48, z); flame.billboardMode = Mesh.BILLBOARDMODE_Y;
+    flameMaterial.transparencyMode = StandardMaterial.MATERIAL_ALPHATESTANDBLEND;
+    flameMaterial.alphaCutOff = .08;
+    make("fire-double", r => {
+      for (let i = 0; i < FLAME_HEIGHTS.length; i++) {
+        const flame = flameMesh(this.scene, i % 2 === 0);
+        flame.parent = r;
+        flame.position.set((i - 3) * .62, -.015, Math.sin(i * 2.1) * .31);
+        flame.scaling.set(1.16, FLAME_HEIGHTS[i], .94);
+        flame.rotation.y = i * .64;
         flame.material = flameMaterial;
       }
     });
@@ -539,10 +534,10 @@ export class RunnerRenderer3D {
       m.emissiveColor = Color3.White(); m.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; m.alphaCutOff = .4;
       this.mats[`power-${kind}`] = m;
       make(kind, r => {
-        const icon = MeshBuilder.CreatePlane("icon", { size: 1.5 }, this.scene); icon.parent = r; icon.position.y = 1.35; icon.material = m; icon.billboardMode = Mesh.BILLBOARDMODE_Y;
-        const ring = MeshBuilder.CreateTorus("halo", { diameter: 1.7, thickness: .1, tessellation: 28 }, this.scene); ring.parent = r; ring.position.y = .06; ring.material = this.mats[`ring-${kind}`];
+        const icon = MeshBuilder.CreatePlane("icon", { size: 1.25 }, this.scene); icon.parent = r; icon.position.y = 1.15; icon.material = m; icon.billboardMode = Mesh.BILLBOARDMODE_Y;
+        const ring = MeshBuilder.CreateTorus("halo", { diameter: 1.42, thickness: .08, tessellation: 28 }, this.scene); ring.parent = r; ring.position.y = .06; ring.material = this.mats[`ring-${kind}`];
         // A light pillar so power-ups read from far away.
-        const beam = this.cylinder("beam", r, { diameterTop: 1.1, diameterBottom: 1.5, height: 7, tessellation: 16 }, [0, 3.5, 0], `beam-${kind}`); beam.material = this.mats[`beam-${kind}`];
+        this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
       });
     });
   }
@@ -639,16 +634,32 @@ export class RunnerRenderer3D {
     const fall = dogFall(world, this.settings.reducedMotion);
     if (this.schoolSheet) {
       let frame = pose.sheet === "run" ? Math.floor(pose.frame / 2) : 4 + pose.frame;
-      if (fall.tucked || (!capture && world.airborne && world.jumpCount === 2)) frame = 6;
+      if (falling && world.captureTime > .06) frame = fall.frame >= 4 ? 7 : 6;
+      else if (!capture && world.airborne && world.jumpCount === 2) frame = 6;
       this.dog.frame(this.schoolSheet, frame, 4, 2);
+    } else if (falling && world.captureTime > .045) {
+      this.dog.frame(this.sheets.fall!, fall.frame, 4, 2);
     } else {
-      this.dog.frame(fall.tucked || pose.sheet === "actions" ? this.sheets.actions! : this.sheets.run!, fall.tucked ? 6 : pose.frame, 4, 2);
+      this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
     const squash = pose.sheet === "actions" && pose.frame === 3 && (!capture || falling) ? .1 : 0;
     this.dog.root.position.set(player.x + fx * fall.forward, DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
-    this.dog.root.rotation.z = fall.roll * (lateral > 0 ? -1 : 1);
-    this.dog.root.setEnabled(!falling || fall.drop < world.jumpHeight + 3.6);
+    const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
+    this.dog.root.rotation.z = roll * (lateral > 0 ? -1 : 1);
     this.dog.root.scaling.setAll(1);
+    this.dog.material.alpha = 1;
+    if (falling && world.fallObstacle) {
+      const depth = waterDepth(world.fallObstacle.kind);
+      const below = fall.drop - world.jumpHeight - depth;
+      this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
+      if (!this.waterImpact && below > .28 && world.phase === "caught") {
+        this.waterImpact = true;
+        if (!this.settings.reducedMotion) {
+          this.burst(this.magic, new Vector3(this.dog.root.position.x, -depth + .08, this.dog.root.position.z), 12, ["#d7eeee", "#416e72"]);
+        }
+      }
+    }
+    this.dog.root.setEnabled(this.dog.material.alpha > 0);
     this.skinHalo.setEnabled(this.dogLook !== "original" && !falling);
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(getDogLook(this.dogLook).color);
@@ -682,6 +693,12 @@ export class RunnerRenderer3D {
     this.sky.position.set(this.camera.position.x, SKY_HEIGHT / 2 - 12, this.camera.position.z);
     const gx = Math.round(this.camera.position.x / 70) * 70, gz = Math.round(this.camera.position.z / 70) * 70;
     this.groundPlane.position.set(gx, look.groundY, gz);
+    for (const name of ["pit-water", "pit-water-long"]) {
+      const water = this.mats[name].diffuseTexture as Texture;
+      const drift = this.settings.reducedMotion ? 0 : t;
+      water.uOffset = drift * .022;
+      water.vOffset = drift * .047;
+    }
     this.drawWeather(weather, t, running && world.boost > 0, centre.heading);
     this.scene.render();
   }
@@ -696,6 +713,7 @@ export class RunnerRenderer3D {
     this.lastWorld = world;
     this.lastTime = 0;
     this.fireParticleTime = 0;
+    this.waterImpact = false;
     this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount };
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
@@ -734,6 +752,21 @@ export class RunnerRenderer3D {
       const depth = obstacleHalfDepth(item.kind, item.z);
       return [{ item, start: item.z - depth, end: item.z + depth }];
     });
+    this.groundCuts.length = 0;
+    if (world.sceneIndex !== 0) {
+      for (const { item, start, end } of openings) {
+        if (end < world.distance - BEHIND || start > world.distance + 145) continue;
+        const p = this.place(item.z, itemOffset(item));
+        const halfWidth = item.span === 3 ? ROAD_HALF : (item.span ?? 1) * LANE_WIDTH / 2;
+        const halfDepth = (end - start) / 2;
+        // The route keeps obstacles on straight sections aligned to the world axes.
+        const across = Math.abs(Math.cos(p.heading)), forward = Math.abs(Math.sin(p.heading));
+        const x = across * halfWidth + forward * halfDepth;
+        const z = forward * halfWidth + across * halfDepth;
+        this.groundCuts.push([p.x - x, p.z - z, p.x + x, p.z + z]);
+        if (this.groundCuts.length === MAX_GROUND_OPENINGS) break;
+      }
+    }
     if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = -1; }
     for (let n = first; n < first + SLOTS; n++) {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
@@ -800,9 +833,6 @@ export class RunnerRenderer3D {
       const node = new TransformNode(`corner-${turn.z}`, this.scene);
       this.instance("plaza", node);
       const wall = this.instance("dead-end", node); wall.position.z = ROAD_HALF + 1.4;
-      // Planes face -z, i.e. toward the approaching dog.
-      const sign = MeshBuilder.CreatePlane("turn-sign", { width: 4.4, height: 2.2 }, this.scene);
-      sign.parent = node; sign.position.set(0, 2.1, ROAD_HALF + .85); sign.material = this.arrowMaterial(turn.direction);
       node.position.set(corner.x, 0, corner.z); node.rotation.y = corner.heading;
       this.corners.set(turn.z, node);
     }
@@ -826,41 +856,40 @@ export class RunnerRenderer3D {
         if (item.kind === "long-gap") {
           const depth = obstacleHalfDepth(item.kind, item.z);
           for (const mesh of prop.getChildMeshes()) {
-            if (mesh.name === "fissure-wall" || mesh.name === "pit-shadow") mesh.scaling.z = depth / 1.5;
+            if (mesh.name === "fissure-wall" || mesh.name === "pit-water") mesh.scaling.z = depth / 1.5;
             else mesh.position.z += Math.sign(mesh.position.z) * (depth - 1.5);
           }
         }
         this.props.set(item.id, prop);
       }
-      const p = this.place(item.z, item.span === 3 ? 0 : (item.lane - (item.span === 2 ? .5 : 1)) * LANE_WIDTH);
+      const p = this.place(item.z, itemOffset(item));
       prop.position.set(p.x, 0, p.z); prop.rotation.y = p.heading;
-      if (isFallObstacle(item.kind)) {
-        // Only the mouth of the shaft is visible; mask the terrain below it.
-        const shadow = prop.getChildMeshes().find(mesh => mesh.name === "pit-shadow");
-        if (shadow) shadow.position.y = Math.max(-2.12, this.themes[world.sceneIndex].groundY + .05);
-      }
       if (item.kind === "coin") {
         prop.position.y = item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
       }
       else if (item.kind === "magnet" || item.kind === "shield" || item.kind === "boost") { prop.position.y = Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
-        prop.scaling.y = 1 + Math.sin(t * 13 + item.id) * .1;
-        for (const [index, mesh] of prop.getChildMeshes().entries()) if (mesh.name === "flame-billboard") {
-          mesh.scaling.x = .94 + Math.sin(t * 15 + index * 3.7) * .08;
-          mesh.scaling.y = .92 + Math.sin(t * 12 + index * 2.3) * .13;
-          mesh.rotation.z = Math.sin(t * 9 + index * 1.7) * .04;
+        const phase = this.settings.reducedMotion ? 0 : t;
+        for (const [index, mesh] of prop.getChildMeshes().entries()) {
+          const beat = item.id * .29 + index * 2.3;
+          mesh.scaling.x = 1.16 + Math.sin(phase * 11 + beat) * .12;
+          mesh.scaling.y = FLAME_HEIGHTS[index] * (1 + Math.sin(phase * 9 + beat) * .12 + Math.sin(phase * 17 - beat) * .055);
+          mesh.rotation.z = Math.sin(phase * 7 + beat) * .09;
         }
       }
       else if (item.kind === "trap" && world.fallObstacle === item) {
-        const halfDepth = obstacleHalfDepth("trap", item.z);
+        // The two leaves swing down around their outer rails, clearing the middle of the shaft.
         const planks = prop.getChildMeshes().filter(mesh => mesh.name === "trap-plank");
         for (const [index, plank] of planks.entries()) {
-          const progress = Math.min(1, Math.max(0, world.captureTime - index * .015) / .39);
-          const angle = 1.48 * progress * progress * (3 - 2 * progress);
-          plank.rotation.x = -angle;
-          plank.position.y = .02 - halfDepth * Math.sin(angle);
-          plank.position.z = halfDepth * (1 - Math.cos(angle));
+          const closedX = (index - 3.5) * (LANE_WIDTH / 4);
+          const side = Math.sign(closedX);
+          const arm = LANE_WIDTH - Math.abs(closedX);
+          const progress = Math.min(1, Math.max(0, world.captureTime - (side > 0 ? .035 : 0)) / .35);
+          const angle = 1.49 * progress * progress * (3 - 2 * progress);
+          plank.rotation.z = side * angle;
+          plank.position.x = side * (LANE_WIDTH - arm * Math.cos(angle));
+          plank.position.y = .02 - arm * Math.sin(angle);
         }
       }
     }
@@ -871,8 +900,8 @@ export class RunnerRenderer3D {
     const ticks = Math.floor(this.fireParticleTime);
     if (!ticks) return;
     this.fireParticleTime -= ticks;
-    const at = this.place(fire.z, (fire.lane - (fire.span === 2 ? .5 : 1)) * LANE_WIDTH);
-    (this.fireEmbers.emitter as Vector3).set(at.x, .55, at.z);
+    const at = this.place(fire.z, itemOffset(fire));
+    (this.fireEmbers.emitter as Vector3).set(at.x, .35, at.z);
     (this.fireSmoke.emitter as Vector3).set(at.x, 1.1, at.z);
     this.fireEmbers.manualEmitCount += ticks * (this.settings.reducedMotion ? 1 : 3);
     if (!this.settings.reducedMotion) this.fireSmoke.manualEmitCount += ticks;

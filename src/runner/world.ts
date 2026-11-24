@@ -89,7 +89,7 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   spikes: ["绊倒在乱石枯枝上", "看清路上的乱石和枯枝，换道或跳过去。"],
   boulder: ["撞上了巨石", "巨石很高，换道躲开最稳。"],
   fire: ["碰到了火焰", "换到别的道，或者跳过去。"],
-  trap: ["掉进了落穴", "看见活动木板要跳过去或提前换道。"],
+  trap: ["掉进了落穴", "看见活动木板就提前跳过去，或换到空着的跑道。"],
 };
 
 export class RunnerWorld {
@@ -191,7 +191,7 @@ export class RunnerWorld {
     if (action === "left" || action === "right") {
       const turn = this.approachingTurn;
       if (turn && turn.z - this.distance <= TURN_WINDOW) {
-        if (action !== turn.direction) { this.fail("转错了方向", "看清大箭头再转弯。"); return; }
+        if (action !== turn.direction) { this.fail("转错了方向", "按屏幕提示的方向转弯。"); return; }
         turn.taken = true; this.turnCount++; this.lastTurnDirection = turn.direction;
         return;
       }
@@ -248,7 +248,7 @@ export class RunnerWorld {
 
     const turn = this.approachingTurn;
     if (turn && this.boost > 0 && turn.z - this.distance <= 16) this.action(turn.direction);
-    if (turn && this.distance > turn.z + TURN_LATE - .01 && !turn.taken) { this.fail("冲出了弯道", "看到大箭头后，按箭头方向转弯。"); return; }
+    if (turn && this.distance > turn.z + TURN_LATE - .01 && !turn.taken) { this.fail("冲出了弯道", "看到屏幕提示后及时转弯。"); return; }
 
     for (const item of this.items) {
       if (item.done) continue;
@@ -347,7 +347,6 @@ export class RunnerWorld {
   }
 
   private row(z: number) {
-    const difficulty = Math.min(1, z / 1500);
     const scene = sceneAt(z, this.startScene);
     const roll = this.random();
     const pattern = this.rows++;
@@ -361,29 +360,19 @@ export class RunnerWorld {
       this.nextLongGap = z + 165 + this.random() * 65;
       free = 1;
     } else if (pattern < 2) {
-      // Warm-up: one fallen-log obstacle in the middle lane, then one on a side.
-      this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "block");
+      // Warm-up: an easy barrier in the middle lane, then one on a side.
+      this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "beam");
       free = pattern === 0 ? this.pick([0, 2]) : 1;
-    } else if (roll < .3 - difficulty * .1) {
-      const kind = this.pick(["block", "block", "beam", "spikes", "fire", "trap"] as const);
-      if (kind === "fire" || kind === "spikes" && this.random() < .42) {
-        // A two-lane fire or debris bed still leaves one complete lane free.
-        const lane = Math.floor(this.random() * 2);
-        this.add(z, lane, kind, { span: 2 }); free = lane === 0 ? 2 : 0;
-      } else {
-        const lane = Math.floor(this.random() * 3);
-        this.add(z, lane, kind); free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
-      }
+    } else if (roll < .16) {
+      const lane = Math.floor(this.random() * 3);
+      this.add(z, lane, this.pick(["beam", "boulder"] as const));
+      free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
     } else if (roll < .62) {
-      // Two lanes blocked, one way through.
-      const kinds = scene === 2 ? ["block", "boulder", "beam"] as const : ["block", "boulder", "spikes"] as const;
-      const [first, second] = [0, 1, 2].filter(lane => lane !== free);
-      const firstKind = this.pick(kinds), secondKind = this.pick(kinds);
-      if (second === first + 1 && firstKind === secondKind) this.add(z, first, firstKind, { span: 2 });
-      else {
-        this.add(z, first, firstKind);
-        this.add(z, second, secondKind);
-      }
+      // A single two-lane obstacle leaves one clear route.
+      const lane = this.pick([0, 1]);
+      const kind = this.pick(["block", "spikes", "fire", "trap"] as const);
+      this.add(z, lane, kind, { span: 2 });
+      free = lane === 0 ? 2 : 0;
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
       const kind = this.pick(scene === 0 ? ["gap", "gap", "block", "beam"] as const : scene === 1 ? ["block", "beam", "beam", "gap"] as const : ["beam", "block", "gap"] as const);

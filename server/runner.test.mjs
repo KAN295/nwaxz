@@ -36,7 +36,7 @@ test('the opening stretch has no obstacles and starts gently', () => {
     const w = new RunnerWorld(seed, 'endless');
     const first = w.items.filter(i => isRunObstacle(i.kind)).sort((a, b) => a.z - b.z)[0];
     assert.ok(first.z >= 80, `seed ${seed}: first obstacle at ${first.z}`);
-    assert.equal(first.span, undefined); assert.equal(first.kind, 'block');
+    assert.equal(first.span, undefined); assert.equal(first.kind, 'beam');
   }
 });
 
@@ -130,6 +130,12 @@ test('silver starts the run; gold arrives later and diamonds remain rare', () =>
 
 test('falling through a gap or trap plays the fall, while other hits do not', () => {
   for (const kind of ['gap', 'trap']) { const world = place(kind); run(world, .6); assert.equal(world.phase, 'caught'); assert.equal(world.trapFall, true); }
+  for (const lane of [0, 1, 2]) {
+    const world = place('trap', { span: 2, lane: 1 });
+    world.lane = world.position = lane;
+    run(world, .6);
+    assert.equal(world.trapFall, lane !== 0);
+  }
   const fire = place('fire'); run(fire, .6); assert.equal(fire.trapFall, false);
 });
 
@@ -161,12 +167,12 @@ test('fall animation keeps the initial contact pose, decelerates forward and nev
   const w = place('trap');
   while (w.phase === 'running') run(w, 1 / 120);
   const atContact = dogFall(w, false);
-  assert.deepEqual(atContact, { forward: 0, drop: 0, roll: 0, tucked: false });
+  assert.deepEqual(atContact, { forward: 0, drop: 0, roll: 0, frame: 0 });
   run(w, .15); const early = dogFall(w, false);
   run(w, .15); const later = dogFall(w, false);
   assert.ok(later.forward - early.forward < early.forward);
   assert.ok(later.drop - early.drop > early.drop);
-  assert.ok(later.roll > 0 && later.tucked);
+  assert.ok(later.roll > 0 && later.frame > early.frame);
   assert.equal(dogFall(w, true).roll, 0);
   w.distance = w.fallObstacle.z + obstacleHalfDepth('trap', 0) - .1;
   assert.equal(dogFall(w, false).forward, 0);
@@ -242,7 +248,7 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
         if (i.span === 2 && i.kind === 'block') sawJoinedLogs = true;
         if (!seen.has(i.id)) {
           if (i.kind === 'long-gap') { assert.ok(i.z - obstacleHalfDepth(i.kind, i.z) >= LONG_GAP_START); assert.equal(i.span, 3); long++; }
-          if (i.span === undefined) assert.ok(!w.items.some(other => other.kind === i.kind && other.z === i.z && other.lane === i.lane + 1 && other.span === undefined));
+          if (i.span === undefined) assert.ok(i.kind === 'beam' || i.kind === 'boulder', `unexpected single-lane ${i.kind}`);
           if (i.span === 3) full++;
           seen.add(i.id);
         }

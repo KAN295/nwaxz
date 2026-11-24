@@ -17,12 +17,13 @@ export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = fa
 
 export function dogFall(world: RunnerWorld, reducedMotion: boolean) {
   const item = world.fallObstacle;
-  if (!item || !isFallObstacle(item.kind)) return { forward: 0, drop: 0, roll: 0, tucked: false };
+  if (!item || !isFallObstacle(item.kind)) return { forward: 0, drop: 0, roll: 0, frame: 0 };
   const time = world.captureTime;
-  const coast = Math.min(1, time / .28);
-  const room = Math.max(0, item.z + obstacleHalfDepth(item.kind, item.z) - world.distance - .28);
-  const forward = Math.min(room, (.42 + world.speed * .012) * coast * (2 - coast));
-  const drop = Math.max(.65, -world.fallVelocity) * time + 4.9 * time * time;
-  const roll = reducedMotion ? 0 : .95 * (1 - Math.exp(-7 * time));
-  return { forward, drop, roll, tucked: time >= .12 };
+  const room = Math.max(0, item.z + obstacleHalfDepth(item.kind, item.z) - world.distance - .38);
+  const forward = Math.min(room, (.34 + world.speed * .025) * (1 - Math.exp(-time / .115)));
+  const drop = Math.max(.48, -world.fallVelocity) * time + 4.9 * time * time;
+  const lead = Math.max(0, -world.fallVelocity - 1) * .022;
+  const frame = reducedMotion ? (time < .13 ? 1 : 6) : Math.min(6, Math.floor((time + lead) / .069));
+  const roll = reducedMotion ? 0 : .59 * (1 - Math.exp(-4.8 * time)) + .08 * Math.sin(time * 13) * Math.min(1, time * 7);
+  return { forward, drop, roll, frame };
 }
