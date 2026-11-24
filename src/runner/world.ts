@@ -389,7 +389,7 @@ export class RunnerWorld {
 
     item.done = true; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
     if (this.shield > 0) { this.shield = 0; this.grace = GRACE_TIME; this.shieldSaves++; return true; }
-    const recoverable = item.span !== 3 && (kind === "block" || kind === "beam");
+    const recoverable = kind === "bridge-branch" || (item.span !== 3 && (kind === "block" || kind === "beam"));
     if (!recoverable) {
       if (isFallObstacle(kind)) {
         this.fallObstacle = item;
@@ -401,7 +401,8 @@ export class RunnerWorld {
     if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
     this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
     // Bumping a lane obstacle knocks the dog back toward the lane it came from.
-    if (Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
+    // Not on the log bridge, where leaving the middle would drop the dog off it.
+    if (kind !== "bridge-branch" && Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
     return true;
   }
 

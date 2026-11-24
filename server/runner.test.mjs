@@ -476,8 +476,14 @@ test('the longer log bridge requires staying in the middle and jumping two branc
   };
   const edge = approach(2); run(edge, .6);
   assert.equal(edge.reason, '掉下了独木桥'); assert.equal(edge.trapFall, true);
-  const branch = approach(1); run(branch, 2.2);
-  assert.equal(branch.reason, '撞上了桥上的横枝');
+  const branch = approach(1);
+  const branchZ = branch.items.filter(item => item.kind === 'bridge-branch').map(item => item.z).sort((a, b) => a - b);
+  while (branch.distance < branchZ[0] + 1 && branch.phase === 'running') branch.advance(1 / 120);
+  assert.equal(branch.phase, 'running');
+  assert.equal(branch.stumbles, 1); assert.ok(branch.danger > 0);
+  assert.equal(branch.lane, 1);
+  while (branch.phase === 'running' && branch.distance < branchZ[1] + 1) branch.advance(1 / 120);
+  assert.equal(branch.reason, '被恐怖奶蛙抓住了');
   const clear = approach(1);
   const bridge = clear.upcomingFeature;
   assert.equal(bridge.end - bridge.start, 82);
