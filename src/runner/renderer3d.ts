@@ -914,9 +914,13 @@ export class RunnerRenderer3D {
       frog.root.rotation.setAll(0);
       frog.frame(this.sheets.walk!, chaserFrame(world, this.settings.reducedMotion), 4, 4);
       frog.root.scaling.setAll(1);
-      const side = world.position > 1.4 ? -1 : 1, back = 2.4 + (1 - close) * 7;
-      frog.root.position.set(player.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, player.z - fz * back + rz * side * 1.45);
-      frog.root.setEnabled(close > .02 && !world.ride && !world.bridge);
+      // On the log bridge the frog follows the log's centre line instead of an empty side lane.
+      const onBridge = !!world.bridge;
+      const base = onBridge ? centre : player;
+      // Straight behind the dog it keeps further back so it does not hide the dog from the camera.
+      const side = onBridge ? 0 : world.position > 1.4 ? -1 : 1, back = onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7;
+      frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, base.z - fz * back + rz * side * 1.45);
+      frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0));
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
