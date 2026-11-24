@@ -1,4 +1,5 @@
 import { isFallObstacle, obstacleHalfDepth, type RunnerWorld } from "./world.ts";
+import { ROPE_GRAB_DISTANCE, ropeReleaseProgress } from "./course.ts";
 
 export const CAPTURE_GRAB_AT = .38;
 export const CAPTURE_LAUGH_AT = 1.03;
@@ -31,9 +32,16 @@ export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number 
 export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = false): { sheet: "run" | "actions"; frame: number } {
   const caught = !falling && (world.phase === "lost" || world.phase === "caught" || (world.phase === "paused" && !!world.reason));
   if (caught && world.captureTime >= .15) return { sheet: "actions", frame: world.captureTime < CAPTURE_GRAB_AT ? 3 : 2 };
-  if (world.ride) return { sheet: "actions", frame: world.ride.kind === "rope" ? 1 : 0 };
+  if (world.ride?.kind === "rope") {
+    const entering = world.distance - world.ride.start < ROPE_GRAB_DISTANCE * .53;
+    const release = ropeReleaseProgress(world.distance, world.ride);
+    return { sheet: "actions", frame: entering || (release > .16 && release < .62) ? 1 : 2 };
+  }
+  if (world.ride?.kind === "cart") return { sheet: "actions", frame: 0 };
   if (world.slide > 0 && world.jumpHeight === 0) return { sheet: "actions", frame: 3 };
   if (world.jumpHeight > 0 || world.jump > 0) return { sheet: "actions", frame: world.jump > .2 ? 1 : 2 };
+  if (world.elapsed - world.ropeLandedAt < .13) return { sheet: "actions", frame: 2 };
+  if (world.cycling) return { sheet: "actions", frame: 1 };
   if (world.stumble > 0) return { sheet: "actions", frame: 2 };
   if (reducedMotion || (!falling && !caught && world.phase !== "running")) return { sheet: "actions", frame: 0 };
   return { sheet: "run", frame: Math.floor(world.gait * 8) % 8 };

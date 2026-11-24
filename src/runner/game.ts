@@ -13,7 +13,7 @@ import {
 
 const TITLE = "奶狗快跑";
 const WEATHER_NAME = { sunny: "晴", rain: "雨", snow: "雪" } as const;
-const CUE_NAME: Record<string, string> = { gap: "裂缝", block: "倒木", beam: "低门" };
+const CUE_NAME: Record<string, string> = { gap: "裂缝", block: "倒木", beam: "低门", "bridge-branch": "桥上横枝" };
 const KEYS: Record<string, RunAction> = {
   ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
   ArrowUp: "jump", w: "jump", W: "jump", " ": "jump", ArrowDown: "slide", s: "slide", S: "slide",
@@ -24,6 +24,8 @@ const POWER_INFO = {
   boost: { name: "飞鞋冲刺", text: "加速无敌，自动转弯" },
   slow: { name: "沙漏", text: "5 秒内跑动和跳跃变慢" },
   double: { name: "双倍得分", text: "8 秒内路程和收币得分翻倍" },
+  bike: { name: "自行车", text: "9 秒内可骑过倒木和乱石枯枝" },
+  fruit: { name: "金身果实", text: "15 秒金身、加速、吸币、双倍得分和自动过弯" },
 } satisfies Record<RunPowerKind, { name: string; text: string }>;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 
@@ -317,6 +319,7 @@ export class RunnerGame {
     el.main.classList.toggle("runner-hit", w.elapsed - w.hitAt < .35);
     el.main.classList.toggle("runner-chased", w.phase === "running" && w.danger > 0);
     el.main.classList.toggle("runner-boost", w.phase === "running" && w.boost > 0);
+    el.main.classList.toggle("runner-golden", w.phase === "running" && w.fruit > 0);
     set(el.distance, `${Math.floor(w.distance)}<small>米</small>`);
     set(el.score, String(w.score));
     set(el.coins, `${w.silver}银 · ${w.gold}金 · ${w.diamond}钻`);
@@ -366,11 +369,11 @@ export class RunnerGame {
   private syncCue() {
     const w = this.world, cue = this.el.cue;
     let html = "", urgent = false, aboveRoad = false;
-    if (w.phase === "running" && (w.ride || w.boost === 0)) {
+    if (w.phase === "running" && (w.ride || w.bridge || !w.invincible)) {
       const turn = w.approachingTurn, toTurn = turn ? turn.z - w.distance : Infinity;
       const next = w.nextObstacle;
-      const ride = w.upcomingRide;
-      const requiredMove = next?.span === 3 && next.z - w.distance < w.speed * 1.6 ? next : undefined;
+      const feature = w.upcomingFeature;
+      const requiredMove = next?.span === 3 && next.z - w.distance < w.speed * 1.6 && !(w.cycling && (next.kind === "block" || next.kind === "spikes")) ? next : undefined;
       const longGap = next?.kind === "long-gap" ? next : undefined;
       const toLip = longGap ? longGap.z - obstacleHalfDepth("long-gap", longGap.z) - w.distance : Infinity;
       if (w.ride?.kind === "rope") {
@@ -383,6 +386,11 @@ export class RunnerGame {
           urgent = blocked.z - w.distance < w.speed * .8;
           html = blocked.lane === 0 ? "<b>▶</b><span>右侧轨道畅通</span>" : "<b>◀</b><span>左侧轨道畅通</span>";
         } else html = "<b>↔</b><span>左右换轨</span>";
+      } else if (w.bridge) {
+        aboveRoad = true;
+        const branch = requiredMove?.kind === "bridge-branch" && !w.invincible ? requiredMove : undefined;
+        urgent = !!branch && branch.z - w.distance < w.speed * .55;
+        html = branch ? "<b>▲</b><span>跳过横枝</span>" : "<b>│</b><span>走桥中央</span>";
       } else if (longGap && toLip < w.speed * 1.75) {
         if (toLip >= 0) {
           urgent = w.jumpCount === 0 && toLip < w.speed * .19;
@@ -391,10 +399,12 @@ export class RunnerGame {
           urgent = w.jump < .39;
           html = `<b>▲</b><span>${urgent ? "再跳一次" : "空中准备再跳"}</span>`;
         }
-      } else if (ride && (!requiredMove || requiredMove.z >= ride.start)) {
+      } else if (feature && (!requiredMove || requiredMove.z >= feature.start)) {
         aboveRoad = true;
-        urgent = ride.start - w.distance < w.speed * .42;
-        html = ride.kind === "rope" ? `<b>▲</b><span>${urgent ? "跳起来抓绳索" : "前方滑索"}</span>` : "<b>↔</b><span>前方矿车</span>";
+        urgent = feature.start - w.distance < w.speed * .42;
+        if (feature.kind === "rope") html = `<b>▲</b><span>${urgent ? "跳起来抓绳索" : "前方滑索"}</span>`;
+        else if (feature.kind === "cart") html = "<b>↔</b><span>前方矿车</span>";
+        else html = "<b>│</b><span>前方独木桥</span><small>走中间</small>";
       } else if (turn && toTurn < 55) {
         aboveRoad = true;
         urgent = w.turnWindow;
@@ -587,7 +597,8 @@ export class RunnerGame {
         <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
         <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。</li>
-        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
+        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。遗迹的<b>独木桥</b>要走中间并跳过横枝。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
+        <li>稀有<b>自行车</b>可骑过倒木和乱石枯枝。野生果树极少会滚落<b>金身果实</b>，捡到可获得 15 秒金身、加速、吸币和双倍得分。</li>
         <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
         <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>

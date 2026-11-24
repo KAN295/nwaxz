@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, LONG_GAP_START, readRunRecord, isRunObstacle, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
+import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
-import { elevationAt, sectionRide } from '../src/runner/course.ts';
+import { elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
@@ -144,7 +144,7 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
 });
 
 test('a long gap needs two jumps at both introduction and top speed, with or without slow time', () => {
-  for (const z of [640, 2500]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
+  for (const z of [675, 2500]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
     const half = obstacleHalfDepth('long-gap', z), edge = z - half;
     const attempt = (double) => {
       const w = place('long-gap', { z, span: 3 });
@@ -276,10 +276,13 @@ test('long frames are clamped and fixed steps prevent tunnelling', () => {
 
 /** Simple bot that reads the course the way a player would. */
 function drive(w) {
-  if (w.upcomingRide?.kind === 'rope' && w.upcomingRide.start - w.distance < w.speed * .30 && !w.airborne) w.action('jump');
+  const feature = w.upcomingFeature;
+  if (feature?.kind === 'rope' && feature.start - w.distance < w.speed * .30 && !w.airborne) w.action('jump');
+  if (feature?.kind === 'bridge' && feature.start - w.distance < 19 && w.lane !== 1) w.action(w.lane === 0 ? 'right' : 'left');
   const turn = w.approachingTurn; if (turn && w.turnWindow && turn.z - w.distance <= 12) w.action(turn.direction);
   const ahead = w.items.filter(i => isRunObstacle(i.kind) && !i.done && i.z + obstacleHalfDepth(i.kind, i.z) >= w.distance).sort((a, b) => a.z - b.z);
   const next = ahead[0]; if (!next) return;
+  if (w.bridge && next.kind !== 'bridge-branch') return;
   if (next.kind === 'long-gap') {
     const toLip = next.z - obstacleHalfDepth(next.kind, next.z) - w.distance;
     if ((w.jumpCount === 0 && toLip < w.speed * .13) || (w.jumpCount === 1 && w.jump < .3)) w.action('jump');
@@ -393,7 +396,7 @@ test('terrain rises and falls continuously and stays level across scene boundari
 test('the aqueduct requires grabbing the rope, and the rope can be steered and exited', () => {
   const use = jump => {
     const w = new RunnerWorld(9, 'endless', 0);
-    const rope = sectionRide(0, w.startScene);
+    const rope = sectionFeature(0, w.startScene);
     assert.equal(rope.kind, 'rope');
     w.start(); w.distance = rope.start - 4;
     if (jump) w.action('jump');
@@ -413,13 +416,14 @@ test('the aqueduct requires grabbing the rope, and the rope can be steered and e
   assert.equal(w.phase, 'running');
   assert.equal(w.ride, undefined);
   assert.equal(w.jumpHeight, 0);
-  assert.equal(sectionRide(0, 1), undefined);
+  assert.ok(Number.isFinite(w.ropeLandedAt));
+  assert.equal(sectionFeature(0, 1).kind, 'bridge');
 });
 
 test('minecart boarding is automatic, and only the clear track passes each rockfall', () => {
   const board = () => {
     const w = new RunnerWorld(5, 'endless', 2);
-    const cart = sectionRide(0, w.startScene);
+    const cart = sectionFeature(0, w.startScene);
     assert.equal(cart.kind, 'cart');
     w.start(); w.distance = cart.start - 2; run(w, .27);
     assert.equal(w.ride.kind, 'cart');
@@ -433,6 +437,73 @@ test('minecart boarding is automatic, and only the clear track passes each rockf
   assert.equal(w.phase, 'running');
   assert.equal(w.ride, undefined);
   assert.ok(w.coins >= 8);
+});
+
+test('rope preserves the initial jump height and releases onto the deck with a descending arc', () => {
+  const rope = sectionFeature(0, 0);
+  assert.equal(riderHeightAt(rope.start, rope, .54, .19), .54);
+  assert.ok(riderHeightAt(rope.start + .2, rope, .54, .19) > .56);
+  const release = rope.end - ROPE_RELEASE_DISTANCE;
+  assert.ok(Math.abs(riderHeightAt(release - .001, rope) - riderHeightAt(release + .001, rope)) < .01);
+  assert.ok(riderHeightAt(release + 2, rope) > riderHeightAt(release + 6, rope));
+  assert.equal(riderHeightAt(rope.end, rope), 0);
+});
+
+test('log bridge requires the middle and a jump over its transverse branch', () => {
+  const approach = (lane) => {
+    const w = new RunnerWorld(5, 'endless', 1);
+    w.start(); w.distance = 136; w.lane = w.position = lane;
+    return w;
+  };
+  const edge = approach(2); run(edge, .6);
+  assert.equal(edge.reason, '掉下了独木桥'); assert.equal(edge.trapFall, true);
+  const branch = approach(1); run(branch, 2.2);
+  assert.equal(branch.reason, '撞上了桥上的横枝');
+  const clear = approach(1);
+  while (clear.distance < 186 && clear.phase === 'running') { drive(clear); clear.advance(1 / 120); }
+  assert.equal(clear.phase, 'running');
+  assert.equal(clear.bridge, undefined);
+});
+
+test('bicycle clears logs and debris and leaves low gates and pits dangerous', () => {
+  for (const kind of ['block', 'spikes', 'beam', 'gap']) {
+    const w = place('bike', { z: .7 });
+    w.items.push({ id: 2, kind, lane: 1, z: 5, span: 3, done: false });
+    run(w, .6);
+    assert.equal(w.bike > 8, true);
+    assert.equal(w.phase, ['block', 'spikes'].includes(kind) ? 'running' : 'caught');
+  }
+});
+
+test('golden fruit attracts coins, doubles scores, protects against obstacles and runs for 15 seconds', () => {
+  const w = place('fruit', { z: .7 });
+  w.nextTurn = w.nextRow = w.nextFeatureSection = Infinity;
+  w.turns = [{ z: 34, direction: 'right', taken: false }];
+  w.items.push({ id: 2, z: 4.7, lane: 0, kind: 'coin', done: false }, { id: 3, z: 7, lane: 1, span: 3, kind: 'gap', done: false });
+  while (w.fruit === 0) w.advance(1 / 120);
+  assert.equal(w.fruit, 15);
+  run(w, 1.6);
+  assert.equal(w.phase, 'running'); assert.equal(w.coins, 1); assert.equal(w.coinScore, 100); assert.equal(w.turnCount, 1);
+  assert.ok(w.score >= Math.floor(w.distance) * 19);
+  w.distance = 260;
+  w.items = []; w.turns = [];
+  run(w, 13.42);
+  assert.equal(w.fruit, 0); assert.equal(w.invincible, false);
+});
+
+test('bicycle and golden fruit stay rare and only generate in eligible sections', () => {
+  const pickups = [];
+  for (let seed = 1; seed <= 60; seed++) {
+    const w = new RunnerWorld(seed, 'endless', seed % 3);
+    w.distance = 6800; w.populate();
+    const powers = w.items.filter(item => isRunPower(item.kind) && item.z >= BIKE_START);
+    pickups.push(...powers.map(item => item.kind));
+    assert.ok(w.items.filter(item => item.kind === 'fruit').every(item => item.z >= FRUIT_START && sceneAt(item.z, w.startScene) !== 2));
+    assert.ok(w.items.filter(item => item.kind === 'bike').every(item => item.z >= BIKE_START));
+  }
+  const rate = kind => pickups.filter(value => value === kind).length / pickups.length;
+  assert.ok(rate('fruit') > .002 && rate('fruit') < .025);
+  assert.ok(rate('bike') > .025 && rate('bike') < .09);
 });
 
 test('tilt calibration supports portrait/landscape, hysteresis and missing sensors', () => {

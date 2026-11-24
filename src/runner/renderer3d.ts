@@ -19,7 +19,7 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
-import { elevationAt, rideLateralScale, ROPE_LANE_SCALE, ropeHeightAt, SCENE_LENGTH, sectionRide, type RideSection } from "./course.ts";
+import { BRIDGE_RAVINE_HALF_WIDTH, BRIDGE_WATER_Y, elevationAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SCENE_LENGTH, sectionFeature, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
@@ -51,21 +51,25 @@ const FLAMES = [
 const POWER_COLORS: Record<RunPowerKind, [string, string]> = {
   magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"],
   slow: ["#ba91ee", "#ecd6ff"], double: ["#e8a344", "#ffe8ab"],
+  bike: ["#44cbb2", "#acf9e8"], fruit: ["#ffb831", "#fff0a3"],
 };
 const POWER_ART = {
   magnet: 0, shield: 1, boost: 2,
   slow: "/assets/runner/pickup-hourglass-v1.webp", double: "/assets/runner/pickup-double-score-v1.webp",
-} satisfies Record<RunPowerKind, number | string>;
+  bike: "/assets/runner/pickup-bicycle-v1.webp",
+} satisfies Record<Exclude<RunPowerKind, "fruit">, number | string>;
+const FRUIT_TREE = "runner-fruit-tree";
+const ORES = ["mine-amethyst", "mine-calcite", "mine-malachite"] as const;
 const GROVES = [
-  { ground: -7, spacing: 5, trees: [{ name: "river-cypress", height: 13.2 }, { name: "river-willow", height: 12 }] },
-  { ground: -.35, spacing: 3, trees: [{ name: "temple-banyan", height: 7.8 }, { name: "temple-maple", height: 6.9 }] },
-  { ground: -.35, spacing: 6, trees: [{ name: "mine-dead-birch", height: 2.9 }, { name: "mine-old-root", height: 1.65 }] },
+  { ground: -7, spacing: 5, trees: [{ name: "river-cypress", height: 13.2 }, { name: "river-willow", height: 12 }, { name: "river-pine", height: 14.2 }, { name: FRUIT_TREE, height: 12.4 }] },
+  { ground: -.35, spacing: 3, trees: [{ name: "temple-banyan", height: 7.8 }, { name: "temple-maple", height: 6.9 }, { name: "temple-ginkgo", height: 8.5 }, { name: FRUIT_TREE, height: 7.7 }] },
+  { ground: -.35, spacing: 6, trees: [{ name: "mine-dead-birch", height: 2.9 }, { name: "mine-old-root", height: 1.65 }, { name: "mine-petrified-root", height: 2.15 }] },
 ] as const;
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | undefined)[]; pierCut: boolean; ropeGap: boolean };
+type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 
@@ -84,9 +88,11 @@ export class RunnerRenderer3D {
   private templates = new Map<string, TransformNode>();
   private props = new Map<number, TransformNode>();
   private corners = new Map<number, TransformNode>();
-  private ropes = new Map<number, TransformNode>();
-  private ropeRouteVersion = -1;
+  private crossings = new Map<number, TransformNode>();
+  private crossingRouteVersion = -1;
   private cart: TransformNode;
+  private bicycle: TransformNode;
+  private bikeWheels: TransformNode[];
   private ropeHandle: TransformNode;
   private ropeLanyard: AbstractMesh;
   private cartLane = 0;
@@ -184,9 +190,11 @@ export class RunnerRenderer3D {
 
     this.buildTemplates();
     this.cart = this.instance("minecart", new TransformNode("runner-minecart", this.scene));
+    this.bicycle = this.instance("bicycle", new TransformNode("runner-bicycle", this.scene));
+    this.bikeWheels = this.bicycle.getChildTransformNodes().filter(node => node.name === "bicycle-wheel");
     this.ropeHandle = this.instance("rope-handle", new TransformNode("runner-rope-handle", this.scene));
     this.ropeLanyard = this.ropeHandle.getChildMeshes().find(mesh => mesh.name === "rope-lanyard")!;
-    this.cart.setEnabled(false); this.ropeHandle.setEnabled(false);
+    this.cart.setEnabled(false); this.bicycle.setEnabled(false); this.ropeHandle.setEnabled(false);
     this.buildSlots();
     this.buildWeather();
     this.resize();
@@ -275,13 +283,20 @@ export class RunnerRenderer3D {
     this.mat("log-end", "#dbc4a6", "/assets/runner/obstacle-cedar-ring-v1.webp");
     this.mat("obstacle-rock", "#d6d6c0", "/assets/runner/obstacle-fractured-rock-v1.webp");
     this.mat("zipline", "#b89a73", wood).emissiveColor.set(.28, .22, .16);
-    const crystal = this.mat("mine-amethyst", "#ffffff", "/assets/runner/mine-amethyst-v1.webp");
-    crystal.diffuseTexture!.hasAlpha = true;
-    crystal.useAlphaFromDiffuseTexture = true;
-    crystal.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST;
-    crystal.alphaCutOff = .28;
-    crystal.disableLighting = true; crystal.backFaceCulling = false;
-    crystal.emissiveColor.set(.72, .65, .79);
+    for (const [i, name] of ORES.entries()) {
+      const crystal = this.mat(name, "#ffffff", `/assets/runner/${name}-v1.webp`);
+      crystal.diffuseTexture!.hasAlpha = true;
+      crystal.useAlphaFromDiffuseTexture = true;
+      crystal.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST;
+      crystal.alphaCutOff = .28;
+      crystal.disableLighting = true; crystal.backFaceCulling = false;
+      crystal.emissiveColor.setAll([.78, .74, .82][i]);
+    }
+    this.mat("bike-frame", "#32c3a7").specularColor.set(.45, .52, .51);
+    this.mat("bike-rubber", "#202528").specularColor.setAll(.04);
+    this.mat("bike-chrome", "#8a9b9e").specularColor.setAll(.55);
+    this.glow("fruit-peel", "#ffca35", "#825014").specularColor.set(.7, .42, .19);
+    this.mat("fruit-leaf", "#719237");
     this.mat("metal", "#9a9a9a", rust);
     this.mat("rail", "#b9b4aa", rust);
     this.mat("pit", "#05080a").specularColor.setAll(0);
@@ -295,6 +310,7 @@ export class RunnerRenderer3D {
       const beam = this.glow(`beam-${kind}`, color, color); beam.alpha = .18; beam.disableLighting = true; beam.backFaceCulling = false; beam.alphaMode = Engine.ALPHA_ADD;
     }
     for (const grove of GROVES) for (const { name } of grove.trees) {
+      if (this.mats[`tree-${name}`]) continue;
       const tree = this.mat(`tree-${name}`, "#ffffff", `/assets/runner/trees/${name}-v1.webp`);
       tree.diffuseTexture!.hasAlpha = true;
       tree.useAlphaFromDiffuseTexture = true;
@@ -467,13 +483,6 @@ export class RunnerRenderer3D {
       this.box("lantern", r, [.32, .42, .32], [0, 5.95, 0], "lamp");
       const halo = MeshBuilder.CreatePlane("halo", { size: 2.2 }, this.scene); halo.parent = r; halo.position.set(0, 5.95, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
     });
-    for (const side of [-1, 1]) make(side === -1 ? "amethyst-left" : "amethyst-right", r => {
-      for (const [z, y, size, yaw] of [[-.64, .93, 1.9, .9], [1.06, .50, .95, 1.23]] as const) {
-        const crystal = MeshBuilder.CreatePlane("amethyst-vein", { size }, this.scene);
-        crystal.parent = r; crystal.position.set(side * 4.12, y, z); crystal.rotation.y = side * yaw;
-        crystal.scaling.x = side; crystal.material = this.mats["mine-amethyst"]; crystal.isPickable = false;
-      }
-    });
     make("zipline-anchor", r => {
       for (const side of [-1, 1]) {
         this.box("zipline-post", r, [.43, 3.8, .48], [side * 2.95, 1.78, 0], "wood");
@@ -485,6 +494,38 @@ export class RunnerRenderer3D {
     make("rope-handle", r => {
       this.cylinder("rope-lanyard", r, { height: 1, diameter: .073, tessellation: 9 }, [0, -.5, 0], "zipline");
       this.box("rope-pulley", r, [.29, .23, .45], [0, 0, 0], "metal");
+    });
+    make("bicycle", r => {
+      const rod = (parent: TransformNode, a: [number, number], b: [number, number], diameter: number, material: string) => {
+        const dy = b[0] - a[0], dz = b[1] - a[1];
+        const part = this.cylinder("bicycle-tube", parent, { height: Math.hypot(dy, dz), diameter, tessellation: 10 }, [0, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2], material);
+        part.rotation.x = Math.atan2(dz, dy);
+      };
+      const axleY = .40;
+      for (const z of [-.67, .67]) {
+        const wheel = new TransformNode("bicycle-wheel", this.scene); wheel.parent = r; wheel.position.set(0, axleY, z);
+        for (const [diameter, thickness, material] of [[.70, .098, "bike-rubber"], [.64, .034, "bike-chrome"]] as const) {
+          const rim = MeshBuilder.CreateTorus("bicycle-rim", { diameter, thickness, tessellation: 28 }, this.scene);
+          rim.parent = wheel; rim.rotation.z = Math.PI / 2; rim.material = this.mats[material]; rim.isPickable = false;
+        }
+        for (let i = 0; i < 4; i++) {
+          const a = i * Math.PI / 4, y = .31 * Math.cos(a), z = .31 * Math.sin(a);
+          rod(wheel, [-y, -z], [y, z], .016, "bike-chrome");
+        }
+      }
+      const seat: [number, number] = [.96, -.36], pedal: [number, number] = [.39, -.15], head: [number, number] = [.92, .49];
+      for (const [a, b] of [[seat, pedal], [seat, head], [pedal, head], [[axleY, -.67], pedal], [[axleY, -.67], seat], [[axleY, .67], head]] as [[number,number], [number,number]][]) rod(r, a, b, .073, "bike-frame");
+      this.box("saddle", r, [.30, .085, .31], [0, 1.02, -.40], "bike-rubber");
+      rod(r, head, [1.15, .56], .06, "bike-chrome");
+      this.box("handlebar", r, [.65, .061, .073], [0, 1.15, .55], "bike-rubber");
+    });
+    make("fruit", r => {
+      const body = MeshBuilder.CreateSphere("rolling-fruit", { diameter: .68, segments: 18 }, this.scene);
+      body.parent = r; body.scaling.y = .88; body.material = this.mats["fruit-peel"]; body.isPickable = false;
+      this.cylinder("fruit-stem", r, { height: .14, diameterTop: .047, diameterBottom: .062, tessellation: 8 }, [0, .34, 0], "wood");
+      const leaf = MeshBuilder.CreateSphere("fruit-leaf", { diameter: .24, segments: 10 }, this.scene);
+      leaf.parent = r; leaf.position.set(.108, .37, 0); leaf.scaling.set(1, .19, .56); leaf.rotation.z = .46;
+      leaf.material = this.mats["fruit-leaf"]; leaf.isPickable = false;
     });
     make("minecart", r => {
       this.box("cart-floor", r, [1.55, .26, 1.86], [0, .28, 0], "metal");
@@ -605,6 +646,10 @@ export class RunnerRenderer3D {
       this.box("rockfall-crossbar", r, [4.35, .23, .27], [0, .9, -.72], "wood");
       for (const x of [-1.92, 1.92]) this.box("rockfall-marker", r, [.23, .24, .15], [x, .93, -.895], "warning");
     });
+    make("bridge-branch-wide", r => {
+      const branch = this.fallenLog("bridge-cross-branch", r, 1.93, .63, [0, .30, 0]);
+      branch.rotation.set(.10, -.14, 1.40);
+    });
     const flameMaterial = new StandardMaterial("runner-fire-volume", this.scene);
     flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v2.png");
     flameMaterial.diffuseTexture.hasAlpha = true;
@@ -636,6 +681,7 @@ export class RunnerRenderer3D {
     });
     const powers = this.texture("/assets/runner/powerups-v1.png");
     for (const kind of RUN_POWERS) {
+      if (kind === "fruit") continue;
       const art = POWER_ART[kind];
       const texture = typeof art === "number" ? powers.clone() : this.texture(art);
       texture.hasAlpha = true;
@@ -671,7 +717,11 @@ export class RunnerRenderer3D {
       const trees = [treePlane.clone(`runner-tree-${i}-left`), treePlane.clone(`runner-tree-${i}-right`)];
       for (const tree of trees) tree.setEnabled(false);
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
-      const add = (name: string, group: TransformNode, every = 1, offset = 0) => { const node = this.instance(name, group); if (every > 1 || name === "aqueduct-wall") decor.push({ node, every, offset }); return node; };
+      const add = (name: string, group: TransformNode, every = 1, offset = 0) => {
+        const node = this.instance(name, group);
+        if (every > 1 || name === "aqueduct-wall" || name === "temple-ledge") decor.push({ node, every, offset });
+        return node;
+      };
       ["aqueduct", "temple", "mine"].forEach((theme, t) => {
         const group = new TransformNode(`slot-${i}-${theme}`, this.scene); group.parent = root; themes.push(group);
         lanes.push([0, 1, 2].map(lane => {
@@ -681,10 +731,16 @@ export class RunnerRenderer3D {
         }));
         if (t === 0) { add("aqueduct-wall", group); add("aqueduct-pier", group, 5, 0); add("lamp-post", group, 5, 3); }
         if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("lamp-post", group, 5, 3); }
-        if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); add("amethyst-left", group, 5, 2); add("amethyst-right", group, 5, 4); }
+        if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); }
         group.setEnabled(false);
       });
-      this.slots.push({ n: -1, root, themes, lanes, trees, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, ropeGap: false });
+      const ores = [-1, 1].map(side => {
+        const ore = MeshBuilder.CreatePlane("mine-ore-vein", { size: 1 }, this.scene);
+        ore.parent = themes[2]; ore.rotation.y = side * .98; ore.isPickable = false;
+        ore.setEnabled(false);
+        return ore;
+      });
+      this.slots.push({ n: -1, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false });
     }
   }
 
@@ -798,16 +854,26 @@ export class RunnerRenderer3D {
     } else {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
-    const squash = pose.sheet === "actions" && pose.frame === 3 ? .1 : 0;
-    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight - squash - fall.drop, player.z + fz * fall.forward);
+    const bike = world.cycling && !capture;
+    const lift = bike ? this.drawBike(world, player, centre.heading) : 0;
+    this.bicycle.setEnabled(bike);
+    const rope = world.ride?.kind === "rope" ? world.ride : undefined;
+    const release = rope ? ropeReleaseProgress(world.distance, rope) : 0;
+    const land = !this.settings.reducedMotion && !capture ? Math.max(0, 1 - (world.elapsed - world.ropeLandedAt) / .16) : 0;
+    const squash = (pose.sheet === "actions" && pose.frame === 3 ? .1 : 0) + land * .08;
+    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
-    const lean = world.ride && !capture && !this.settings.reducedMotion ? (world.lane - world.position) * .13 - (world.ride.kind === "rope" ? lateral * .11 : 0) : 0;
+    const motion = !capture && !this.settings.reducedMotion;
+    const swing = rope ? -lateral * .11 * (1 - release) + Math.sin(Math.PI * release) * .17 : 0;
+    const lean = motion && (world.ride || bike) ? (world.lane - world.position) * .13 + swing : 0;
     this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.setAll(1);
+    this.dog.root.scaling.y -= land * .10;
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
-      const surface = world.fallObstacle.ride === "rope" ? -7 : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
+      const feature = world.fallObstacle.feature;
+      const surface = feature === "rope" ? -7 : feature === "bridge" ? BRIDGE_WATER_Y : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
       const below = surface - player.y - world.jumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
@@ -818,11 +884,11 @@ export class RunnerRenderer3D {
       }
     }
     this.dog.root.setEnabled(this.dog.material.alpha > 0);
-    this.skinHalo.setEnabled(this.dogLook !== "original" && !capture && !world.ride);
+    this.skinHalo.setEnabled((world.fruit > 0 || this.dogLook !== "original") && !capture && !world.ride);
     if (this.skinHalo.isEnabled()) {
-      const hue = Color3.FromHexString(getDogLook(this.dogLook).color);
+      const hue = Color3.FromHexString(world.fruit > 0 ? "#ffcf41" : getDogLook(this.dogLook).color);
       (this.skinHalo.material as StandardMaterial).emissiveColor.copyFrom(hue);
-      this.skinHalo.position.set(player.x, player.y + .08 + world.jumpHeight, player.z);
+      this.skinHalo.position.set(player.x, player.y + .08 + world.jumpHeight + lift, player.z);
       this.skinHalo.scaling.setAll(1 + Math.sin(t * 5) * .07);
     }
     const overGap = world.items.some(gap => (gap.kind === "gap" || gap.kind === "long-gap") && Math.abs(gap.z - world.distance) < obstacleHalfDepth(gap.kind, gap.z) && coversLane(gap, world.position, .6));
@@ -830,7 +896,7 @@ export class RunnerRenderer3D {
     this.shadow.scaling.setAll(Math.max(.4, 1 - world.jumpHeight * .25));
     this.shadow.setEnabled(!falling && !overGap && !world.ride);
 
-    this.drawEffects(world, player, t, dt, capture);
+    this.drawEffects(world, player, t, dt, capture, lift);
 
     if (!falling) this.updateCamera(world, player, centre, grab, dt, t);
     // Chaser: shown for the opening sprint and after a stumble.
@@ -846,7 +912,7 @@ export class RunnerRenderer3D {
       frog.root.scaling.setAll(1);
       const side = world.position > 1.4 ? -1 : 1, back = 2.4 + (1 - close) * 7;
       frog.root.position.set(player.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, player.z - fz * back + rz * side * 1.45);
-      frog.root.setEnabled(close > .02 && !world.ride);
+      frog.root.setEnabled(close > .02 && !world.ride && !world.bridge);
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
@@ -867,8 +933,8 @@ export class RunnerRenderer3D {
     this.route = new RunnerRoute3D();
     for (const prop of this.props.values()) prop.dispose();
     for (const corner of this.corners.values()) corner.dispose();
-    for (const rope of this.ropes.values()) rope.dispose();
-    this.props.clear(); this.corners.clear(); this.ropes.clear();
+    for (const crossing of this.crossings.values()) crossing.dispose();
+    this.props.clear(); this.corners.clear(); this.crossings.clear();
     for (const slot of this.slots) { slot.n = -1; slot.theme = -1; }
     this.routeVersion = -1;
     this.lastWorld = world;
@@ -921,16 +987,16 @@ export class RunnerRenderer3D {
     });
     this.groundCuts.length = 0;
     if (world.sceneIndex !== 0) {
+      const section = sectionFeature(world.distance, world.startScene);
+      if (section.kind === "bridge" && section.end >= world.distance - BEHIND && section.start <= world.distance + 145) {
+        this.cutGround(this.place((section.start + section.end) / 2), BRIDGE_RAVINE_HALF_WIDTH, (section.end - section.start) / 2);
+      }
       for (const { item, start, end } of openings) {
         if (end < world.distance - BEHIND || start > world.distance + 145) continue;
         const p = this.place(item.z, itemOffset(item));
         const halfWidth = item.span === 3 ? ROAD_HALF : (item.span ?? 1) * LANE_WIDTH / 2;
         const halfDepth = (end - start) / 2;
-        // The route keeps obstacles on straight sections aligned to the world axes.
-        const across = Math.abs(Math.cos(p.heading)), forward = Math.abs(Math.sin(p.heading));
-        const x = across * halfWidth + forward * halfDepth;
-        const z = forward * halfWidth + across * halfDepth;
-        this.groundCuts.push([p.x - x, p.z - z, p.x + x, p.z + z]);
+        this.cutGround(p, halfWidth, halfDepth);
         if (this.groundCuts.length === MAX_GROUND_OPENINGS) break;
       }
     }
@@ -946,23 +1012,33 @@ export class RunnerRenderer3D {
         const theme = sceneAt(at, world.startScene);
         if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
         this.placeTrees(slot, at, world.turns);
+        for (const [index, ore] of slot.ores.entries()) {
+          const every = index === 0 ? 4 : 5, offset = index === 0 ? 1 : 2;
+          const visible = theme === 2 && n >= 0 && (n + offset) % every === 0;
+          ore.setEnabled(visible);
+          if (!visible) continue;
+          const variant = (Math.floor((n + offset) / every) + index) % ORES.length;
+          const size = 1.3 + (n % 3) * .30, side = index === 0 ? -1 : 1;
+          ore.material = this.mats[ORES[variant]];
+          ore.scaling.set(side * size, size, 1); ore.position.set(side * 4.14, size * .46 + (variant % 2) * .21, -.42);
+        }
       }
       const half = TILE_DEPTH / 2;
-      const ride = sectionRide(at, world.startScene);
-      const rope = ride?.kind === "rope" && ride.start < at + half && ride.end > at - half ? ride : undefined;
+      const section = sectionFeature(at, world.startScene);
+      const crossing = section.kind !== "cart" && section.start < at + half && section.end > at - half ? section : undefined;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
       const pierCut = here.some(gap => gap.item.kind === "long-gap");
-      if (recycled || pierCut !== slot.pierCut || !!rope !== slot.ropeGap) {
-        slot.pierCut = pierCut; slot.ropeGap = !!rope;
+      if (recycled || pierCut !== slot.pierCut || !!crossing !== slot.crossingGap) {
+        slot.pierCut = pierCut; slot.crossingGap = !!crossing;
         for (const d of slot.decor) {
           const inLongGap = pierCut && d.node.name === "tpl-aqueduct-pier";
-          d.node.setEnabled(!rope && !inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
+          d.node.setEnabled(!crossing && !inLongGap && ((n % d.every) + d.every) % d.every === d.offset);
         }
       }
       for (let lane = 0; lane < 3; lane++) {
         const opening = here.find(gap => coversLane(gap.item, lane));
-        const gap = rope ?? opening;
-        const id = rope ? "rope" : opening?.item;
+        const gap = crossing ?? opening;
+        const id = crossing?.kind ?? opening?.item;
         if (!recycled && id === slot.holes[lane]) continue;
         slot.holes[lane] = id;
         const tile = slot.lanes[slot.theme][lane];
@@ -988,6 +1064,12 @@ export class RunnerRenderer3D {
     }
   }
 
+  private cutGround(point: RoutePoint, halfWidth: number, halfDepth: number) {
+    const across = Math.abs(Math.cos(point.heading)), forward = Math.abs(Math.sin(point.heading));
+    const x = across * halfWidth + forward * halfDepth, z = forward * halfWidth + across * halfDepth;
+    this.groundCuts.push([point.x - x, point.z - z, point.x + x, point.z + z]);
+  }
+
   private sizeLane(node: TransformNode, start: number, end: number) {
     const length = end - start;
     node.setEnabled(length > .001);
@@ -1010,7 +1092,7 @@ export class RunnerRenderer3D {
     }
   }
 
-  private buildRope(ride: RideSection) {
+  private buildRope(ride: Extract<CourseFeature, { kind: "rope" }>) {
     const root = new TransformNode(`zipline-${ride.start}`, this.scene);
     const start = ride.start - .8, end = ride.end + .8;
     const path = Array.from({ length: 21 }, (_, i) => {
@@ -1030,25 +1112,48 @@ export class RunnerRenderer3D {
     return root;
   }
 
+  private buildBridge(section: Extract<CourseFeature, { kind: "bridge" }>) {
+    const root = new TransformNode(`log-bridge-${section.start}`, this.scene);
+    const length = section.end - section.start;
+    const path = Array.from({ length: 17 }, (_, i) => {
+      const point = this.place(section.start - 1 + (length + 2) * i / 16);
+      return new Vector3(point.x, point.y - .68, point.z);
+    });
+    const log = MeshBuilder.CreateTube("bridge-log", { path, radius: .73, tessellation: 18 }, this.scene);
+    log.parent = root; log.material = this.mats["log-bark"]; log.isPickable = false;
+
+    const ravine = new TransformNode("bridge-ravine", this.scene); ravine.parent = root;
+    const middle = this.place((section.start + section.end) / 2);
+    ravine.position.set(middle.x, 0, middle.z); ravine.rotation.y = middle.heading;
+    const width = BRIDGE_RAVINE_HALF_WIDTH * 2;
+    const water = MeshBuilder.CreateGround("bridge-stream", { width: width + .3, height: length + .3 }, this.scene);
+    water.parent = ravine; water.position.y = BRIDGE_WATER_Y; water.material = this.mats["pit-water-long"]; water.isPickable = false;
+    for (const side of [-1, 1]) {
+      this.box("ravine-bank", ravine, [.52, 4.52, length + .25], [side * BRIDGE_RAVINE_HALF_WIDTH, -2.57, 0], "obstacle-rock");
+      this.box("ravine-cliff", ravine, [width + .4, 4.52, 1], [0, -2.57, side * length / 2], "obstacle-rock");
+    }
+    return root;
+  }
+
   private drawRides(world: RunnerWorld, player: Vector3, centre: RoutePoint, lateral: number) {
-    if (this.ropeRouteVersion !== this.route.version) {
-      this.ropeRouteVersion = this.route.version;
-      for (const rope of this.ropes.values()) rope.dispose();
-      this.ropes.clear();
+    if (this.crossingRouteVersion !== this.route.version) {
+      this.crossingRouteVersion = this.route.version;
+      for (const crossing of this.crossings.values()) crossing.dispose();
+      this.crossings.clear();
     }
     const live = new Set<number>();
     const first = Math.floor(Math.max(0, world.distance - BEHIND) / SCENE_LENGTH);
     const last = Math.floor((world.distance + 168) / SCENE_LENGTH);
     for (let i = first; i <= last; i++) {
-      const ride = sectionRide(i * SCENE_LENGTH, world.startScene);
-      if (ride?.kind !== "rope" || ride.start > world.distance + 168 || ride.end < world.distance - BEHIND) continue;
-      live.add(ride.start);
-      if (!this.ropes.has(ride.start)) this.ropes.set(ride.start, this.buildRope(ride));
+      const section = sectionFeature(i * SCENE_LENGTH, world.startScene);
+      if (section.kind === "cart" || section.start > world.distance + 168 || section.end < world.distance - BEHIND) continue;
+      live.add(section.start);
+      if (!this.crossings.has(section.start)) this.crossings.set(section.start, section.kind === "rope" ? this.buildRope(section) : this.buildBridge(section));
     }
-    for (const [start, rope] of this.ropes) if (!live.has(start)) { rope.dispose(); this.ropes.delete(start); }
+    for (const [start, crossing] of this.crossings) if (!live.has(start)) { crossing.dispose(); this.crossings.delete(start); }
 
-    const mounted = world.ride, local = sectionRide(world.distance, world.startScene);
-    const cart = local?.kind === "cart" && world.distance >= local.start - 36 && world.distance < local.end + 16 ? local : undefined;
+    const mounted = world.ride, local = sectionFeature(world.distance, world.startScene);
+    const cart = local.kind === "cart" && world.distance >= local.start - 36 && world.distance < local.end + 16 ? local : undefined;
     this.cart.setEnabled(!!cart);
     if (cart) {
       if (world.distance < cart.end) this.cartLane = lateral;
@@ -1061,13 +1166,61 @@ export class RunnerRenderer3D {
     this.ropeHandle.setEnabled(mounted?.kind === "rope");
     if (mounted?.kind === "rope") {
       const height = ropeHeightAt(world.distance, mounted);
-      const grip = height - player.y - world.jumpHeight - DOG_SIZE * DOG_FEET - .25;
+      const board = Math.min(1, (world.distance - mounted.start) / (ROPE_GRAB_DISTANCE * .55));
+      const spring = Math.min(1, ropeReleaseProgress(world.distance, mounted) * 4);
+      const attached = Math.max(0, Math.min(1, board)) * (1 - spring);
+      const hand = height - player.y - world.jumpHeight - DOG_SIZE * DOG_FEET - .25;
+      const grip = .18 + (Math.max(.21, hand) - .18) * attached;
+      const swing = lateral * attached;
       this.ropeHandle.position.set(centre.x, height, centre.z);
       this.ropeHandle.rotation.y = centre.heading;
-      this.ropeLanyard.position.set(lateral / 2, -grip / 2, 0);
-      this.ropeLanyard.rotation.z = Math.atan2(lateral, grip);
-      this.ropeLanyard.scaling.y = Math.hypot(lateral, grip);
+      this.ropeLanyard.position.set(swing / 2, -grip / 2, 0);
+      this.ropeLanyard.rotation.z = Math.atan2(swing, grip);
+      this.ropeLanyard.scaling.y = Math.hypot(swing, grip);
     }
+  }
+
+  private drawBike(world: RunnerWorld, player: Vector3, heading: number) {
+    const approach = Math.max(2.6, world.speed * .14);
+    const obstacle = world.items.find(item => (item.kind === "block" || item.kind === "spikes") && coversLane(item, world.position, .6) && Math.abs(item.z - world.distance) < approach);
+    const progress = obstacle ? 1 - Math.abs(obstacle.z - world.distance) / approach : 0;
+    const bump = Math.sin(Math.PI / 2 * progress);
+    const rise = obstacle?.kind === "block" ? 1.04 * bump : .61 * bump;
+    const tilt = this.settings.reducedMotion ? 0 : .27 * bump;
+    this.bicycle.position.set(player.x, player.y + world.jumpHeight + rise, player.z);
+    this.bicycle.rotation.set(this.roadPitch(world.distance) - tilt, heading - (this.settings.reducedMotion ? 0 : .12), this.settings.reducedMotion ? 0 : (world.lane - world.position) * .18);
+    for (const wheel of this.bikeWheels) wheel.rotation.x = -world.distance / .4;
+    return .72 + rise;
+  }
+
+  private addFruitTree(root: TransformNode, item: RunItem, world: RunnerWorld) {
+    const tree = MeshBuilder.CreatePlane("fruit-source-tree", { size: 1 }, this.scene);
+    tree.parent = root; tree.material = this.mats[`tree-${FRUIT_TREE}`]; tree.isPickable = false;
+    const size = this.mats[`tree-${FRUIT_TREE}`].diffuseTexture!.getBaseSize();
+    const roadHeight = elevationAt(item.z);
+    const base = sceneAt(item.z, world.startScene) === 0 ? -7 : -.35;
+    const height = (roadHeight + 4.0 - base) / .75;
+    const width = height * (size.height ? size.width / size.height : .78);
+    const side = item.lane === 2 ? 1 : -1;
+    tree.position.set(side * (ROAD_HALF + width / 2 + .72) - itemOffset(item), base + height * .486 - roadHeight, .5);
+    tree.scaling.set(side * width, height, 1);
+    tree.rotation.y = side * .21;
+  }
+
+  private drawFruit(prop: TransformNode, item: RunItem, distance: number) {
+    const tree = prop.getChildMeshes(true).find(mesh => mesh.name === "fruit-source-tree")!;
+    const fruit = prop.getChildTransformNodes(true).find(node => node.name === "tpl-fruit")!;
+    fruit.setEnabled(!item.done);
+    if (item.done) return;
+    const ahead = item.z - distance, side = item.lane === 2 ? 1 : -1;
+    const drop = Math.max(0, Math.min(1, (36 - ahead) / 10));
+    const roll = Math.max(0, Math.min(1, (26 - ahead) / 20));
+    const origin = tree.position.x - side * Math.abs(tree.scaling.x) * .37;
+    const shoulder = side * (ROAD_HALF - .52) - itemOffset(item);
+    const edge = origin + (shoulder - origin) * drop;
+    const bounce = Math.abs(Math.sin(Math.PI * 5 * roll)) * Math.exp(-8 * roll) * .70;
+    fruit.position.set(edge * (1 - roll), .32 + 3.85 * (1 - drop * drop) + bounce, .5 - .65 * Math.sin(Math.PI * roll));
+    fruit.rotation.set(.25 * drop, .1, -side * (drop * 1.35 + roll * 10.3));
   }
 
   private drawProps(world: RunnerWorld, t: number, dt: number) {
@@ -1075,7 +1228,7 @@ export class RunnerRenderer3D {
     for (const item of world.items) {
       const depth = item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0;
       if (item.z + depth <= world.distance - 8 || item.z - depth >= world.distance + 155) continue;
-      if (!item.done || isRunObstacle(item.kind)) visible.add(item.id);
+      if (!item.done || isRunObstacle(item.kind) || item.kind === "fruit") visible.add(item.id);
     }
     for (const [id, root] of this.props) if (!visible.has(id)) { root.dispose(); this.props.delete(id); }
     for (const item of world.items) {
@@ -1085,6 +1238,7 @@ export class RunnerRenderer3D {
         const name = item.kind === "coin" ? `coin-${item.tier ?? "silver"}` : item.span === 3 ? `${item.kind}-wide` : item.span === 2 ? `${item.kind}-double` : item.kind;
         prop = new TransformNode(`item-${item.id}`, this.scene);
         this.instance(this.templates.has(name) ? name : item.kind, prop);
+        if (item.kind === "fruit") this.addFruitTree(prop, item, world);
         if (item.kind === "long-gap") {
           const depth = obstacleHalfDepth(item.kind, item.z);
           for (const mesh of prop.getChildMeshes()) {
@@ -1094,12 +1248,13 @@ export class RunnerRenderer3D {
         }
         this.props.set(item.id, prop);
       }
-      const p = this.place(item.z, itemOffset(item) * (item.ride === "rope" ? ROPE_LANE_SCALE : 1));
+      const p = this.place(item.z, itemOffset(item) * (item.feature === "rope" ? ROPE_LANE_SCALE : 1));
       prop.position.set(p.x, p.y, p.z); prop.rotation.set(isRunObstacle(item.kind) ? this.roadPitch(item.z) : 0, p.heading, 0);
       if (item.kind === "coin") {
         prop.position.y += item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
       }
+      else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance);
       else if (isRunPower(item.kind)) { prop.position.y += Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
@@ -1144,8 +1299,8 @@ export class RunnerRenderer3D {
     if (!this.settings.reducedMotion) this.fireSmoke.manualEmitCount += ticks;
   }
 
-  private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean) {
-    const at = new Vector3(player.x, player.y + .9 + world.jumpHeight, player.z);
+  private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean, lift: number) {
+    const at = new Vector3(player.x, player.y + .9 + world.jumpHeight + lift, player.z);
     const coinAt = at.add(new Vector3(0, .3, 0));
     for (const [tier, system] of [["silver", this.silverSparks], ["gold", this.sparks], ["diamond", this.diamondSparks]] as const) {
       if (world[tier] > this.seen[tier]) this.burst(system, coinAt, Math.min(30, (world[tier] - this.seen[tier]) * 8));
@@ -1162,24 +1317,28 @@ export class RunnerRenderer3D {
 
     const motion = this.settings.reducedMotion ? 0 : 1;
     // Shield: a bubble around the dog, blinking in its last three seconds; it bursts when used.
-    const shieldOn = !capture && (world.shield > 0 || this.flash.shield > 0);
+    const golden = world.fruit > 0;
+    const shieldOn = !capture && (golden || world.shield > 0 || this.flash.shield > 0);
     this.bubble.setEnabled(shieldOn);
     if (shieldOn) {
       const ending = world.shield > 0 && world.shield < 3 && Math.floor(t * 8) % 2 === 0;
       const pop = this.flash.shield > 0 && world.shield === 0 ? 1 + (1 - this.flash.shield) * .8 : 1 + Math.sin(t * 4) * .03 * motion;
       this.bubble.position.copyFrom(at); this.bubble.scaling.setAll(pop);
-      (this.bubble.material as StandardMaterial).alpha = world.shield === 0 ? this.flash.shield * .35 : ending ? .08 : .22;
+      const mat = this.bubble.material as StandardMaterial;
+      mat.diffuseColor.copyFrom(Color3.FromHexString(golden ? "#ffdc55" : "#7fe8ff"));
+      mat.emissiveColor.copyFrom(Color3.FromHexString(golden ? "#b77822" : "#2a9cc4"));
+      mat.alpha = golden ? .27 : world.shield === 0 ? this.flash.shield * .35 : ending ? .08 : .22;
     }
     // Magnet: a spinning red ring at the dog's feet.
-    const magnetOn = !capture && world.magnet > 0;
+    const magnetOn = !capture && (golden || world.magnet > 0);
     this.magnetRing.setEnabled(magnetOn);
     if (magnetOn) {
-      this.magnetRing.position.set(player.x, player.y + .15 + world.jumpHeight + Math.sin(t * 6) * .12 * motion, player.z);
+      this.magnetRing.position.set(player.x, player.y + .15 + world.jumpHeight + lift + Math.sin(t * 6) * .12 * motion, player.z);
       this.magnetRing.rotation.y = t * 4; this.magnetRing.scaling.setAll(1 + Math.sin(t * 9) * .08 * motion);
       (this.magnetRing.material as StandardMaterial).alpha = world.magnet < 3 && Math.floor(t * 8) % 2 === 0 ? .25 : .8;
     }
     // Boost: golden glow under the dog plus speed lines (in drawWeather) and wider FOV.
-    const boostOn = !capture && world.boost > 0;
+    const boostOn = !capture && world.invincible;
     this.boostGlow.setEnabled(boostOn);
     if (boostOn) { this.boostGlow.position.set(player.x, player.y + .05 + world.jumpHeight, player.z); this.boostGlow.rotation.y = Math.atan2(player.x - this.camera.position.x, player.z - this.camera.position.z); }
     if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, player.y + .5 + world.jumpHeight, player.z), 2, POWER_COLORS.boost);
@@ -1254,7 +1413,7 @@ export class RunnerRenderer3D {
       this.captureCamera = undefined;
       // Follow most of the lane offset (smoothed) so the dog stays near the centre of the screen.
       const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .8 : .6) * rideLateralScale(world.distance, world.ride);
-      this.camLateral += (lateral - this.camLateral) * k(10);
+      this.camLateral += (lateral + (world.cycling && !this.settings.reducedMotion ? .68 : 0) - this.camLateral) * k(10);
       const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
       const bx = centre.x + rx * this.camLateral, bz = centre.z + rz * this.camLateral;
       const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * .25;
