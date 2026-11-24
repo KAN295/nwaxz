@@ -5,18 +5,19 @@ import path from "node:path";
 import fs from "node:fs";
 import { mountCoopRoutes,resolveCoopClientIp } from "./coop-service.mjs";
 import {SocialService,mountSocialRoutes} from './social-service.mjs';
-export function createApp({ distDir, revision = "development", coopService, socialService, profilePath=':memory:' } = {}) {
+export function createApp({ distDir, revision = "development", coopService, socialService, profilePath=':memory:', lan = false } = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", false);
   app.use((req, res, next) => {
     const host=req.get('host')??'';
     const sockets=/^[a-z\d.\-:[\]]+$/i.test(host)?` ws://${host} wss://${host}`:'';
+    const direct=host==='nwaxz.bzlom.cn'?' wss://play.bzlom.cn':'';
     res.set({
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Content-Security-Policy":
-        `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'${sockets}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'`,
+        `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'${sockets}${direct}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'`,
     });
     next();
   });
@@ -36,8 +37,9 @@ export function createApp({ distDir, revision = "development", coopService, soci
         revision,
       });
   });
-  app.locals.social=mountSocialRoutes(app,{express,service:socialService??new SocialService({filename:profilePath}),clientIp:resolveCoopClientIp});
-  app.locals.coop = mountCoopRoutes(app, { express, ...(coopService ? { service: coopService } : {}) });
+  const clientIp = lan ? req => req.socket.remoteAddress : resolveCoopClientIp;
+  app.locals.social=mountSocialRoutes(app,{express,service:socialService??new SocialService({filename:profilePath}),clientIp});
+  app.locals.coop = mountCoopRoutes(app, { express, service: coopService, lan, clientIp });
   app.use("/api", (_req, res) => res.status(404).json({ error: "接口不存在" }));
   // No extension: public .js responses previously carried month-long caching.
   // The bundled worker controls the root scope and must bypass static JS caches.

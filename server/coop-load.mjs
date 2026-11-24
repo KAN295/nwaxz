@@ -1,13 +1,23 @@
 import packageInfo from "../package.json" with { type: "json" };
 import { CoopService } from "./coop-service.mjs";
 import { MAP } from "../src/escape/world.ts";
+import { diffCoopSnapshot } from "../src/escape/coop-snapshot.ts";
 
 const STEP_MS = 50, WARMUP_TICKS = 100, SAMPLE_TICKS = 400;
 const makeResponse = () => ({
-  writableEnded: false, writableLength: 0, bytes: 0, snapshots: 0,
+  writableEnded: false, writableLength: 0, bytes: 0, fullBytes: 0, snapshots: 0,
   status() { return this; }, set() { return this; }, flushHeaders() {}, on() {},
   write(chunk) { if (chunk.startsWith("event: snapshot")) { this.bytes += Buffer.byteLength(chunk); this.snapshots++; } return true; },
-  sendSnapshot(data) { this.bytes += Buffer.byteLength(JSON.stringify({type:'snapshot',data})); this.snapshots++; },
+  sendSnapshot(data) {
+    const full = JSON.stringify({ type: "snapshot", data });
+    const current = JSON.parse(full).data, previous = this.previous;
+    const wire = previous?.viewPlayerId === current.viewPlayerId && previous.room.phase === current.room.phase
+      ? JSON.stringify({ type: "snapshot-delta", data: diffCoopSnapshot(previous, current) }) : full;
+    this.previous = current;
+    this.fullBytes += Buffer.byteLength(full);
+    this.bytes += Buffer.byteLength(wire);
+    this.snapshots++;
+  },
   end() { this.writableEnded = true; },
 });
 
@@ -40,7 +50,7 @@ function runScenario(roomCount, fullExploration = false) {
     const heapAfterRooms = process.memoryUsage().heapUsed;
     const totalTicks = WARMUP_TICKS + SAMPLE_TICKS;
     let cpuStart, heapStart;
-    let activeTicks = 0, snapshotBytes = 0, snapshotCount = 0;
+    let activeTicks = 0, snapshotBytes = 0, fullSnapshotBytes = 0, snapshotCount = 0;
     for (let tick = 1; tick <= totalTicks; tick++) {
       now += STEP_MS;
       if (tick % 2 === 0) for (const item of sessions) {
@@ -63,11 +73,11 @@ function runScenario(roomCount, fullExploration = false) {
         }
       }
       if (tick === WARMUP_TICKS) {
-        for (const item of sessions) { item.response.bytes = 0; item.response.snapshots = 0; }
+        for (const item of sessions) { item.response.bytes = 0; item.response.fullBytes = 0; item.response.snapshots = 0; }
         activeTicks = 0; global.gc?.(); cpuStart = process.cpuUsage(); heapStart = process.memoryUsage().heapUsed;
       }
     }
-    for (const item of sessions) { snapshotBytes += item.response.bytes; snapshotCount += item.response.snapshots; }
+    for (const item of sessions) { snapshotBytes += item.response.bytes; fullSnapshotBytes += item.response.fullBytes; snapshotCount += item.response.snapshots; }
     const cpu = process.cpuUsage(cpuStart);
     global.gc?.(); const heapDeltaDuringSampleBytes = process.memoryUsage().heapUsed - heapStart;
     const simSeconds = SAMPLE_TICKS * STEP_MS / 1000;
@@ -85,8 +95,10 @@ function runScenario(roomCount, fullExploration = false) {
       heapDeltaDuringSampleBytes,
       snapshotCount,
       snapshotBytes,
+      fullSnapshotBytes,
       egressBytesPerSecond: Math.round(snapshotBytes / simSeconds),
-      note: "Synthetic local process benchmark; auto-respawns caught/eliminated fixtures, contacts no HTTP or production, and counts SSE JSON payload bytes without HTTP/TCP/TLS overhead.",
+      fullSnapshotBytesPerSecond: Math.round(fullSnapshotBytes / simSeconds),
+      note: "Synthetic local process benchmark; counts WebSocket JSON payload bytes without TCP/TLS overhead.",
     };
     return result;
   } finally { service.shutdown(); }
@@ -95,7 +107,7 @@ function runScenario(roomCount, fullExploration = false) {
 const median = values => { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]; };
 for (const rooms of [0, 1, 8]) for (const fullExploration of [false, true]) {
   const runs = [runScenario(rooms, fullExploration), runScenario(rooms, fullExploration), runScenario(rooms, fullExploration)];
-  const fields = ["activeTicks", "cpuMs", "totalOneCorePercent", "perRoomOneCorePercent", "staticHeapBytesAfterGc", "heapDeltaDuringSampleBytes", "snapshotCount", "snapshotBytes", "egressBytesPerSecond"];
+  const fields = ["activeTicks", "cpuMs", "totalOneCorePercent", "perRoomOneCorePercent", "staticHeapBytesAfterGc", "heapDeltaDuringSampleBytes", "snapshotCount", "snapshotBytes", "fullSnapshotBytes", "egressBytesPerSecond", "fullSnapshotBytesPerSecond"];
   const medianMetrics = Object.fromEntries(fields.map(field => {
     const values = runs.map(run => run[field]).filter(value => typeof value === "number");
     return [field, values.length ? median(values) : null];

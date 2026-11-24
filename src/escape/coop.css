@@ -128,7 +128,10 @@
  .escape-shell.coop-active .escape-interact,.escape-shell.coop-active .escape-search { width:100px; height:46px; bottom:18px; }
 }
 @media(pointer:fine){.escape-shell.coop-active .escape-coop-team{top:254px}}
-@media(pointer:fine) and (max-height:600px){.escape-shell.coop-active .escape-coop-team{top:188px}}
+@media(pointer:fine) and (max-height:600px){
+ .escape-shell.coop-active .escape-map-button{width:118px}
+ .escape-shell.coop-active .escape-coop-team{top:188px}
+}
 @media(pointer:coarse) and (orientation:portrait){
  .escape-shell.coop-active .escape-coop-team{top:82px;left:8px;right:auto;width:calc(100vw - 176px);display:grid;gap:4px}
  .escape-shell.coop-active .escape-coop-teammate{min-height:34px;height:34px;padding:3px 4px;grid-template-columns:22px minmax(0,1fr)}
@@ -139,7 +142,7 @@
  .escape-shell.coop-active .escape-inventory{top:280px;right:8px;left:auto}
 }
 @media(pointer:coarse) and (orientation:landscape) and (max-height:540px){
- .escape-shell .escape-map-button{width:110px}.escape-shell:not(.coop-active) .escape-map-button{width:158px}.escape-shell.coop-active .escape-coop-team{top:154px}.escape-shell.coop-active .escape-hud{right:135px}
+ .escape-shell.coop-active .escape-map-button{width:100px}.escape-shell:not(.coop-active) .escape-map-button{width:158px}.escape-shell.coop-active .escape-coop-team{top:163px}.escape-shell.coop-active .escape-hud{right:135px}
  .escape-shell.coop-active .escape-ability-hud{width:min(158px,calc(50vw - 200px))}
  .escape-shell.coop-active .escape-inventory{top:128px;left:8px;right:auto}
  .escape-crystals button{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:1px}.escape-crystals button span{position:static;font-size:11px;line-height:12px}.crystal-icon{font-size:17px;transform:none}

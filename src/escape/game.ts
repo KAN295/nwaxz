@@ -22,7 +22,8 @@ import { EscapeLook, type MouseLookMode } from "./look.ts";
 import { CoopClient, type CoopConnectionState } from "./coop-client.ts";
 import {CoopMovement} from './coop-movement.ts';
 import {SocialClient} from './social-client.ts';
-import {renderLobbyView,type LobbyModel,type LobbyScreen} from './lobby-view.ts';
+import {renderLobbyView,updateRouteReadings,type LobbyModel,type LobbyScreen} from './lobby-view.ts';
+import {HIGH_LATENCY_MS, PUBLIC_GAME_ORIGIN, PUBLIC_ROUTES, measureRoomRoute, type PublicRouteId, type RouteLatencies} from './public-route.ts';
 import './lobby-view.css';
 import type { CoopInput, CoopSnapshot } from "./coop-protocol.ts";
 import { version as APP_VERSION } from "../../package.json";
@@ -83,6 +84,10 @@ export class EscapeGame {
   private noteActive = false;
   private noteReturnToJournal = false;
   private coop?: CoopClient;
+  private lobbyNetwork: "online"|"lan" = "online";
+  private preferredRoute?:PublicRouteId;
+  private routeLatencies:RouteLatencies={};
+  private nextRouteProbe=0;
   private coopSnapshot?: CoopSnapshot;
   private coopState: CoopConnectionState = "offline";
   private coopMessage = "";
@@ -226,10 +231,24 @@ export class EscapeGame {
     const room=this.coopSnapshot?.room??(this.coop?{code:this.coop.session.code,phase:'lobby' as const,leaderId:this.coop.session.leader?this.coop.session.playerId:'',players:[]}:undefined);
     const profile=this.social.identity??{uid:'—',name:'幸存者',avatar:0};
     const rootScreen=this.lobbyScreenStack[0]??this.lobbyScreen;
-    const model:LobbyModel={profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
+    const model:LobbyModel={network:this.lobbyNetwork,profile,version:APP_VERSION,selfPlayerId:this.coop?.session.playerId,screen:this.lobbyScreen,rootScreen,canResume:!!this.saved&&["playing","caught"].includes(this.saved.phase),hasSave:!!this.saved,music:this.music,sound:this.sound,soloDifficulty:this.soloDifficulty,storageWarning:this.storageWarning,touchControls:matchMedia("(pointer:coarse)").matches,expanded:!!this.world.data.expansion?.enabled,servers:this.lobbyServerData?[this.lobbyServerData.server]:[],rooms:this.lobbyServerData?.rooms??[],...this.lobbyFriendData,selectedRoom:room,selectedRoomName:'name' in (room??{})?(room as {name?:string}).name:undefined,message:this.lobbyMessage??(this.coop&&this.coopState!=='connected'?this.coopMessage:undefined)};
     this.lobbyDisposer?.();
+    if(location.origin===PUBLIC_GAME_ORIGIN){
+      model.routeLatencies=this.routeLatencies;
+      model.preferredRoute=this.preferredRoute;
+      if(this.lobbyScreen==='servers' && this.lobbyNetwork==='online' && performance.now()>=this.nextRouteProbe){
+        this.nextRouteProbe=performance.now()+14_000;
+        for(const route of PUBLIC_ROUTES)void measureRoomRoute(route.host).then(ms=>{
+          if(this.disposed)return;
+          this.routeLatencies[route.id]=ms;
+          updateRouteReadings(this.root,this.routeLatencies,this.preferredRoute);
+        });
+      }
+    }
     const operation=(fn:()=>Promise<unknown>,success:string)=>{void fn().then(()=>{this.socialMessage(success);return this.refreshSocialLobby();}).catch(error=>this.socialMessage(error instanceof Error?error.message:'操作失败'));};
     this.lobbyDisposer=renderLobbyView(this.$('#escape-panel'),model,{
+      selectRoute:id=>{if(this.coop || this.coopRequesting)return;this.preferredRoute=id;this.lobbyMessage=undefined;this.renderSocialLobby();},
+      network:mode=>{if(this.coop || this.coopRequesting)return;this.lobbyNetwork=mode;this.lobbyMessage=undefined;this.renderSocialLobby();},
       screen:screen=>{this.lobbyMessage=undefined;if(['home','servers','room','friends','profile'].includes(screen)){this.lobbyScreen=screen==='room'&&!this.coop?'servers':screen;this.lobbyScreenStack=[];this.renderSocialLobby();}else this.openLobbyScreen(screen);void this.refreshSocialLobby();},
       single:()=>{const open=()=>this.openLobbyScreen('solo');if(this.coop)void this.leaveCoop().then(open);else open();},controls:()=>this.openLobbyScreen('controls'),settings:()=>this.openLobbyScreen('settings'),
       back:()=>this.backLobbyScreen(),continueGame:()=>void this.start(true),newGame:()=>void this.start(false),exportSave:()=>this.exportSave(),importSave:()=>this.$<HTMLInputElement>('#escape-import').click(),
@@ -243,7 +262,7 @@ export class EscapeGame {
       leave:()=>{void this.leaveCoop();},start:()=>{void this.coop?.startRoom().then(()=>this.startCoopGame()).catch(error=>this.socialMessage(error.message));},
       avatar:avatar=>operation(()=>this.social.update({avatar}),'形象已更换'),rename:name=>operation(()=>this.social.update({name}),'昵称已保存'),
       addFriend:uid=>operation(()=>this.social.requestFriend(uid),'好友申请已发送'),acceptFriend:uid=>operation(()=>this.social.acceptFriend(uid),'已添加好友'),removeFriend:uid=>operation(()=>this.social.removeFriend(uid),'已移除好友'),
-      inviteFriend:uid=>operation(()=>this.coop?this.social.invite(uid,this.coop.session.code):Promise.reject(new Error('先加入一个房间')),'邀请已发送'),acceptInvite:code=>{void this.openSocialRoom('join',{code});},
+      inviteFriend:uid=>operation(()=>this.coop?this.social.invite(uid,this.coop.session.code):Promise.reject(new Error('先加入一个房间')),'邀请已发送'),acceptInvite:code=>{if(!this.coop)this.lobbyNetwork='online';void this.openSocialRoom('join',{code});},
     });
   }
   private async openSocialRoom(kind:'create'|'join',input:{name?:string;visibility?:'public'|'private';password?:string;code?:string}){
@@ -251,7 +270,8 @@ export class EscapeGame {
     if(this.coop){this.socialMessage('先离开当前房间');return;}
     this.coopRequesting=true;
     try{const profile=await this.social.ensure();if(this.disposed||!this.lobbyVisible)return;const common={version:APP_VERSION,name:profile.name,avatar:profile.avatar as 0|1|2|3,profileToken:profile.token,password:input.password};
-      const client=kind==='create'?await CoopClient.create({...common,title:input.name,visibility:input.visibility}):await CoopClient.join({...common,code:input.code??''});
+      const client=this.lobbyNetwork==='lan' ? await (await import('./lan-client.mjs')).openLanRoom(kind,profile,input) : kind==='create'?await CoopClient.create({...common,title:input.name,visibility:input.visibility}):await CoopClient.join({...common,code:input.code??''});
+      if(this.lobbyNetwork==='online')client.preferredRoute=this.preferredRoute;
       if(this.disposed||!this.lobbyVisible){await client.leave();return;}this.attachCoop(client);this.showSocialLobby('room');void this.prepareCoopRoom(client);
     }catch(error){this.socialMessage(error instanceof Error?error.message:'无法进入房间');}finally{this.coopRequesting=false;}
   }
@@ -276,8 +296,9 @@ export class EscapeGame {
           else this.coopMovement.reset();
           this.coopMovement.accept(this.world,performance.now(),this.coopLatency??100,snapshot.viewPlayerId);
           const receivedAt = performance.now(), hunter = this.world.data.hunter;
-          this.coopPoses.push("hunter", receivedAt, { x: hunter.x, z: hunter.z, angle: hunter.angle });
-          for (const peer of snapshot.room.players) if (peer.position) this.coopPoses.push(peer.id, receivedAt, { x: peer.position.x, z: peer.position.z, angle: peer.position.angle });
+          this.coopPoses.observeClock(snapshot.serverTime, receivedAt);
+          this.coopPoses.push("hunter", snapshot.serverTime, { x: hunter.x, z: hunter.z, angle: hunter.angle });
+          for (const peer of snapshot.room.players) if (peer.position) this.coopPoses.push(peer.id, snapshot.serverTime, { x: peer.position.x, z: peer.position.z, angle: peer.position.angle });
           this.coopPoses.retain(["hunter", ...snapshot.room.players.map(peer => peer.id)]);
           this.phase = this.world.data.phase; this.coopSyncFaulted = false; this.coopRecovering = false;
         }
@@ -299,6 +320,7 @@ export class EscapeGame {
       else if (this.coopMode) this.renderCoopLobby();
     }));
     this.coopUnsubscribers.push(client.onState((state, message, latency) => {
+      if (state === "reconnecting" && this.coopState !== "reconnecting") this.coopPoses.clear();
       this.coopState = state; this.coopMessage = message; if (latency !== undefined) this.coopLatency = latency; this.renderCoopStatus();
       if(this.coopMode&&this.lobbyVisible)this.renderCoopLobby();
       if(this.started&&state==='connected'&&message!=='已连接')this.world.say(message);
@@ -375,10 +397,12 @@ export class EscapeGame {
   private renderCoopStatus() {
     const status = this.root.querySelector<HTMLElement>("#escape-coop-status"); if (!status) return;
     status.hidden = !this.coopMode || !this.started;
-    status.dataset.state = this.coopState === "connected" && (this.coopLatency ?? 0) > 250 ? "unstable" : this.coopState;
+    status.dataset.state = this.coopState === "connected" && (this.coopLatency ?? 0) > HIGH_LATENCY_MS ? "unstable" : this.coopState;
+    const latency = this.coopLatency;
+    status.title = latency === undefined ? "" : `延迟 ${latency} ms`;
     const lives = this.coopSnapshot?.room.players.find(player => player.id === this.coop?.session.playerId)?.lives ?? 0;
     // Latency only matters when it is bad; a healthy connection shows just the remaining lives.
-    status.textContent = `${"♥".repeat(Math.max(0, lives))}${this.coopState !== "connected" ? " · 重连中" : (this.coopLatency ?? 0) > 250 ? " · 网络不稳" : ""}`;
+    status.textContent = `${"♥".repeat(Math.max(0, lives))}${this.coopState !== "connected" ? " · 重连中" : (latency ?? 0) > HIGH_LATENCY_MS ? ` · ${latency} ms` : ""}`;
   }
   private adoptPrepared() {
     const bundle = takePreparedEscape();
