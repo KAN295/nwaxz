@@ -7,8 +7,8 @@ import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART } from "./anim
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, GOLD_START, DIAMOND_START, obstacleHalfDepth, readRunRecord,
-  type RunAction, type RunPhase, type RunMode, type RunPowerKind,
+  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, RUN_RECORD_KEY, ENDLESS_RECORD_KEY, CHALLENGE_DISTANCE, LONG_GAP_START, GOLD_START, DIAMOND_START, TURN_HINT_END, obstacleHalfDepth, readRunRecord,
+  type RunAction, type RunPhase, type RunMode, type RunPowerKind, type RunTurn,
 } from "./world.ts";
 
 const TITLE = "奶狗快跑";
@@ -28,11 +28,23 @@ const POWER_INFO = {
   fruit: { name: "金身果实", text: "15 秒金身、加速、吸币、双倍得分和自动过弯" },
 } satisfies Record<RunPowerKind, { name: string; text: string }>;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
+/** Seconds the scene name stays up after the run enters a new scene. */
+const SCENE_LABEL_SECONDS = 3.2;
+
+/** Corner prompt: forks and junctions first ask the player to look, then show the way once the turn is due. */
+function turnCue(turn: RunTurn, due: boolean) {
+  const other = turn.direction === "left" ? "右" : "左", word = turn.direction === "left" ? "左转" : "右转";
+  if (!due && turn.three) return "<b>◀▲▶</b><span>前方三岔口</span><small>两条是陷阱</small>";
+  if (!due && turn.fork) return turn.bridge ? "<b>◀▶</b><span>独木桥分岔</span><small>避开断木</small>" : "<b>◀▶</b><span>前方岔路</span><small>避开断桥</small>";
+  const note = turn.three ? `直走是竖井 · ${other}边是断桥` : turn.fork ? `${other}边${turn.bridge ? "木头断了" : "是断桥"}` : "";
+  return `<b>${turn.direction === "left" ? "◀" : "▶"}</b><span>${due ? "现在" : "前方"}${word}</span>${note ? `<small>${note}</small>` : ""}`;
+}
 
 export class RunnerGame {
   private mode: RunMode = "endless";
-  private sceneChoice = 0;
-  private world = new RunnerWorld(newSeed(), this.mode, this.sceneChoice);
+  private world = new RunnerWorld(newSeed(), this.mode);
+  private shownScene = -1;
+  private sceneLabelUntil = 0;
   private record = readRunRecord(null);
   private wardrobe = readWardrobe(null);
   private credited: CurrencyPurse = { silver: 0, gold: 0, diamond: 0 };
@@ -202,10 +214,6 @@ export class RunnerGame {
       case "resume": this.resume(); return;
       case "continue": this.mode = "endless"; this.loadRecord(); this.world.continue(); this.audio.setPlaying(true); this.last = 0; return;
     }
-    if (action.startsWith("scene-")) {
-      const index = RUN_SCENES.findIndex(scene => `scene-${scene.id}` === action);
-      if (index >= 0) { this.sceneChoice = index; this.newWorld(); this.showPanel(); }
-    }
     if (action.startsWith("buy-") || action.startsWith("equip-")) void this.chooseLook(action);
   };
 
@@ -280,7 +288,8 @@ export class RunnerGame {
   }
 
   private newWorld() {
-    this.world = new RunnerWorld(newSeed(), this.mode, this.sceneChoice);
+    this.world = new RunnerWorld(newSeed(), this.mode);
+    this.shownScene = -1;
     this.captureAudio = "waiting";
     this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
     this.seenEvents = { power: 0, shield: 0, stumble: 0 };
@@ -323,7 +332,11 @@ export class RunnerGame {
     set(el.distance, `${Math.floor(w.distance)}<small>米</small>`);
     set(el.score, String(w.score));
     set(el.coins, `${w.silver}银 · ${w.gold}金 · ${w.diamond}钻`);
-    set(el.scene, [RUN_SCENES[w.sceneIndex].name, w.night ? "夜" : "", w.sceneIndex === 2 ? "" : WEATHER_NAME[w.weather]].filter(Boolean).join(" · "));
+    // The scene name only comes up for a moment when the run enters a new scene (and at the start).
+    if (w.sceneIndex !== this.shownScene) { this.shownScene = w.sceneIndex; this.sceneLabelUntil = w.elapsed + SCENE_LABEL_SECONDS; }
+    const labelOn = w.phase === "running" && w.elapsed < this.sceneLabelUntil;
+    if (labelOn) set(el.scene, [RUN_SCENES[w.sceneIndex].name, w.night ? "夜" : "", w.sceneIndex === 2 ? "" : WEATHER_NAME[w.weather]].filter(Boolean).join(" · "));
+    el.scene.classList.toggle("show", labelOn);
 
     const effects = RUN_POWERS.filter(key => w[key] > 0)
       .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / RUN_POWER_SECONDS[key] * 100)}%"></u></span>`).join("")
@@ -390,9 +403,15 @@ export class RunnerGame {
       } else if (w.bridge) {
         aboveRoad = true;
         const branch = requiredMove?.kind === "bridge-branch" && !w.invincible ? requiredMove : undefined;
-        urgent = !!branch && branch.z - w.distance < w.speed * .55;
-        html = branch ? "<b>▲</b><span>跳过横枝</span>" : "<b>│</b><span>走桥中央</span>";
-      } else if (longGap && toLip < w.speed * 1.75 && !(toTurn < 55 && toTurn < toLip)) {
+        if (turn && w.turnHints && toTurn < 55 && (!branch || turn.z < branch.z)) {
+          urgent = w.turnWindow;
+          html = turnCue(turn, urgent);
+          this.announceTurn(turn.z, urgent);
+        } else {
+          urgent = !!branch && branch.z - w.distance < w.speed * .55;
+          html = branch ? "<b>▲</b><span>跳过横枝</span>" : "<b>│</b><span>走桥中央</span>";
+        }
+      } else if (longGap && toLip < w.speed * 1.75 && !(w.turnHints && toTurn < 55 && toTurn < toLip)) {
         // A long pit just past a corner waits until the corner is taken.
         if (toLip >= 0) {
           urgent = w.jumpCount === 0 && toLip < w.speed * .19;
@@ -407,15 +426,12 @@ export class RunnerGame {
         if (feature.kind === "rope") html = `<b>▲</b><span>${urgent ? "跳起来抓绳索" : "前方滑索"}</span>`;
         else if (feature.kind === "cart") html = "<b>↔</b><span>前方矿车</span>";
         else html = "<b>│</b><span>前方独木桥</span><small>走中间</small>";
-      } else if (turn && toTurn < 55) {
+      } else if (turn && toTurn < 55 && w.turnHints) {
+        // Late in a run the corners carry no prompt at all: the player has to read the road.
         aboveRoad = true;
         urgent = w.turnWindow;
-        const arrow = turn.direction === "left" ? "◀" : "▶", word = turn.direction === "left" ? "左转" : "右转";
-        // At a fork, first ask the player to read the scene; the arrow only shows once the turn is due.
-        if (turn.fork && !urgent) html = "<b>◀▶</b><span>前方岔路</span><small>避开断桥</small>";
-        else html = `<b>${arrow}</b><span>${urgent ? `现在${word}` : `前方${word}`}</span>${turn.fork ? `<small>${turn.direction === "left" ? "右" : "左"}边是断桥</small>` : ""}`;
-        if (this.warnedTurn !== turn.z) { this.warnedTurn = turn.z; this.audio.effect("coin"); }
-        if (urgent && this.urgentTurn !== turn.z) { this.urgentTurn = turn.z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
+        html = turnCue(turn, urgent);
+        this.announceTurn(turn.z, urgent);
       } else if (requiredMove) {
         const slide = requiredMove.kind === "beam";
         urgent = requiredMove.z - w.distance < w.speed * .55;
@@ -426,6 +442,11 @@ export class RunnerGame {
     if (html && cue.innerHTML !== html) cue.innerHTML = html;
     cue.classList.toggle("now", urgent);
     cue.classList.toggle("above-road", aboveRoad);
+  }
+
+  private announceTurn(z: number, due: boolean) {
+    if (this.warnedTurn !== z) { this.warnedTurn = z; this.audio.effect("coin"); }
+    if (due && this.urgentTurn !== z) { this.urgentTurn = z; this.audio.effect("tap"); if (this.settings.vibration) navigator.vibrate?.(60); }
   }
 
   // ---------- records ----------
@@ -554,7 +575,6 @@ export class RunnerGame {
           <figure><canvas width="160" height="140" data-portrait="frog" aria-label="追赶者：恐怖奶蛙"></canvas><figcaption>恐怖奶蛙<small>追赶者</small></figcaption></figure>
         </div>
         <div class="runner-seg" aria-label="玩法">${toggle("mode-endless", "无限模式", this.mode === "endless")}${toggle("mode-challenge", "千米挑战", this.mode === "challenge")}</div>
-        <div class="runner-seg runner-seg-3" aria-label="场景">${RUN_SCENES.map((s, i) => toggle(`scene-${s.id}`, s.name, i === this.sceneChoice)).join("")}</div>
         <p class="runner-record">最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米</p>
         ${btn("start", "开始奔跑")}
         ${btn("shop", "皮肤商城", "ghost")}
@@ -600,13 +620,13 @@ export class RunnerGame {
         <li>整条路的<b>倒木、裂缝</b>要跳过，<b>低门</b>要下滑；屏幕中间会提示。</li>
         <li>${LONG_GAP_START}米起会出现横跨三道的<b>长落穴</b>。靠近边缘起跳，在坑上方按提示再跳一次。</li>
         <li>单道只会出现<b>栏杆</b>或<b>巨石</b>。栏杆可换道或下滑，巨石可换道或二段跳。碰到栏杆或双道倒木会让奶蛙追近，8秒内再撞就被抓。</li>
-        <li>看到<b>屏幕上的转弯提示</b>时，按提示方向转弯。<b>岔路口</b>两边都有路，其中一边通向<b>断桥</b>，走错会摔下去；银币会引向安全的一边。</li>
-        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。遗迹的<b>独木桥</b>要走中间并跳过横枝。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
+        <li>按弯道方向转弯；${TURN_HINT_END}米前屏幕会提示方向，之后要自己看路。<b>岔路口</b>两边都有路，其中一边通向<b>断桥</b>，走错会摔下去；银币会引向安全的一边。矿洞的<b>三岔口</b>只有一条活路：直走是竖井，另一边是断桥。</li>
+        <li>峡谷水渠到桥沿时起跳抓住<b>滑索</b>，左右摆动收币。遗迹的<b>独木桥</b>横跨海面，要走中间、跳过横枝，桥上还有弯道和断掉的分岔。矿洞会自动登上<b>矿车</b>，左右换轨躲塌方。</li>
         <li>稀有<b>自行车</b>可骑过倒木和乱石枯枝。野生果树极少会滚落<b>金身果实</b>，捡到可获得 15 秒金身、加速、吸币和双倍得分。</li>
         <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
         <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
-        <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利；每450米换一个场景，1000米后进入较长的黑夜。</li>
+        <li>${CHALLENGE_DISTANCE}米挑战跑到终点即胜利。场景按路程依次切换：峡谷水渠、遗迹长廊、矿洞轨道、竹林小径、赤岩峡谷，偶尔经过雪原；1000米后进入较长的黑夜。</li>
       </ul>
       <button data-run="help-back" class="primary">知道了</button></div>`;
     this.el.panel.querySelector<HTMLButtonElement>(".primary")?.focus({ preventScroll: true });

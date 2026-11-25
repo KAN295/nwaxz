@@ -19,12 +19,12 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
-import { BRIDGE_RAVINE_HALF_WIDTH, BRIDGE_WATER_Y, elevationAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SCENE_LENGTH, sectionFeature, type CourseFeature } from "./course.ts";
+import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
+import { BRIDGE_FORK_BREAK, coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, SHAFT_EDGE, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -50,6 +50,14 @@ const GROUND_SIZE = 900, GROUND_SNAP = 70;
 const FORK_STUB_START = (ROAD_HALF * 2 + 2) / 2;
 const FORK_GAP_END = 11.5;
 const FORK_CHASM = { start: .25, end: FORK_GAP_END + .75, half: 4.2 };
+// Straight on at a mine junction, in metres past the corner: the floor opens into a flooded shaft.
+const SHAFT = { start: SHAFT_EDGE - 1.2, end: SHAFT_EDGE + 4.6, half: ROAD_HALF + .3, water: 9 };
+/** Inner face of the mine walls, from the track centre. */
+const MINE_WALL = ROAD_HALF + 4.4;
+/** Open water either side of each leg of the log bridge. */
+const SEA_REACH = 72;
+/** Sharks show up beside the log bridge every few seconds for this long. */
+const SHARK_SECONDS = 4.6;
 const FLAMES = [
   [-1.86, -.11, 2.15, 1.14], [-1.24, .24, 2.62, 1.2], [-.62, -.15, 2.31, 1.22], [0, .3, 2.79, 1.13],
   [.62, -.12, 2.42, 1.22], [1.24, .12, 2.68, 1.19], [1.86, -.06, 2.18, 1.14],
@@ -67,18 +75,63 @@ const POWER_ART = {
 } satisfies Record<Exclude<RunPowerKind, "fruit">, number | string>;
 const FRUIT_TREE = "runner-fruit-tree";
 const ORES = ["mine-amethyst", "mine-calcite", "mine-malachite"] as const;
-const GROVES = [
+type Grove = { ground: number; spacing: number; trees: readonly { name: string; height: number }[] };
+/** Painted tree cards by scene; the bamboo, canyon and snow scenes grow modelled plants as slot decor instead. */
+const GROVES: readonly Grove[] = [
   { ground: -7, spacing: 5, trees: [{ name: "river-cypress", height: 13.2 }, { name: "river-willow", height: 12 }, { name: "river-pine", height: 14.2 }, { name: FRUIT_TREE, height: 12.4 }] },
   { ground: -.35, spacing: 3, trees: [{ name: "temple-banyan", height: 7.8 }, { name: "temple-maple", height: 6.9 }, { name: "temple-ginkgo", height: 8.5 }, { name: FRUIT_TREE, height: 7.7 }] },
   { ground: -.35, spacing: 6, trees: [{ name: "mine-dead-birch", height: 2.9 }, { name: "mine-old-root", height: 1.65 }, { name: "mine-petrified-root", height: 2.15 }] },
-] as const;
+  { ground: -.35, spacing: 1, trees: [] },
+  { ground: -.35, spacing: 1, trees: [] },
+  { ground: -.35, spacing: 1, trees: [] },
+];
+/** Scenery along each scene's road: template, repeat every n tiles, at offset; `vary` turns and resizes each copy. */
+const SCENE_DECOR: readonly (readonly [name: string, every: number, offset: number, vary?: boolean])[][] = [
+  [["aqueduct-wall", 1, 0], ["aqueduct-pier", 5, 0], ["lamp-post", 5, 3]],
+  [["temple-ledge", 1, 0], ["temple-arch", 4, 2], ["lamp-post", 5, 3], ["temple-ferns", 3, 1, true]],
+  [["mine-wall-a", 3, 0], ["mine-wall-b", 3, 1], ["mine-wall-c", 3, 2], ["mine-frame", 2, 0], ["mine-cart-parked", 11, 5]],
+  [["bamboo-fence", 1, 0], ["bamboo-clump-a", 2, 0, true], ["bamboo-clump-b", 2, 1, true], ["stone-lantern", 5, 3]],
+  [["canyon-kerb", 1, 0], ["canyon-hoodoos", 4, 1, true], ["canyon-boulders", 3, 0, true], ["cactus-patch", 3, 2, true], ["canyon-lamp", 5, 3]],
+  [["snow-bank", 1, 0], ["snow-pines-a", 2, 0, true], ["snow-pines-b", 2, 1, true], ["snow-lamp", 5, 3], ["snowman", 13, 6]],
+];
+/** Sky bands painted in code for the scenes without a picture: gradient, then ridges from far to near. */
+type Ridge = { color: string; night: string; base: number; height: number; waves: readonly [frequency: number, weight: number][]; flat?: number; snow?: string };
+const PAINTED_SKIES: Partial<Record<number, { top: string; horizon: string; nightTop: string; nightHorizon: string; mist: string; ridges: readonly Ridge[] }>> = {
+  3: {
+    top: "#8fb7b3", horizon: "#dfe9d2", nightTop: "#0b1418", nightHorizon: "#24352f", mist: "rgba(228,240,220,.55)",
+    ridges: [
+      { color: "#8fae96", night: "#1b2a27", base: .62, height: .34, waves: [[3, .5], [7, .3], [13, .2]] },
+      { color: "#5f8a5c", night: "#142420", base: .74, height: .3, waves: [[4, .45], [9, .35], [17, .2]] },
+      { color: "#3e6a3f", night: "#0d1a15", base: .86, height: .24, waves: [[5, .4], [11, .4], [23, .2]] },
+    ],
+  },
+  4: {
+    top: "#e9a86c", horizon: "#fbe1b4", nightTop: "#170d1f", nightHorizon: "#4a2a35", mist: "rgba(250,214,170,.35)",
+    ridges: [
+      { color: "#c98b6b", night: "#3a2230", base: .6, height: .3, waves: [[2, .5], [5, .3], [11, .2]], flat: .7 },
+      { color: "#b0603d", night: "#2a1622", base: .72, height: .32, waves: [[3, .5], [7, .3], [15, .2]], flat: .62 },
+      { color: "#8a4128", night: "#1d0f17", base: .86, height: .22, waves: [[4, .5], [9, .3], [19, .2]], flat: .55 },
+    ],
+  },
+  5: {
+    top: "#9fc4e0", horizon: "#eef4f8", nightTop: "#0b1226", nightHorizon: "#2c3a55", mist: "rgba(245,248,252,.6)",
+    ridges: [
+      { color: "#b9cadb", night: "#2b3650", base: .58, height: .4, waves: [[3, .55], [7, .3], [16, .15]], snow: "#f7fbff" },
+      { color: "#8ea6be", night: "#1f293f", base: .72, height: .32, waves: [[4, .5], [9, .3], [19, .2]], snow: "#eef5fb" },
+      { color: "#dfe9f1", night: "#3b4760", base: .9, height: .14, waves: [[5, .5], [12, .5]] },
+    ],
+  },
+};
 
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
-type Decor = { node: TransformNode; every: number; offset: number };
+type Decor = { node: TransformNode; every: number; offset: number; vary: boolean };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
 type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
+/** Repeatable pseudo-random numbers for building scenery: the same seed always gives the same plants. */
+const seeded = (seed: number) => () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+const hash01 = (n: number, salt = 0) => (Math.imul(n + salt * 7919, 2654435761) >>> 0) / 4294967296;
 
 export class RunnerRenderer3D {
   readonly engine: Engine;
@@ -109,6 +162,9 @@ export class RunnerRenderer3D {
   private themes: Theme[] = [];
   private groundPlane: Mesh;
   private groundCuts: GroundOpening[] = [];
+  /** Open sea under the log bridge; only seen where the ground is cut away round the bridge. */
+  private sea: Mesh;
+  private shark!: { root: TransformNode; fin: AbstractMesh; shadow: Mesh; wake: Mesh; z: number; side: number; lateral: number; age: number; wait: number; active: boolean };
   private waterImpact = false;
   private sky: Mesh;
   private skyMat: StandardMaterial;
@@ -158,6 +214,8 @@ export class RunnerRenderer3D {
     this.buildMaterials();
     this.groundPlane = MeshBuilder.CreateGround("runner-ground", { width: GROUND_SIZE, height: GROUND_SIZE }, this.scene);
     this.groundPlane.isPickable = false;
+    this.sea = MeshBuilder.CreateGround("runner-sea", { width: GROUND_SIZE, height: GROUND_SIZE }, this.scene);
+    this.sea.material = this.mats.sea; this.sea.isPickable = false; this.sea.setEnabled(false);
     this.skyMat = new StandardMaterial("runner-sky-dome", this.scene);
     this.skyMat.disableLighting = true; this.skyMat.emissiveColor = Color3.White(); this.skyMat.fogEnabled = false; this.skyMat.backFaceCulling = false; this.skyMat.useAlphaFromDiffuseTexture = true;
     this.sky = MeshBuilder.CreateCylinder("runner-sky-dome", { diameter: SKY_RADIUS * 2, height: SKY_HEIGHT, tessellation: 48, cap: Mesh.NO_CAP, sideOrientation: Mesh.BACKSIDE }, this.scene);
@@ -202,6 +260,7 @@ export class RunnerRenderer3D {
     this.ropeHandle = this.instance("rope-handle", new TransformNode("runner-rope-handle", this.scene));
     this.ropeLanyard = this.ropeHandle.getChildMeshes().find(mesh => mesh.name === "rope-lanyard")!;
     this.cart.setEnabled(false); this.bicycle.setEnabled(false); this.ropeHandle.setEnabled(false);
+    this.buildShark();
     this.buildSlots();
     this.buildWeather();
     this.resize();
@@ -246,22 +305,79 @@ export class RunnerRenderer3D {
     this.mats[name] = m;
     return m;
   }
-  /** Painted warning board at the broken-bridge side of a fork. */
-  private signMaterial() {
-    const texture = new DynamicTexture("runner-fork-sign-tex", { width: 512, height: 256 }, this.scene, true);
+  /** Painted warning board: at the broken-bridge side of a fork, or over a mine shaft. */
+  private signMaterial(name: string, title: string, note: string) {
+    const texture = new DynamicTexture(`runner-${name}-tex`, { width: 512, height: 256 }, this.scene, true);
     const ctx = texture.getContext() as CanvasRenderingContext2D;
     ctx.fillStyle = "#f3e2b4"; ctx.fillRect(0, 0, 512, 256);
     ctx.fillStyle = "#a3231a"; ctx.fillRect(14, 14, 484, 228);
     ctx.strokeStyle = "#f7e9c2"; ctx.lineWidth = 8; ctx.strokeRect(30, 30, 452, 196);
     ctx.fillStyle = "#fff6dc"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.font = "900 112px 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif";
-    ctx.fillText("断桥", 256, 112);
+    ctx.fillText(title, 256, 112);
     ctx.font = "700 46px 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif";
-    ctx.fillText("危险 · 此路不通", 256, 196);
+    ctx.fillText(note, 256, 196);
     texture.update();
-    const m = new StandardMaterial("runner-fork-sign", this.scene);
+    const m = new StandardMaterial(`runner-${name}`, this.scene);
     m.diffuseTexture = texture; m.disableLighting = true; m.emissiveColor = Color3.White();
-    this.mats["fork-sign"] = m;
+    this.mats[name] = m;
+    return m;
+  }
+  /** Alpha card of drawn leaves, for bamboo crowns and temple ferns. */
+  private leafMaterial(name: string, colors: readonly string[], blade: [number, number], count: number, seed: number) {
+    const size = 256, texture = new DynamicTexture(`runner-${name}-tex`, { width: size, height: size }, this.scene, true);
+    const ctx = texture.getContext() as CanvasRenderingContext2D, random = seeded(seed);
+    ctx.clearRect(0, 0, size, size);
+    for (let i = 0; i < count; i++) {
+      // Leaves fan out and droop from the upper middle of the card.
+      const angle = (random() - .5) * Math.PI * 1.5 + Math.PI / 2, reach = size * (.18 + random() * .3);
+      const x = size / 2 + Math.cos(angle) * reach * .9, y = size * .3 + Math.sin(angle) * reach * .75 + random() * size * .25;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle + (random() - .5) * .6);
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.beginPath(); ctx.ellipse(0, 0, blade[0] * (.7 + random() * .6), blade[1], 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,230,.25)"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(-blade[0] * .8, 0); ctx.lineTo(blade[0] * .8, 0); ctx.stroke();
+      ctx.restore();
+    }
+    texture.update(); texture.hasAlpha = true;
+    const m = new StandardMaterial(`runner-${name}`, this.scene);
+    m.diffuseTexture = texture; m.useAlphaFromDiffuseTexture = true; m.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; m.alphaCutOff = .4;
+    m.disableLighting = true; m.emissiveColor.setAll(.92); m.backFaceCulling = false; m.maxSimultaneousLights = 2;
+    this.mats[name] = m;
+    return m;
+  }
+  /** Drifted snow: soft blue-grey hollows and glints on white, so snow stays white under full light. */
+  private snowTexture(repeat: number) {
+    const size = 256, texture = new DynamicTexture("runner-snow-tex", { width: size, height: size }, this.scene, true);
+    const ctx = texture.getContext() as CanvasRenderingContext2D, random = seeded(907);
+    ctx.fillStyle = "#f6f9fb"; ctx.fillRect(0, 0, size, size);
+    // Blotches drawn wrapped round the edges so the tile repeats without seams.
+    for (let i = 0; i < 70; i++) {
+      const x = random() * size, y = random() * size, r = 8 + random() * 30;
+      for (const [dx, dy] of [[0, 0], [-size, 0], [size, 0], [0, -size], [0, size]]) {
+        const g = ctx.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+        g.addColorStop(0, random() < .5 ? "rgba(196,212,226,.45)" : "rgba(255,255,255,.7)"); g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = g; ctx.fillRect(x + dx - r, y + dy - r, r * 2, r * 2);
+      }
+    }
+    for (let i = 0; i < 160; i++) { ctx.fillStyle = `rgba(170,190,210,${.15 + random() * .2})`; ctx.fillRect(random() * size, random() * size, 1.5, 1.5); }
+    texture.update(); texture.wrapU = texture.wrapV = Texture.WRAP_ADDRESSMODE; texture.uScale = texture.vScale = repeat;
+    texture.anisotropicFilteringLevel = 8;
+    return texture;
+  }
+  /** Top-down silhouette of a shark, blurred, to show faintly under the water surface. */
+  private sharkShadowMaterial() {
+    const texture = new DynamicTexture("runner-shark-shadow-tex", { width: 128, height: 256 }, this.scene, false);
+    const ctx = texture.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 128, 256); ctx.filter = "blur(5px)"; ctx.fillStyle = "rgba(10,24,38,.95)";
+    ctx.beginPath(); ctx.ellipse(64, 120, 20, 82, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(44, 96); ctx.lineTo(8, 150); ctx.lineTo(52, 128); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(84, 96); ctx.lineTo(120, 150); ctx.lineTo(76, 128); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(64, 190); ctx.lineTo(34, 246); ctx.lineTo(64, 226); ctx.lineTo(94, 246); ctx.fill();
+    texture.update(); texture.hasAlpha = true;
+    const m = new StandardMaterial("runner-shark-shadow", this.scene);
+    m.diffuseTexture = texture; m.useAlphaFromDiffuseTexture = true; m.disableLighting = true; m.emissiveColor = Color3.White();
+    m.backFaceCulling = false; m.zOffset = -3;
+    this.mats["shark-shadow"] = m;
     return m;
   }
   private dotTexture() {
@@ -294,9 +410,14 @@ export class RunnerRenderer3D {
   private buildMaterials() {
     const stone = "/assets/runner/wet-stone-v1.png", wood = "/assets/materials/escape/04-aged-wood-v1.png";
     const rust = "/assets/materials/escape/08-rusted-iron-v1.png", rock = "/assets/materials/escape/05-basement-wall-v1.png";
+    const flags = "/assets/materials/escape/06-basement-floor-v1.png";
     this.mat("road-aqueduct", "#e9e1cc", stone);
-    this.mat("road-temple", "#cfc6a8", "/assets/materials/escape/06-basement-floor-v1.png");
+    this.mat("road-temple", "#cfc6a8", flags);
     this.mat("road-mine", "#8d7f6a", "/assets/materials/escape/07-basement-ceiling-v1.png");
+    this.mat("road-bamboo", "#b9c0a2", stone);
+    // Lit colours saturate, so warm tints must stay dark enough to survive full sun.
+    this.mat("road-canyon", "#b37b50", stone).emissiveColor.set(.06, .03, .01);
+    const packed = this.mat("road-snow", "#a4b2bf"); packed.diffuseTexture = this.snowTexture(1.5); packed.emissiveColor.set(.05, .06, .08);
     this.mat("stone", "#d8cfb8", stone);
     this.mat("stone-dark", "#8e8a7c", stone);
     const cornerFrog = this.mat("corner-frog", "#ffffff", "/assets/runner/sewer-frog-corner-v1.webp");
@@ -306,6 +427,13 @@ export class RunnerRenderer3D {
     this.mat("rock", "#6b5d4f", rock);
     this.mat("wood", "#ffffff", wood);
     this.mat("log-bark", "#e6d2b8", "/assets/runner/obstacle-cedar-bark-v1.webp");
+    // The log bridge is one long tube: its bark repeats every few metres along it instead of stretching.
+    for (const [name, repeat] of [["bridge-bark", Math.round((BRIDGE_LENGTH + 2) / 2.6)], ["bridge-bark-short", 9]] as const) {
+      const bark = this.mat(name, "#e6d2b8");
+      const texture = new Texture("/assets/runner/obstacle-cedar-bark-v1.webp", this.scene, false, true, Texture.TRILINEAR_SAMPLINGMODE);
+      texture.anisotropicFilteringLevel = this.settings.quality === "high" ? 16 : 8; texture.uScale = 2; texture.vScale = repeat;
+      bark.diffuseTexture = texture;
+    }
     this.mat("log-end", "#dbc4a6", "/assets/runner/obstacle-cedar-ring-v1.webp");
     this.mat("obstacle-rock", "#d6d6c0", "/assets/runner/obstacle-fractured-rock-v1.webp");
     this.mat("zipline", "#b89a73", wood).emissiveColor.set(.28, .22, .16);
@@ -331,8 +459,38 @@ export class RunnerRenderer3D {
     this.glow("lamp", "#ffe2a0", "#ffc25a");
     this.glow("warning", "#f2c443", "#3a2a00");
     this.glow("fork-flag", "#d8342a", "#5a0d08").backFaceCulling = false;
-    this.signMaterial();
+    this.signMaterial("fork-sign", "断桥", "危险 · 此路不通");
+    this.signMaterial("shaft-sign", "竖井", "危险 · 小心坠落");
     this.radialMaterial("lamp-halo", "rgba(255,200,110,.9)", true);
+    this.radialMaterial("wake", "rgba(235,248,250,.75)", true);
+    // Scenery for the newer scenes and the finer details: plain colours, so they cost no extra textures.
+    this.mat("lamp-iron", "#2f2b28").specularColor.set(.35, .33, .3);
+    this.mat("bamboo", "#a7bb5e").specularColor.set(.28, .3, .18);
+    this.mat("bamboo-node", "#6f8436").specularColor.setAll(.1);
+    this.mat("sandstone", "#b0613a", stone).specularColor.setAll(.02);
+    this.mat("sandstone-light", "#c48a5a", stone).specularColor.setAll(.02);
+    this.mat("cactus", "#4f8148").specularColor.set(.12, .16, .1);
+    this.glow("cactus-flower", "#f06d93", "#4a1424");
+    const snow = this.mat("snow", "#f3f7fa"); snow.emissiveColor.set(.32, .34, .36); snow.specularColor.setAll(.18);
+    const ice = this.glow("ice", "#cbe9f5", "#2c5566"); ice.alpha = .82; ice.specularColor.setAll(.7); ice.specularPower = 64;
+    this.mat("pine", "#2c5a3d").specularColor.setAll(.03);
+    this.mat("pine-trunk", "#5b3f2c").specularColor.setAll(.02);
+    this.mat("coal", "#1d1b1a").specularColor.setAll(.25);
+    this.glow("carrot", "#f08a2c", "#4a2006");
+    this.mat("scarf", "#c8352b");
+    this.mat("mushroom-cap", "#c63c2b").specularColor.set(.3, .2, .18);
+    this.mat("mushroom-brown", "#9b6038").specularColor.set(.2, .15, .1);
+    this.glow("mushroom-spot", "#fff6e6", "#3a332a");
+    this.mat("mushroom-stem", "#efe4cc");
+    this.mat("shelf-fungus", "#c59a5d");
+    this.mat("vine", "#3d7430").specularColor.setAll(.05);
+    const leaf = this.mat("vine-leaf", "#5d9a3b"); leaf.backFaceCulling = false; leaf.specularColor.set(.12, .2, .1);
+    this.mat("flower-pink", "#f2a3c0").emissiveColor.set(.25, .12, .16);
+    this.mat("flower-white", "#fbf5e8").emissiveColor.set(.25, .24, .22);
+    const fin = this.mat("shark", "#3c4b57"); fin.specularColor.set(.45, .5, .55); fin.specularPower = 40;
+    this.sharkShadowMaterial();
+    this.leafMaterial("bamboo-leaves", ["#5f8f36", "#77a644", "#4b7a2e", "#89b552"], [26, 5], 70, 11);
+    this.leafMaterial("fern-leaves", ["#4f8a39", "#6aa249", "#3f7430"], [18, 6], 44, 29);
     for (const [kind, [color]] of Object.entries(POWER_COLORS)) {
       const ring = this.glow(`ring-${kind}`, color, color); ring.alpha = .8; ring.disableLighting = true;
       const beam = this.glow(`beam-${kind}`, color, color); beam.alpha = .18; beam.disableLighting = true; beam.backFaceCulling = false; beam.alphaMode = Engine.ALPHA_ADD;
@@ -361,14 +519,25 @@ export class RunnerRenderer3D {
       pool.specularColor.set(.35, .42, .43);
       if (name === "pit-water-long") (pool.diffuseTexture as Texture).vScale = 6;
     }
-    const grass = this.mat("grass", "#6f8251", rock, groundRepeat(6)); grass.specularColor.setAll(0);
-    const cave = this.mat("cave-floor", "#2c241d", rock, groundRepeat(6)); cave.specularColor.setAll(0);
-    new GroundOpenings(grass, this.groundCuts);
-    new GroundOpenings(cave, this.groundCuts);
+    const sea = this.mat("sea", "#7eaeb3", "/assets/runner/pit-water-v1.png", groundRepeat(4));
+    sea.emissiveTexture = sea.diffuseTexture; sea.emissiveColor.set(.3, .4, .43);
+    sea.specularColor.set(.6, .68, .7); sea.specularPower = 56;
+    const ground = (name: string, color: string, texture = rock) => {
+      const m = this.mat(name, color, texture, groundRepeat(6)); m.specularColor.setAll(0);
+      new GroundOpenings(m, this.groundCuts);
+      return m;
+    };
+    const grass = ground("grass", "#6f8251"), cave = ground("cave-floor", "#2c241d");
+    const moss = ground("bamboo-floor", "#5b7a43"), sand = ground("sand", "#9a663c", stone), drift = ground("snowfield", "#eef3f6");
+    drift.diffuseTexture = this.snowTexture(groundRepeat(8));
+    drift.emissiveColor.set(.34, .36, .38); sand.emissiveColor.set(.12, .06, .02);
     this.themes = [
       { sky: new Color3(.62, .74, .78), fog: new Color3(.66, .74, .74), nightSky: new Color3(.07, .1, .18), nightFog: new Color3(.1, .13, .2), ground: water, groundY: -7 },
       { sky: new Color3(.66, .76, .62), fog: new Color3(.6, .67, .55), nightSky: new Color3(.06, .09, .1), nightFog: new Color3(.08, .12, .12), ground: grass, groundY: -.35 },
       { sky: new Color3(.09, .07, .06), fog: new Color3(.12, .09, .07), nightSky: new Color3(.04, .03, .03), nightFog: new Color3(.06, .045, .04), ground: cave, groundY: -.35 },
+      { sky: new Color3(.62, .76, .7), fog: new Color3(.66, .76, .66), nightSky: new Color3(.05, .09, .08), nightFog: new Color3(.07, .11, .1), ground: moss, groundY: -.35 },
+      { sky: new Color3(.9, .7, .5), fog: new Color3(.88, .7, .53), nightSky: new Color3(.1, .06, .1), nightFog: new Color3(.15, .09, .11), ground: sand, groundY: -.35 },
+      { sky: new Color3(.78, .86, .92), fog: new Color3(.85, .89, .93), nightSky: new Color3(.07, .09, .16), nightFog: new Color3(.13, .15, .21), ground: drift, groundY: -.35 },
     ];
   }
   async load() {
@@ -387,8 +556,12 @@ export class RunnerRenderer3D {
     this.chaserSprite.frame(this.sheets.walk!, 4, 4, 4);
     // The sky is a world-fixed band: the side strip (cliffs, trees, sky) of each scene picture,
     // mirrored into a seamless panorama so the road in the middle of the photo never shows.
-    const pictures = await Promise.all(RUN_SCENES.flatMap(scene => [loadImage(scene.image), loadImage(scene.night)]));
-    this.skies = RUN_SCENES.map((_, i) => ({ day: this.panorama(pictures[i * 2], i), night: this.panorama(pictures[i * 2 + 1], i) }));
+    // Scenes without a picture get a band painted in code.
+    this.skies = await Promise.all(RUN_SCENES.map(async (scene, i) => {
+      if (!scene.image || !scene.night) return { day: this.paintedSky(i, false), night: this.paintedSky(i, true) };
+      const [day, night] = await Promise.all([loadImage(scene.image), loadImage(scene.night)]);
+      return { day: this.panorama(day, i), night: this.panorama(night, i) };
+    }));
     this.skyMat.diffuseTexture = this.skies[0].day;
     await withTimeout(this.scene.whenReadyAsync(), "3D场景准备超时，请重试。");
     this.warmUp();
@@ -403,7 +576,8 @@ export class RunnerRenderer3D {
     warm.position.set(0, 0, 12);
     for (const name of this.templates.keys()) this.instance(name, warm);
     for (const slot of this.slots) slot.themes.forEach(group => group.setEnabled(true));
-    const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0]];
+    const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0], this.sea];
+    this.shark.root.setEnabled(true); this.shark.root.position.set(0, 0, 14);
     effects.forEach(mesh => { mesh.setEnabled(true); mesh.position.set(0, 1, 10); });
     this.mats["lamp-halo"].alpha = .9;
     this.burst(this.sparks, new Vector3(0, 1, 10), 4); this.burst(this.magic, new Vector3(0, 1, 10), 4);
@@ -412,6 +586,7 @@ export class RunnerRenderer3D {
     warm.dispose();
     for (const slot of this.slots) slot.themes.forEach(group => group.setEnabled(false));
     [...effects, ...this.rain, ...this.snow, ...this.streaks].forEach(mesh => mesh.setEnabled(false));
+    this.shark.root.setEnabled(false);
   }
 
   private panorama(image: HTMLImageElement, scene: number) {
@@ -437,6 +612,53 @@ export class RunnerRenderer3D {
     return texture;
   }
 
+  /** Seamless sky band in the same layout as `panorama`: gradient, stars at night, then ridges from far to near. */
+  private paintedSky(scene: number, night: boolean) {
+    const look = PAINTED_SKIES[scene]!;
+    const width = 2048, height = 256, canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext("2d")!, random = seeded(scene * 97 + (night ? 5 : 0));
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, night ? look.nightTop : look.top); sky.addColorStop(.85, night ? look.nightHorizon : look.horizon);
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, width, height);
+    if (night) for (let i = 0; i < 260; i++) {
+      ctx.fillStyle = `rgba(255,255,240,${.25 + random() * .6})`;
+      ctx.fillRect(random() * width, random() * height * .6, 1 + random() * 1.4, 1 + random() * 1.4);
+    }
+    // Whole numbers of waves across the width, so the band joins up all the way round.
+    const ridgeAt = (ridge: Ridge, x: number, phase: number) => {
+      let y = 0;
+      for (const [frequency, weight] of ridge.waves) y += weight * (1 - Math.abs(Math.sin(Math.PI * frequency * x / width + phase * frequency)));
+      return ridge.flat ? Math.min(y, ridge.flat) / ridge.flat : y;
+    };
+    for (const [index, ridge] of look.ridges.entries()) {
+      const phase = index * 1.7 + scene;
+      const outline = new Path2D();
+      outline.moveTo(0, height);
+      for (let x = 0; x <= width; x += 4) outline.lineTo(x, height * (ridge.base - ridge.height * ridgeAt(ridge, x, phase)));
+      outline.lineTo(width, height); outline.closePath();
+      ctx.fillStyle = night ? ridge.night : ridge.color; ctx.fill(outline);
+      if (ridge.snow && !night) {
+        // Snow caps: the top of each peak, with a ragged lower edge.
+        ctx.save(); ctx.clip(outline);
+        ctx.fillStyle = ridge.snow; ctx.beginPath(); ctx.moveTo(0, 0);
+        for (let x = 0; x <= width; x += 8) ctx.lineTo(x, height * (ridge.base - ridge.height * .58) + Math.sin(x * .09) * 4 + Math.sin(x * .023) * 7);
+        ctx.lineTo(width, 0); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+      // A band of mist at the foot of each ridge gives the layers depth.
+      const mist = ctx.createLinearGradient(0, height * (ridge.base - .08), 0, height * (ridge.base + .04));
+      mist.addColorStop(0, "rgba(0,0,0,0)"); mist.addColorStop(1, night ? "rgba(40,50,70,.35)" : look.mist);
+      ctx.fillStyle = mist; ctx.fillRect(0, height * (ridge.base - .08), width, height * .12);
+    }
+    const fade = ctx.createLinearGradient(0, height * .82, 0, height);
+    fade.addColorStop(0, "rgba(0,0,0,0)"); fade.addColorStop(1, "rgba(0,0,0,1)");
+    ctx.globalCompositeOperation = "destination-out"; ctx.fillStyle = fade; ctx.fillRect(0, height * .82, width, height * .18);
+    const texture = new Texture(canvas.toDataURL("image/png"), this.scene, false, true, Texture.TRILINEAR_SAMPLINGMODE);
+    texture.hasAlpha = true; texture.wrapV = Texture.CLAMP_ADDRESSMODE;
+    return texture;
+  }
+
   resize() {
     if (this.disposed) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -457,7 +679,7 @@ export class RunnerRenderer3D {
     m.parent = parent; m.position.set(...at); m.material = this.mats[material]; m.isPickable = false;
     return m;
   }
-  private cylinder(name: string, parent: TransformNode, options: { diameterTop?: number; diameterBottom?: number; diameter?: number; height: number; tessellation?: number }, at: [number, number, number], material: string) {
+  private cylinder(name: string, parent: TransformNode, options: { diameterTop?: number; diameterBottom?: number; diameter?: number; height: number; tessellation?: number; arc?: number; enclose?: boolean }, at: [number, number, number], material: string) {
     const m = MeshBuilder.CreateCylinder(name, { tessellation: 14, ...options }, this.scene);
     m.parent = parent; m.position.set(...at); m.material = this.mats[material]; m.isPickable = false;
     return m;
@@ -485,8 +707,12 @@ export class RunnerRenderer3D {
   private buildTemplates() {
     const stash = new TransformNode("runner-templates", this.scene);
     stash.position.y = -500;
-    const make = (name: string, build: (root: TransformNode) => void) => {
-      const root = new TransformNode(`tpl-${name}`, this.scene); root.parent = stash; build(root); this.templates.set(name, root);
+    // Built at the origin, then parked under the stash. `merge` folds static parts into one mesh per
+    // material, so a detailed prop costs a handful of instances instead of dozens.
+    const make = (name: string, build: (root: TransformNode) => void, merge = false) => {
+      const root = new TransformNode(`tpl-${name}`, this.scene); build(root);
+      if (merge) this.mergeByMaterial(root);
+      root.parent = stash; this.templates.set(name, root);
     };
     const L = LANE_WIDTH, W = ROAD_HALF * 2, D = TILE_DEPTH;
     for (const theme of RUN_SCENES) make(`lane-${theme.id}`, r => {
@@ -505,16 +731,65 @@ export class RunnerRenderer3D {
       this.box("lintel", r, [W + 3.4, 1, 1.3], [0, 6.6, 0], "moss-stone");
       for (const s of [-1, 1]) { const vine = this.cylinder("vine", r, { diameter: .5, height: 2.4, tessellation: 6 }, [s * (ROAD_HALF + .3), 5.2, .5], "foliage-dark"); vine.scaling.x = .6; }
     });
-    make("mine-wall", r => {
-      for (const s of [-1, 1]) this.box("rock-wall", r, [1.6, 8, D], [s * (ROAD_HALF + 1.2), 3.6, 0], "rock");
-      this.box("ceiling", r, [W + 4, 1, D], [0, 7.4, 0], "rock");
-    });
+    // The mine is a wide gallery: rough rock walls well back from the track, three variants in turn.
+    for (const [i, variant] of ["a", "b", "c"].entries()) make(`mine-wall-${variant}`, r => {
+      const random = seeded(301 + i * 17);
+      for (const s of [-1, 1]) {
+        this.box("mine-rock-face", r, [2.4, 12.6, D], [s * (MINE_WALL + 1.2), 5.9, 0], "rock");
+        for (let k = 0; k < 7; k++) {
+          const lump = MeshBuilder.CreateIcoSphere("mine-wall-lump", { radius: .6 + random() * .8, subdivisions: 2, flat: true }, this.scene);
+          lump.parent = r; lump.material = this.mats[k % 3 ? "rock" : "obstacle-rock"];
+          lump.position.set(s * (MINE_WALL + .45 - random() * .4), .2 + random() * 10, (random() - .5) * D * .95);
+          lump.scaling.set(.45 + random() * .2, .7 + random() * .6, .8 + random() * .6); lump.rotation.set(random() * 3, random() * 3, random() * 3);
+        }
+        for (let k = 0; k < 3; k++) {
+          const rubble = MeshBuilder.CreateIcoSphere("mine-rubble", { radius: .2 + random() * .28, subdivisions: 1, flat: true }, this.scene);
+          rubble.parent = r; rubble.material = this.mats["obstacle-rock"]; rubble.scaling.y = .6;
+          rubble.position.set(s * (MINE_WALL - .5 - random() * 1.1), -.25, (random() - .5) * D); rubble.rotation.set(random() * 3, random() * 3, 0);
+        }
+      }
+      this.box("mine-ceiling", r, [MINE_WALL * 2 + 5, 1.4, D], [0, 12.2, 0], "rock");
+      for (let k = 0; k < 3; k++) {
+        const length = .9 + random() * 1.5;
+        this.cylinder("stalactite", r, { diameterTop: .45 + random() * .35, diameterBottom: 0, height: length, tessellation: 7 }, [(random() - .5) * MINE_WALL * 1.7, 11.5 - length / 2, (random() - .5) * D * .8], "rock");
+      }
+      // A water pipe on one wall and a power cable on the other run the length of the gallery.
+      const pipe = this.cylinder("mine-pipe", r, { diameter: .26, height: D, tessellation: 10 }, [MINE_WALL - .35, 2.4, 0], "metal"); pipe.rotation.x = Math.PI / 2;
+      this.box("mine-pipe-clamp", r, [.5, .08, .1], [MINE_WALL - .15, 2.4, 0], "lamp-iron");
+      const cable = this.cylinder("mine-cable", r, { diameter: .07, height: D, tessellation: 6 }, [-(MINE_WALL - .2), 5.4, 0], "rail"); cable.rotation.x = Math.PI / 2;
+    }, true);
     make("mine-frame", r => {
-      for (const s of [-1, 1]) this.box("post", r, [.38, 6.6, .38], [s * (ROAD_HALF + .15), 3.1, 0], "wood");
-      this.box("cap", r, [W + .8, .45, .45], [0, 6.4, 0], "wood");
-      this.box("lantern", r, [.32, .42, .32], [0, 5.95, 0], "lamp");
-      const halo = MeshBuilder.CreatePlane("halo", { size: 2.2 }, this.scene); halo.parent = r; halo.position.set(0, 5.95, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
-    });
+      for (const s of [-1, 1]) {
+        this.box("post", r, [.42, 7.6, .42], [s * (ROAD_HALF + 1.1), 3.45, 0], "wood");
+        this.box("post-foot", r, [.62, .3, .62], [s * (ROAD_HALF + 1.1), -.2, 0], "stone-dark");
+        const brace = this.cylinder("brace", r, { diameter: .2, height: 1.5, tessellation: 6 }, [s * (ROAD_HALF + .6), 6.55, 0], "wood");
+        brace.rotation.z = s * .74;
+      }
+      this.box("cap", r, [W + 3.4, .5, .5], [0, 7.35, 0], "wood");
+      this.cylinder("lantern-chain", r, { diameter: .03, height: .7, tessellation: 4 }, [0, 6.75, 0], "metal");
+      this.cylinder("lantern-roof", r, { diameterTop: .05, diameterBottom: .42, height: .18, tessellation: 6 }, [0, 6.42, 0], "lamp-iron");
+      this.cylinder("lantern", r, { diameterTop: .32, diameterBottom: .25, height: .36, tessellation: 6 }, [0, 6.15, 0], "lamp");
+      this.cylinder("lantern-base", r, { diameter: .27, height: .05, tessellation: 6 }, [0, 5.95, 0], "lamp-iron");
+      const halo = MeshBuilder.CreatePlane("halo", { size: 2.4 }, this.scene); halo.parent = r; halo.position.set(0, 6.15, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    }, true);
+    make("mine-cart-parked", r => {
+      // An ore cart left on a short siding beside the track.
+      const x = -(ROAD_HALF + 2.3);
+      for (const s of [-1, 1]) this.box("siding-rail", r, [.08, .1, D], [x + s * .55, -.28, 0], "rail");
+      for (const z of [-1.4, 0, 1.4]) this.box("siding-sleeper", r, [1.6, .06, .28], [x, -.33, z], "wood");
+      this.box("ore-cart-body", r, [1.3, .7, 1.7], [x, .35, .2], "log-bark");
+      for (const s of [-1, 1]) this.box("ore-cart-band", r, [1.36, .1, .1], [x, .6, .2 + s * .8], "metal");
+      for (const sx of [-1, 1]) for (const z of [-.4, .8]) {
+        const wheel = this.cylinder("ore-cart-wheel", r, { diameter: .4, height: .12, tessellation: 12 }, [x + sx * .55, -.08, z], "metal");
+        wheel.rotation.z = Math.PI / 2;
+      }
+      const random = seeded(77);
+      for (let k = 0; k < 6; k++) {
+        const ore = MeshBuilder.CreatePolyhedron("ore-lump", { type: k % 2 ? 2 : 1, size: .2 + random() * .14 }, this.scene);
+        ore.parent = r; ore.material = this.mats[k === 2 || k === 5 ? "gold" : "obstacle-rock"];
+        ore.position.set(x + (random() - .5) * .8, .78 + random() * .14, .2 + (random() - .5) * 1.1); ore.rotation.set(random() * 3, random() * 3, 0);
+      }
+    }, true);
     make("zipline-anchor", r => {
       for (const side of [-1, 1]) {
         this.box("zipline-post", r, [.43, 3.8, .48], [side * 2.95, 1.78, 0], "wood");
@@ -574,14 +849,178 @@ export class RunnerRenderer3D {
       }
       this.box("cart-lantern", r, [.23, .26, .18], [0, .68, .99], "lamp");
     });
-    make("lamp-post", r => {
+    make("lamp-post", r => this.lampPost(r, false), true);
+    make("snow-lamp", r => this.lampPost(r, true), true);
+    make("stone-lantern", r => {
       for (const s of [-1, 1]) {
-        this.cylinder("pole", r, { diameter: .14, height: 4.2 }, [s * (ROAD_HALF + .55), 2, 0], "metal");
-        this.box("bulb", r, [.4, .5, .4], [s * (ROAD_HALF + .55), 4.25, 0], "lamp");
-        this.box("hood", r, [.6, .12, .6], [s * (ROAD_HALF + .55), 4.55, 0], "metal");
-        const halo = MeshBuilder.CreatePlane("halo", { size: 2.6 }, this.scene); halo.parent = r; halo.position.set(s * (ROAD_HALF + .55), 4.2, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+        const x = s * (ROAD_HALF + .95);
+        this.box("lantern-foot", r, [.72, .2, .72], [x, .08, 0], "stone-dark");
+        this.box("lantern-step", r, [.5, .14, .5], [x, .25, 0], "stone");
+        this.cylinder("lantern-pillar", r, { diameter: .28, height: .86, tessellation: 6 }, [x, .75, 0], "stone");
+        this.box("lantern-shelf", r, [.68, .12, .68], [x, 1.24, 0], "stone-dark");
+        for (const [dx, dz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]] as const) this.box("lantern-corner", r, [.09, .36, .09], [x + dx * .2, 1.48, dz * .2], "stone");
+        this.box("lantern-light", r, [.3, .3, .3], [x, 1.48, 0], "lamp");
+        const roof = this.cylinder("lantern-roof", r, { diameterTop: .08, diameterBottom: 1.02, height: .34, tessellation: 4 }, [x, 1.83, 0], "stone-dark");
+        roof.rotation.y = Math.PI / 4;
+        const knob = MeshBuilder.CreateSphere("lantern-knob", { diameter: .15, segments: 6 }, this.scene);
+        knob.parent = r; knob.position.set(x, 2.05, 0); knob.material = this.mats.stone;
+        const halo = MeshBuilder.CreatePlane("halo", { size: 1.9 }, this.scene); halo.parent = r; halo.position.set(x, 1.48, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
       }
-    });
+    }, true);
+    make("canyon-lamp", r => {
+      for (const s of [-1, 1]) {
+        const x = s * (ROAD_HALF + .65), lx = x - s * .78;
+        this.box("lamp-post-wood", r, [.22, 3.3, .22], [x, 1.5, 0], "wood");
+        for (const k of [0, 1, 2]) {
+          const stone = MeshBuilder.CreatePolyhedron("lamp-foot-rock", { type: 2, size: .2 + k * .05 }, this.scene);
+          stone.parent = r; stone.position.set(x + (k - 1) * .22, -.2, (k % 2 ? .2 : -.18)); stone.material = this.mats.sandstone;
+        }
+        this.box("lamp-beam", r, [.95, .14, .14], [x - s * .4, 3.05, 0], "wood");
+        const brace = this.cylinder("lamp-brace", r, { diameter: .09, height: .7, tessellation: 6 }, [x - s * .25, 2.75, 0], "wood");
+        brace.rotation.z = s * .66;
+        this.cylinder("lamp-hook", r, { diameter: .03, height: .2, tessellation: 4 }, [lx, 2.9, 0], "lamp-iron");
+        this.cylinder("lamp-cap", r, { diameterTop: .04, diameterBottom: .34, height: .14, tessellation: 8 }, [lx, 2.76, 0], "lamp-iron");
+        this.cylinder("lamp-glass", r, { diameter: .26, height: .34, tessellation: 8 }, [lx, 2.52, 0], "lamp");
+        this.cylinder("lamp-bottom", r, { diameter: .3, height: .05, tessellation: 8 }, [lx, 2.33, 0], "lamp-iron");
+        const halo = MeshBuilder.CreatePlane("halo", { size: 2.2 }, this.scene); halo.parent = r; halo.position.set(lx, 2.52, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      }
+    }, true);
+    make("temple-ferns", r => {
+      // Ferns and small flowers growing out of the mossy ledges.
+      const random = seeded(41);
+      for (const s of [-1, 1]) for (let k = 0; k < 2; k++) {
+        const x = s * (ROAD_HALF + .35 + random() * .25), z = (k - .5) * 2 + (random() - .5);
+        for (let c = 0; c < 2; c++) {
+          const card = MeshBuilder.CreatePlane("fern", { size: .95 + random() * .4 }, this.scene);
+          card.parent = r; card.material = this.mats["fern-leaves"];
+          card.position.set(x, .62, z); card.rotation.set((random() - .5) * .3, c * Math.PI / 2 + random(), 0);
+        }
+        for (let f = 0; f < 3; f++) {
+          const bloom = MeshBuilder.CreateSphere("flower", { diameter: .09 + random() * .05, segments: 5 }, this.scene);
+          bloom.parent = r; bloom.material = this.mats[f % 2 ? "flower-white" : "flower-pink"];
+          bloom.position.set(x + (random() - .5) * .5, .38 + random() * .12, z + (random() - .5) * .8);
+        }
+      }
+    }, true);
+    make("bamboo-fence", r => {
+      for (const s of [-1, 1]) {
+        const x = s * (ROAD_HALF + .35);
+        this.box("fence-kerb", r, [.45, .26, D], [s * (ROAD_HALF + .05), .02, 0], "stone-dark");
+        for (const y of [.45, .86]) {
+          const rail = this.cylinder("fence-rail", r, { diameter: .085, height: D, tessellation: 8 }, [x, y, 0], "bamboo");
+          rail.rotation.x = Math.PI / 2;
+          const tie = MeshBuilder.CreateTorus("fence-tie", { diameter: .17, thickness: .03, tessellation: 10 }, this.scene);
+          tie.parent = r; tie.position.set(x, y, 0); tie.rotation.z = Math.PI / 2; tie.material = this.mats.zipline;
+        }
+        this.cylinder("fence-post", r, { diameter: .13, height: 1.15, tessellation: 8 }, [x, .52, 0], "bamboo");
+        this.cylinder("fence-post-node", r, { diameter: .15, height: .05, tessellation: 8 }, [x, 1.08, 0], "bamboo-node");
+      }
+    }, true);
+    for (const [i, variant] of ["a", "b"].entries()) make(`bamboo-clump-${variant}`, r => this.bambooClump(r, 53 + i * 31), true);
+    make("canyon-kerb", r => {
+      const random = seeded(61);
+      for (const s of [-1, 1]) {
+        this.box("canyon-kerb-stone", r, [.6, .42, D], [s * (ROAD_HALF + .1), .02, 0], "sandstone-light");
+        this.box("canyon-fence-post", r, [.15, .95, .15], [s * (ROAD_HALF + .5), .45, 0], "wood");
+        const rope = this.cylinder("canyon-fence-rope", r, { diameter: .045, height: D, tessellation: 6 }, [s * (ROAD_HALF + .5), .8, 0], "zipline");
+        rope.rotation.x = Math.PI / 2;
+        for (let k = 0; k < 2; k++) {
+          const pebble = MeshBuilder.CreatePolyhedron("canyon-pebble", { type: 2, size: .16 + random() * .18 }, this.scene);
+          pebble.parent = r; pebble.material = this.mats.sandstone;
+          pebble.position.set(s * (ROAD_HALF + 1.1 + random()), -.25, (random() - .5) * D); pebble.rotation.set(random() * 3, random() * 3, 0);
+        }
+      }
+    }, true);
+    make("canyon-hoodoos", r => {
+      // Banded sandstone towers with a harder cap rock, like those left standing in a dry canyon.
+      const random = seeded(71);
+      for (const s of [-1, 1]) for (let k = 0; k < (s > 0 ? 2 : 1); k++) {
+        const x = s * (ROAD_HALF + 7 + random() * 8), z = (random() - .5) * 3, height = 6 + random() * 7, spin = random() * 3;
+        const tiers: [number, number, number, string][] = [[3.4, 2.4, .42, "sandstone"], [2.4, 1.7, .3, "sandstone-light"], [1.7, 1.1, .16, "sandstone"]];
+        let y = -.35;
+        for (const [bottom, top, share, material] of tiers) {
+          const tier = this.cylinder("hoodoo", r, { diameterBottom: bottom, diameterTop: top, height: height * share, tessellation: 7 }, [x, y + height * share / 2, z], material);
+          tier.rotation.y = spin; y += height * share;
+        }
+        const cap = this.cylinder("hoodoo-cap", r, { diameterBottom: 2.2, diameterTop: 1.6, height: .8, tessellation: 7 }, [x, y + .35, z], "sandstone-light");
+        cap.rotation.set(.06, spin, -.05);
+      }
+    }, true);
+    make("canyon-boulders", r => {
+      const random = seeded(83);
+      for (const s of [-1, 1]) for (let k = 0; k < 3; k++) {
+        const size = .35 + random() * .8;
+        const rock = MeshBuilder.CreatePolyhedron("canyon-boulder", { type: k % 2 ? 1 : 2, size }, this.scene);
+        rock.parent = r; rock.material = this.mats[k === 1 ? "sandstone-light" : "sandstone"];
+        rock.position.set(s * (ROAD_HALF + 1.8 + random() * 4.5), size * .35 - .35, (random() - .5) * 3.5);
+        rock.scaling.set(1, .7 + random() * .3, 1.1); rock.rotation.set(random() * 3, random() * 3, random());
+      }
+    }, true);
+    make("cactus-patch", r => this.cactusPatch(r, seeded(97)), true);
+    make("snow-bank", r => {
+      const random = seeded(103);
+      for (const s of [-1, 1]) {
+        this.box("snow-kerb", r, [.5, .24, D], [s * (ROAD_HALF + .05), .0, 0], "stone-dark");
+        this.box("snow-kerb-top", r, [.58, .09, D], [s * (ROAD_HALF + .05), .15, 0], "snow");
+        const drift = MeshBuilder.CreateSphere("snow-drift", { diameter: 1, segments: 10 }, this.scene);
+        drift.parent = r; drift.material = this.mats.snow;
+        drift.position.set(s * (ROAD_HALF + 1.5), -.15, (random() - .5) * .8); drift.scaling.set(2.2, .9 + random() * .4, D * 1.05);
+        const x = s * (ROAD_HALF + .55);
+        this.box("snow-fence-post", r, [.13, 1.02, .13], [x, .46, 0], "pine-trunk");
+        this.box("snow-fence-cap", r, [.2, .07, .2], [x, 1.0, 0], "snow");
+        const rail = this.cylinder("snow-fence-rail", r, { diameter: .07, height: D, tessellation: 6 }, [x, .76, 0], "pine-trunk");
+        rail.rotation.x = Math.PI / 2;
+        this.box("snow-on-rail", r, [.11, .045, D], [x, .81, 0], "snow");
+        for (const z of [-1.3, .2, 1.4]) {
+          const length = .16 + random() * .18;
+          this.cylinder("icicle", r, { diameterTop: .055, diameterBottom: 0, height: length, tessellation: 5 }, [x, .72 - length / 2, z], "ice");
+        }
+      }
+    }, true);
+    for (const [i, variant] of ["a", "b"].entries()) make(`snow-pines-${variant}`, r => {
+      const random = seeded(127 + i * 19);
+      for (const s of [-1, 1]) for (let k = 0; k < 2 + (random() < .5 ? 1 : 0); k++) this.snowPine(r, s * (ROAD_HALF + 4 + random() * 7), (random() - .5) * 3.6, .8 + random() * .75);
+    }, true);
+    make("snowman", r => this.snowman(r, ROAD_HALF + 3.2, 0), true);
+    // Log bridge over the sea: crossed stakes driven into the sea bed hold the log up.
+    make("bridge-pile", r => {
+      const lean = .63, length = 3.7, below = 2.35;
+      for (const s of [-1, 1]) {
+        const offset = below - length / 2;
+        const stake = this.cylinder("bridge-stake", r, { diameter: .19, height: length, tessellation: 8 }, [s * Math.sin(lean) * offset, -1.6 - Math.cos(lean) * offset, 0], "wood");
+        stake.rotation.z = s * lean;
+      }
+      const lash = MeshBuilder.CreateTorus("bridge-lashing", { diameter: .34, thickness: .07, tessellation: 12 }, this.scene);
+      lash.parent = r; lash.position.set(0, -1.6, 0); lash.rotation.x = Math.PI / 2; lash.material = this.mats.zipline;
+    }, true);
+    make("bridge-vine", r => {
+      const axis = new TransformNode("bridge-vine-axis", this.scene); axis.parent = r; axis.position.y = -.68; axis.rotation.x = Math.PI / 2;
+      const random = seeded(137);
+      this.addVine(axis, 2.2, () => .73, 1.4, 0, random);
+      this.addVine(axis, 1.4, () => .73, .9, 2.4, random);
+    }, true);
+    make("mooring-post", r => {
+      this.cylinder("mooring-post", r, { diameter: .5, height: 3.5, tessellation: 10 }, [0, -1.05, 0], "wood");
+      this.cylinder("mooring-cap", r, { diameterTop: .2, diameterBottom: .52, height: .2, tessellation: 10 }, [0, .8, 0], "wood");
+      for (const y of [.25, .4]) {
+        const coil = MeshBuilder.CreateTorus("mooring-rope", { diameter: .56, thickness: .07, tessellation: 14 }, this.scene);
+        coil.parent = r; coil.position.y = y; coil.material = this.mats.zipline;
+      }
+    }, true);
+    make("bridge-shore", r => {
+      // Where land meets sea at each end of the log bridge. Local +Z points out over the water.
+      this.box("shore-wall", r, [SEA_REACH * 2, 2.4, 1.4], [0, -1.45, -.2], "stone-dark");
+      this.box("shore-landing", r, [3.4, .32, 2.2], [0, -.18, -1.1], "stone");
+      for (const s of [-1, 1]) this.cylinder("shore-bollard", r, { diameter: .42, height: .95, tessellation: 10 }, [s * 1.4, .3, -.4], "stone-dark");
+      const random = seeded(149);
+      for (let k = 0; k < 14; k++) {
+        const rock = MeshBuilder.CreatePolyhedron("shore-rock", { type: k % 2 ? 1 : 2, size: .4 + random() * .7 }, this.scene);
+        rock.parent = r; rock.material = this.mats["obstacle-rock"];
+        rock.position.set((random() - .5) * SEA_REACH * 1.6, SEA_Y + .1, .8 + random() * 1.6); rock.rotation.set(random() * 3, random() * 3, 0);
+      }
+    }, true);
+    make("mine-shaft-left", r => this.mineShaft(r, -1), true);
+    make("mine-shaft-right", r => this.mineShaft(r, 1), true);
     make("plaza", r => { this.box("plaza", r, [W + 2, .5, W + 2], [0, -.26, 0], "stone-dark"); });
     make("dead-end", r => {
       this.box("wall", r, [W + 2.5, 3.2, 1], [0, 1.6, 0], "stone-dark");
@@ -660,7 +1099,9 @@ export class RunnerRenderer3D {
     });
 
     // Obstacles. "-double" covers two lanes and "-wide" spans the road.
-    make("block-double", r => {
+    // Two-lane log piles: some grow mushrooms, and in the temple ruins they are wound with creepers.
+    for (const vine of [false, true]) for (const mushrooms of [false, true]) make(`block-double${vine ? "-vine" : ""}${mushrooms ? "-mushroom" : ""}`, r => {
+      const random = seeded(vine ? 211 : 223);
       const trunk = this.fallenLog("joined-log", r, 4.72, .86, [0, .42, -.04]);
       trunk.rotation.set(0, -.08, Math.PI / 2 + .035);
       const limb = this.cylinder("broken-limb", r, { diameterTop: .12, diameterBottom: .35, height: 1.9, tessellation: 11 }, [.5, .55, .13], "log-bark");
@@ -669,18 +1110,39 @@ export class RunnerRenderer3D {
         const stone = MeshBuilder.CreatePolyhedron("nesting-rock", { type: 2, size: .42 }, this.scene);
         stone.parent = r; stone.position.set(x, .13, z); stone.material = this.mats["obstacle-rock"];
       }
-    });
-    make("block-wide", r => {
-      for (const [z, y, length, thick, angle] of [[0, .55, W + .75, 1.08, .03], [-.62, .28, W - 1.5, .45, -.065], [.60, .25, W - 3.2, .39, .10]] as const) {
+      if (vine) {
+        const radius = (y: number) => .43 - (y / 4.72 + .5) * .095;
+        this.addVine(trunk, 4.3, radius, 2.4, .4, random);
+        this.addVine(trunk, 3.2, radius, 1.7, 3.1, random);
+        this.addVine(limb, 1.5, y => .14 - y * .06, 1.2, 1, random);
+      }
+      if (mushrooms) {
+        // Toadstools on top of the log, a cluster at its foot, and shelf fungus on the side facing the runner.
+        for (const [x, z, size, red] of [[-1.45, .06, 1.05, true], [-1.2, -.12, .72, true], [.3, .14, .9, false], [.52, -.04, .62, false], [1.5, .08, .86, true]] as const) this.addMushroom(r, x, .8, z, size, red, random);
+        for (const [x, z, size] of [[-2.25, -.55, .8], [-2.05, -.7, .55], [2.3, .6, .7]] as const) this.addMushroom(r, x, -.02, z, size, false, random);
+        for (const [x, y, size] of [[-.7, .45, 1], [-.48, .33, .7], [.95, .52, .85]] as const) {
+          const shelf = MeshBuilder.CreateSphere("shelf-fungus", { diameter: .46 * size, segments: 10, slice: .5 }, this.scene);
+          shelf.parent = r; shelf.position.set(x, y, -.4); shelf.scaling.set(1, .42, .62); shelf.material = this.mats["shelf-fungus"];
+        }
+      }
+    }, true);
+    for (const vine of [false, true]) make(vine ? "block-wide-vine" : "block-wide", r => {
+      const random = seeded(229);
+      for (const [index, [z, y, length, thick, angle]] of ([[0, .55, W + .75, 1.08, .03], [-.62, .28, W - 1.5, .45, -.065], [.60, .25, W - 3.2, .39, .10]] as const).entries()) {
         const log = this.fallenLog("fallen-log", r, length, thick, [0, y, z]);
         log.rotation.z = Math.PI / 2 + angle; log.rotation.y = z * .17;
+        if (vine && index === 0) {
+          const radius = (at: number) => thick / 2 - (at / length + .5) * thick * .11;
+          this.addVine(log, length * .9, radius, 3.4, .2, random);
+          this.addVine(log, length * .6, radius, 2.2, 2.6, random);
+        }
       }
       for (const [x, z, tilt, length] of [[-2.5, .1, -.53, .78], [-.8, -.38, .52, .46], [1.55, .20, -.71, .62]] as const) {
         const branch = this.cylinder("broken-branch", r, { diameterTop: .055, diameterBottom: .23, height: length, tessellation: 10 }, [x, .94, z], "log-bark");
         branch.rotation.set(.28, 0, tilt);
       }
       for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["obstacle-rock"]; }
-    });
+    }, true);
     make("beam", r => {
       const width = 2.1;
       for (const s of [-1, 1]) this.box("post", r, [.16, 1.5, .16], [s * (width / 2 - .1), .75, 0], "metal");
@@ -748,7 +1210,8 @@ export class RunnerRenderer3D {
     make("bridge-branch-wide", r => {
       const branch = this.fallenLog("bridge-cross-branch", r, 1.93, .63, [0, .30, 0]);
       branch.rotation.set(.10, -.14, 1.40);
-    });
+      this.addVine(branch, 1.7, y => .315 - (y / 1.93 + .5) * .07, 1.3, .8, seeded(233));
+    }, true);
     const flameMaterial = new StandardMaterial("runner-fire-volume", this.scene);
     flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v2.png");
     flameMaterial.diffuseTexture.hasAlpha = true;
@@ -800,6 +1263,227 @@ export class RunnerRenderer3D {
     }
   }
 
+  /** Folds a template's static parts into one mesh per material; billboards (lamp halos) stay separate. */
+  private mergeByMaterial(root: TransformNode) {
+    const meshes = root.getChildMeshes(false).filter((mesh): mesh is Mesh => mesh instanceof Mesh && mesh.billboardMode === Mesh.BILLBOARDMODE_NONE);
+    for (const mesh of meshes) mesh.setParent(root);
+    const groups = new Map<unknown, Mesh[]>();
+    for (const mesh of meshes) { const list = groups.get(mesh.material); if (list) list.push(mesh); else groups.set(mesh.material, [mesh]); }
+    for (const [material, list] of groups) {
+      if (list.length < 2) continue;
+      const merged = Mesh.MergeMeshes(list, true, true);
+      if (!merged) continue;
+      merged.name = `${root.name}-part`; merged.parent = root; merged.material = material as StandardMaterial; merged.isPickable = false;
+    }
+    // Pivots used while building are empty now.
+    for (const node of root.getDescendants(false)) if (node.getClassName() === "TransformNode" && (node as TransformNode).getChildMeshes(false).length === 0) node.dispose();
+  }
+
+  /** A creeper wound round a log, with leaves, in the log's own frame (its axis along local Y). */
+  private addVine(parent: TransformNode, length: number, radius: (y: number) => number, turns: number, phase: number, random: () => number) {
+    const steps = Math.ceil(turns * 22), path: Vector3[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps, y = (t - .5) * length, angle = phase + t * turns * Math.PI * 2, r = radius(y) + .03;
+      path.push(new Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r));
+    }
+    const stem = MeshBuilder.CreateTube("vine", { path, radius: .026, tessellation: 6 }, this.scene);
+    stem.parent = parent; stem.material = this.mats.vine; stem.isPickable = false;
+    for (let i = 1; i < path.length - 1; i += 2) {
+      const p = path[i], out = Math.atan2(p.x, p.z);
+      const leaf = MeshBuilder.CreateSphere("vine-leaf", { diameter: .22, segments: 4 }, this.scene);
+      leaf.parent = parent; leaf.material = this.mats["vine-leaf"]; leaf.isPickable = false;
+      // Flat against the bark: thin along the outward direction.
+      leaf.position.set(p.x * 1.08, p.y + (random() - .5) * .08, p.z * 1.08);
+      leaf.rotation.set(0, out, (random() - .5) * 1.4);
+      leaf.scaling.set(.8 + random() * .5, .5 + random() * .3, .18);
+    }
+  }
+
+  private addMushroom(parent: TransformNode, x: number, y: number, z: number, size: number, red: boolean, random: () => number) {
+    const stem = .2 * size, lean = (random() - .5) * .3;
+    const foot = new TransformNode("mushroom", this.scene); foot.parent = parent; foot.position.set(x, y, z); foot.rotation.set(lean, 0, (random() - .5) * .3);
+    this.cylinder("mushroom-stem", foot, { diameterTop: .065 * size, diameterBottom: .095 * size, height: stem, tessellation: 8 }, [0, stem / 2, 0], "mushroom-stem");
+    const cap = MeshBuilder.CreateSphere("mushroom-cap", { diameter: .34 * size, segments: 10, slice: .5 }, this.scene);
+    cap.parent = foot; cap.position.y = stem - .015 * size; cap.scaling.y = .72; cap.material = this.mats[red ? "mushroom-cap" : "mushroom-brown"]; cap.isPickable = false;
+    const gills = MeshBuilder.CreateDisc("mushroom-gills", { radius: .165 * size, tessellation: 12 }, this.scene);
+    gills.parent = foot; gills.position.y = stem - .016 * size; gills.rotation.x = -Math.PI / 2; gills.material = this.mats["mushroom-stem"]; gills.isPickable = false;
+    if (!red) return;
+    for (let i = 0; i < 6; i++) {
+      const around = i * 1.1 + random(), up = .35 + random() * .8, r = .17 * size;
+      const spot = MeshBuilder.CreateSphere("mushroom-spot", { diameter: (.035 + random() * .025) * size, segments: 4 }, this.scene);
+      spot.parent = foot; spot.material = this.mats["mushroom-spot"]; spot.isPickable = false;
+      spot.position.set(Math.cos(around) * Math.sin(up) * r, cap.position.y + Math.cos(up) * r * .72, Math.sin(around) * Math.sin(up) * r);
+    }
+  }
+
+  private lampPost(r: TransformNode, snowy: boolean) {
+    for (const s of [-1, 1]) {
+      const x = s * (ROAD_HALF + .55), lx = x - s * .74;
+      this.box("lamp-base", r, [.5, .36, .5], [x, .14, 0], "stone-dark");
+      this.box("lamp-plinth", r, [.34, .14, .34], [x, .39, 0], "lamp-iron");
+      this.cylinder("lamp-pole", r, { diameterBottom: .17, diameterTop: .1, height: 3.9, tessellation: 10 }, [x, 2.4, 0], "lamp-iron");
+      for (const y of [1.25, 3.15]) {
+        const collar = MeshBuilder.CreateTorus("lamp-collar", { diameter: .16, thickness: .05, tessellation: 12 }, this.scene);
+        collar.parent = r; collar.position.set(x, y, 0); collar.material = this.mats["lamp-iron"];
+      }
+      const knob = MeshBuilder.CreateSphere("lamp-knob", { diameter: .15, segments: 8 }, this.scene);
+      knob.parent = r; knob.position.set(x, 4.38, 0); knob.material = this.mats["lamp-iron"];
+      // A curved bracket: the arm out over the road edge and a brace under it.
+      const arm = this.cylinder("lamp-arm", r, { diameter: .06, height: .8, tessellation: 6 }, [x - s * .38, 4.25, 0], "lamp-iron");
+      arm.rotation.z = Math.PI / 2;
+      const brace = this.cylinder("lamp-brace", r, { diameter: .045, height: .74, tessellation: 6 }, [x - s * .27, 4.0, 0], "lamp-iron");
+      brace.rotation.z = s * Math.atan2(.55, .5);
+      const scroll = MeshBuilder.CreateTorus("lamp-scroll", { diameter: .2, thickness: .03, tessellation: 12 }, this.scene);
+      scroll.parent = r; scroll.position.set(x - s * .14, 4.1, 0); scroll.rotation.x = Math.PI / 2; scroll.material = this.mats["lamp-iron"];
+      // Hexagonal lantern hanging from the arm.
+      this.cylinder("lamp-hook", r, { diameter: .03, height: .16, tessellation: 4 }, [lx, 4.16, 0], "lamp-iron");
+      this.cylinder("lamp-roof", r, { diameterTop: .05, diameterBottom: .46, height: .2, tessellation: 6 }, [lx, 3.99, 0], "lamp-iron");
+      this.cylinder("lamp-rim", r, { diameter: .37, height: .05, tessellation: 6 }, [lx, 3.87, 0], "lamp-iron");
+      this.cylinder("lamp-glass", r, { diameterTop: .34, diameterBottom: .25, height: .38, tessellation: 6 }, [lx, 3.66, 0], "lamp");
+      this.cylinder("lamp-sill", r, { diameter: .28, height: .05, tessellation: 6 }, [lx, 3.45, 0], "lamp-iron");
+      this.cylinder("lamp-drop", r, { diameterTop: .2, diameterBottom: 0, height: .14, tessellation: 6 }, [lx, 3.36, 0], "lamp-iron");
+      if (snowy) {
+        this.cylinder("lamp-snow", r, { diameterTop: .05, diameterBottom: .4, height: .09, tessellation: 6 }, [lx, 4.08, 0], "snow");
+        this.box("lamp-base-snow", r, [.54, .08, .54], [x, .35, 0], "snow");
+        this.box("lamp-arm-snow", r, [.7, .035, .08], [x - s * .4, 4.29, 0], "snow");
+      }
+      const halo = MeshBuilder.CreatePlane("halo", { size: 2.5 }, this.scene); halo.parent = r; halo.position.set(lx, 3.66, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    }
+  }
+
+  /** Two thickets of leaning bamboo canes, one each side, with ringed nodes and leaf crowns. */
+  private bambooClump(r: TransformNode, seed: number) {
+    const random = seeded(seed);
+    for (const s of [-1, 1]) {
+      const cx = s * (ROAD_HALF + 3.4 + random() * 2.4), cz = (random() - .5) * 1.6;
+      for (let i = 0, canes = 6 + Math.floor(random() * 3); i < canes; i++) {
+        const height = 8 + random() * 5.5, d = .12 + random() * .09;
+        const cane = new TransformNode("bamboo-cane", this.scene); cane.parent = r;
+        cane.position.set(cx + (random() - .5) * 2.6, -.35, cz + (random() - .5) * 2.6);
+        cane.rotation.set((random() - .5) * .14, 0, -s * (.03 + random() * .1));
+        this.cylinder("bamboo-stalk", cane, { diameter: d, height, tessellation: 8 }, [0, height / 2, 0], "bamboo");
+        for (let y = .5 + random() * .4; y < height - .3; y += .8 + random() * .35) this.cylinder("bamboo-ring", cane, { diameter: d * 1.18, height: .05, tessellation: 8 }, [0, y, 0], "bamboo-node");
+        for (let k = 0; k < 3; k++) {
+          const crown = MeshBuilder.CreatePlane("bamboo-crown", { size: 2.4 + random() * 1.3 }, this.scene);
+          crown.parent = cane; crown.material = this.mats["bamboo-leaves"];
+          crown.position.set((random() - .5) * .5, height * (.6 + k * .14), (random() - .5) * .5);
+          crown.rotation.set((random() - .5) * .3, k * Math.PI / 3 + random(), 0);
+        }
+      }
+      // Young shoots and fallen leaves on the ground.
+      for (let k = 0; k < 2; k++) {
+        const shoot = this.cylinder("bamboo-shoot", r, { diameterTop: 0, diameterBottom: .22, height: .5 + random() * .4, tessellation: 6 }, [cx + (random() - .5) * 2, -.1, cz + (random() - .5) * 2], "bamboo-node");
+        shoot.rotation.z = (random() - .5) * .3;
+      }
+    }
+  }
+
+  private cactusPatch(r: TransformNode, random: () => number) {
+    for (const s of [-1, 1]) {
+      const x = s * (ROAD_HALF + 2.8 + random() * 3.5), z = (random() - .5) * 2.4, height = 2.4 + random() * 1.6;
+      this.cylinder("cactus-trunk", r, { diameter: .46, height, tessellation: 12 }, [x, height / 2 - .35, z], "cactus");
+      const top = MeshBuilder.CreateSphere("cactus-top", { diameter: .46, segments: 8 }, this.scene);
+      top.parent = r; top.position.set(x, height - .35, z); top.material = this.mats.cactus;
+      for (const side of random() < .5 ? [-1, 1] : [s]) {
+        const elbow = height * (.35 + random() * .2) - .35, reach = .55, rise = .7 + random() * .5;
+        const arm = this.cylinder("cactus-arm", r, { diameter: .28, height: reach, tessellation: 10 }, [x + side * reach / 2, elbow, z], "cactus");
+        arm.rotation.z = Math.PI / 2;
+        this.cylinder("cactus-arm-up", r, { diameter: .28, height: rise, tessellation: 10 }, [x + side * reach, elbow + rise / 2, z], "cactus");
+        const tip = MeshBuilder.CreateSphere("cactus-arm-top", { diameter: .28, segments: 6 }, this.scene);
+        tip.parent = r; tip.position.set(x + side * reach, elbow + rise, z); tip.material = this.mats.cactus;
+      }
+      for (let k = 0; k < 2; k++) {
+        const flower = MeshBuilder.CreateSphere("cactus-flower", { diameter: .11, segments: 5 }, this.scene);
+        flower.parent = r; flower.position.set(x + (k - .5) * .14, height - .16, z + (random() - .5) * .1); flower.material = this.mats["cactus-flower"];
+      }
+      const barrel = MeshBuilder.CreateSphere("barrel-cactus", { diameter: .55, segments: 8 }, this.scene);
+      barrel.parent = r; barrel.position.set(x - s * 1.1, -.15, z + 1); barrel.scaling.y = .8; barrel.material = this.mats.cactus;
+    }
+  }
+
+  /** Spruce in snow: stacked cones, each with a snow cap over its top. */
+  private snowPine(r: TransformNode, x: number, z: number, scale: number) {
+    this.cylinder("pine-trunk", r, { diameter: .38 * scale, height: 1.6 * scale, tessellation: 8 }, [x, -.35 + .8 * scale, z], "pine-trunk");
+    for (const [d, h, y] of [[3.4, 2.4, 1.6], [2.8, 2.2, 2.7], [2.2, 2, 3.8], [1.5, 1.8, 4.85], [.8, 1.3, 5.75]] as const) {
+      const at = -.35 + y * scale;
+      this.cylinder("pine-tier", r, { diameterTop: 0, diameterBottom: d * scale, height: h * scale, tessellation: 10 }, [x, at, z], "pine");
+      this.cylinder("pine-snow", r, { diameterTop: 0, diameterBottom: d * .8 * scale, height: h * .6 * scale, tessellation: 10 }, [x, at + h * .22 * scale, z], "snow");
+    }
+  }
+
+  private snowman(r: TransformNode, x: number, z: number) {
+    const face = Math.atan2(-1, -.6), fx = Math.sin(face), fz = Math.cos(face);
+    for (const [d, y] of [[1.35, .45], [.98, 1.4], [.68, 2.13]] as const) {
+      const ball = MeshBuilder.CreateSphere("snowman-ball", { diameter: d, segments: 14 }, this.scene);
+      ball.parent = r; ball.position.set(x, y, z); ball.material = this.mats.snow;
+    }
+    const dot = (name: string, y: number, ahead: number, across: number, d: number, material: string) => {
+      const ball = MeshBuilder.CreateSphere(name, { diameter: d, segments: 6 }, this.scene);
+      ball.parent = r; ball.material = this.mats[material];
+      ball.position.set(x + fx * ahead + fz * across, y, z + fz * ahead - fx * across);
+    };
+    for (const side of [-1, 1]) dot("snowman-eye", 2.22, .3, side * .11, .075, "coal");
+    for (const y of [1.2, 1.45, 1.7]) dot("snowman-button", y, .47 - Math.abs(y - 1.45) * .25, 0, .085, "coal");
+    const nose = this.cylinder("snowman-nose", r, { diameterTop: 0, diameterBottom: .1, height: .34, tessellation: 8 }, [x + fx * .45, 2.12, z + fz * .45], "carrot");
+    nose.rotation.set(Math.PI / 2, face, 0);
+    const scarf = MeshBuilder.CreateTorus("snowman-scarf", { diameter: .62, thickness: .13, tessellation: 18 }, this.scene);
+    scarf.parent = r; scarf.position.set(x, 1.82, z); scarf.material = this.mats.scarf;
+    this.box("snowman-scarf-tail", r, [.14, .42, .06], [x + fx * .2 + fz * .18, 1.62, z + fz * .2 - fx * .18], "scarf");
+    this.cylinder("snowman-hat", r, { diameter: .42, height: .36, tessellation: 14 }, [x, 2.6, z], "coal");
+    this.cylinder("snowman-brim", r, { diameter: .6, height: .04, tessellation: 14 }, [x, 2.43, z], "coal");
+    for (const side of [-1, 1]) {
+      const arm = this.cylinder("snowman-arm", r, { diameterTop: .02, diameterBottom: .05, height: 1, tessellation: 5 }, [x + fz * side * .75, 1.62, z - fx * side * .75], "pine-trunk");
+      arm.rotation.set(0, face, side * -1.05);
+    }
+  }
+
+  /** Straight on at a mine junction: the track runs on to a flooded shaft under a winding frame, then rock. Local +Z points straight on. */
+  private mineShaft(r: TransformNode, signSide: number) {
+    const { start, end, half, water } = SHAFT, middle = (start + end) / 2, length = end - start;
+    for (const s of [-1, 1]) {
+      this.box("shaft-side", r, [.5, 30, length + .5], [s * (half + .25), -15, middle], "rock");
+      this.box("shaft-end", r, [half * 2 + 1, 30, .5], [0, -15, s > 0 ? end + .25 : start - .25], "rock");
+      this.box("shaft-lip", r, [.35, .22, length + .6], [s * (half + .1), -.06, middle], "stone-dark");
+      // Winding frame over the shaft.
+      for (const z of [start + .4, end - .4]) {
+        const leg = this.cylinder("headframe-leg", r, { diameter: .26, height: 7.2, tessellation: 8 }, [s * (half + .45), 3.3, (z + middle) / 2], "wood");
+        leg.rotation.x = Math.atan2(middle - z, 6.7);
+      }
+    }
+    this.box("headframe-beam", r, [half * 2 + 1.6, .4, .4], [0, 6.75, middle], "wood");
+    const wheel = MeshBuilder.CreateTorus("headframe-wheel", { diameter: 1.3, thickness: .1, tessellation: 20 }, this.scene);
+    wheel.parent = r; wheel.position.set(0, 6.2, middle); wheel.rotation.z = Math.PI / 2; wheel.material = this.mats.metal;
+    this.cylinder("headframe-rope", r, { diameter: .05, height: 12, tessellation: 5 }, [0, .2, middle + .62], "zipline");
+    // A lantern on each leg lights the hole so it reads from down the gallery.
+    for (const s of [-1, 1]) {
+      this.cylinder("headframe-lantern", r, { diameterTop: .3, diameterBottom: .24, height: .36, tessellation: 6 }, [s * (half + .2), 3.2, start + .2], "lamp");
+      this.cylinder("headframe-lantern-roof", r, { diameterTop: .04, diameterBottom: .4, height: .16, tessellation: 6 }, [s * (half + .2), 3.46, start + .2], "lamp-iron");
+      const halo = MeshBuilder.CreatePlane("halo", { size: 2.6 }, this.scene); halo.parent = r; halo.position.set(s * (half + .2), 3.2, start + .2); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    }
+    const flood = MeshBuilder.CreateGround("shaft-water", { width: half * 2, height: length }, this.scene);
+    flood.parent = r; flood.position.set(0, -water, middle); flood.material = this.mats["pit-water-long"];
+    // One rail has buckled down into the hole; boards hang off the near lip.
+    const bent = this.box("shaft-rail-bent", r, [.1, .1, 2], [.55, -.75, start + .55], "rail");
+    bent.rotation.x = .95;
+    for (const [x, pitch, roll, width] of [[-1.6, 1.1, .15, 1.8], [.9, 1.35, -.2, 1.4], [2.4, .8, .1, 1.1]] as const) {
+      const board = this.box("shaft-board", r, [width, .1, 1.3], [x, -.55, start + .35], "wood");
+      board.rotation.set(pitch, 0, roll);
+    }
+    const signX = signSide * (half + 1.3);
+    this.box("shaft-sign-post", r, [.18, 2.3, .18], [signX, 1.1, start - 1.2], "wood");
+    this.box("shaft-sign-back", r, [1.86, .98, .08], [signX, 1.78, start - 1.14], "wood");
+    const board = MeshBuilder.CreatePlane("shaft-sign", { width: 1.72, height: .86 }, this.scene);
+    board.parent = r; board.position.set(signX, 1.78, start - 1.2); board.material = this.mats["shaft-sign"];
+    // The gallery ends in rock beyond the shaft.
+    this.box("shaft-back", r, [half * 2 + 12, 14, 2], [0, 5, end + 4], "rock");
+    const random = seeded(163);
+    for (let k = 0; k < 6; k++) {
+      const lump = MeshBuilder.CreatePolyhedron("shaft-back-rock", { type: k % 2 ? 1 : 2, size: .9 + random() }, this.scene);
+      lump.parent = r; lump.material = this.mats["obstacle-rock"];
+      lump.position.set((random() - .5) * (half * 2 + 8), random() * 8, end + 3); lump.scaling.set(1, 1, .5);
+    }
+  }
+
   private instance(name: string, parent: TransformNode) {
     const node = this.templates.get(name)!.instantiateHierarchy(parent, { doNotInstantiate: false }, (source, clone) => { clone.name = source.name; })!;
     node.position.setAll(0);
@@ -816,26 +1500,19 @@ export class RunnerRenderer3D {
       const trees = [treePlane.clone(`runner-tree-${i}-left`), treePlane.clone(`runner-tree-${i}-right`)];
       for (const tree of trees) tree.setEnabled(false);
       const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
-      const add = (name: string, group: TransformNode, every = 1, offset = 0) => {
-        const node = this.instance(name, group);
-        if (every > 1 || name === "aqueduct-wall" || name === "temple-ledge" || name === "mine-wall") decor.push({ node, every, offset });
-        return node;
-      };
-      ["aqueduct", "temple", "mine"].forEach((theme, t) => {
-        const group = new TransformNode(`slot-${i}-${theme}`, this.scene); group.parent = root; themes.push(group);
+      RUN_SCENES.forEach(({ id }, t) => {
+        const group = new TransformNode(`slot-${i}-${id}`, this.scene); group.parent = root; themes.push(group);
         lanes.push([0, 1, 2].map(lane => {
-          const main = add(`lane-${theme}`, group);
+          const main = this.instance(`lane-${id}`, group);
           main.position.x = (lane - 1) * LANE_WIDTH;
           return { main };
         }));
-        if (t === 0) { add("aqueduct-wall", group); add("aqueduct-pier", group, 5, 0); add("lamp-post", group, 5, 3); }
-        if (t === 1) { add("temple-ledge", group); add("temple-arch", group, 4, 2); add("lamp-post", group, 5, 3); }
-        if (t === 2) { add("mine-wall", group); add("mine-frame", group, 2, 0); }
+        for (const [name, every, offset, vary] of SCENE_DECOR[t]) decor.push({ node: this.instance(name, group), every, offset, vary: !!vary });
         group.setEnabled(false);
       });
       const ores = [-1, 1].map(side => {
         const ore = MeshBuilder.CreatePlane("mine-ore-vein", { size: 1 }, this.scene);
-        ore.parent = themes[2]; ore.rotation.y = side * .98; ore.isPickable = false;
+        ore.parent = themes[2]; ore.rotation.y = side * 1.15; ore.isPickable = false;
         ore.setEnabled(false);
         return ore;
       });
@@ -846,9 +1523,12 @@ export class RunnerRenderer3D {
   private placeTrees(slot: Slot, at: number, turns: readonly RunTurn[]) {
     const { n, theme } = slot;
     const grove = GROVES[theme];
+    // No trees standing in the sea round the log bridge.
+    const bridge = sectionFeature(at);
+    const offshore = bridge?.kind === "bridge" && at > bridge.start - 3 && at < bridge.end + 3;
     for (const [i, tree] of slot.trees.entries()) {
       const offset = i === 0 ? 0 : theme === 2 ? 1 : 2;
-      if (n <= 0 || (n + offset) % grove.spacing !== 0) { tree.setEnabled(false); continue; }
+      if (n <= 0 || offshore || !grove.trees.length || (n + offset) % grove.spacing !== 0) { tree.setEnabled(false); continue; }
       const variant = (Math.floor((n + offset) / grove.spacing) + i) % grove.trees.length;
       const style = grove.trees[variant];
       const variation = (Math.imul(n + 13 * i, 2654435761) >>> 0) / 0x100000000;
@@ -860,7 +1540,7 @@ export class RunnerRenderer3D {
       const turnClearance = Math.max(18, CORNER_RADIUS + TILE_DEPTH / 2 + width / 2);
       if (turns.some(turn => Math.abs(turn.z - distance) < turnClearance)) { tree.setEnabled(false); continue; }
       const side = i === 0 ? -1 : 1;
-      const setback = theme === 2 ? 3.96 : ROAD_HALF + width / 2 + 1.2 + variation * 3.2;
+      const setback = theme === 2 ? MINE_WALL - .3 : ROAD_HALF + width / 2 + 1.2 + variation * 3.2;
       const point = this.place(distance, side * setback);
       // Mine roots follow the wall, so their edges cannot pivot into the track.
       tree.billboardMode = theme === 2 ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
@@ -870,6 +1550,50 @@ export class RunnerRenderer3D {
       tree.position.set(point.x, grove.ground + height * .486 + (theme === 2 ? point.y : 0), point.z);
       tree.setEnabled(true);
     }
+  }
+
+  /** A dorsal fin that breaks the surface, a dark shape under it and a little wake. */
+  private buildShark() {
+    const root = new TransformNode("runner-shark", this.scene);
+    // A little larger than life, so it reads from the log at a glance.
+    const fin = MeshBuilder.CreateCylinder("shark-fin", { diameterTop: 0, diameterBottom: 1.5, height: 1.35, tessellation: 3 }, this.scene);
+    fin.parent = root; fin.material = this.mats.shark; fin.scaling.set(.14, 1, 1.05); fin.rotation.x = -.42; fin.isPickable = false;
+    const tail = MeshBuilder.CreateCylinder("shark-tail", { diameterTop: 0, diameterBottom: .8, height: .7, tessellation: 3 }, this.scene);
+    tail.parent = fin; tail.material = this.mats.shark; tail.position.set(0, -.3, -2.7); tail.rotation.x = -.5; tail.isPickable = false;
+    const shadow = MeshBuilder.CreateGround("shark-shadow", { width: 2.4, height: 6.2 }, this.scene);
+    shadow.parent = root; shadow.position.set(0, .03, -.6); shadow.material = this.mats["shark-shadow"]; shadow.isPickable = false;
+    const wake = MeshBuilder.CreateGround("shark-wake", { width: 2.4, height: 3.6 }, this.scene);
+    wake.parent = root; wake.position.set(0, .05, .2); wake.material = this.mats.wake; wake.isPickable = false;
+    root.setEnabled(false);
+    this.shark = { root, fin, shadow, wake, z: 0, side: 1, lateral: 7, age: 0, wait: 2, active: false };
+  }
+
+  /** Now and then a shark surfaces in the sea beside the log bridge, slips past the dog and sinks again. */
+  private drawShark(world: RunnerWorld, dt: number) {
+    const shark = this.shark, bridge = world.bridge, running = world.phase === "running";
+    if (!shark.active) {
+      shark.root.setEnabled(false);
+      if (!bridge || !running) return;
+      shark.wait -= dt;
+      const z = world.distance + 16 + Math.random() * 14;
+      if (shark.wait > 0 || z > bridge.end - 35) return;
+      Object.assign(shark, { active: true, age: 0, z, side: Math.random() < .5 ? -1 : 1, lateral: 4.5 + Math.random() * 3 });
+    }
+    if (running) shark.age += dt;
+    if (shark.age >= SHARK_SECONDS || (!bridge && running)) {
+      shark.active = false; shark.wait = 3 + Math.random() * 4; shark.root.setEnabled(false);
+      return;
+    }
+    // It cruises the same way as the dog, a little slower, so the dog overtakes it.
+    if (running) shark.z += world.speed * .78 * dt;
+    const rise = Math.max(0, Math.min(1, shark.age / .9, (SHARK_SECONDS - shark.age) / 1.1)), shown = rise * rise * (3 - 2 * rise);
+    const weave = Math.sin(shark.age * 1.7) * .6, p = this.place(shark.z, shark.side * shark.lateral + weave);
+    shark.root.position.set(p.x, SEA_Y, p.z);
+    shark.root.rotation.y = p.heading + Math.cos(shark.age * 1.7) * .16;
+    shark.fin.position.y = -.95 + shown * 1.25;
+    this.mats["shark-shadow"].alpha = .62 * shown;
+    this.mats.wake.alpha = .6 * shown;
+    shark.root.setEnabled(true);
   }
 
   private buildWeather() {
@@ -899,13 +1623,27 @@ export class RunnerRenderer3D {
   private dogCentre(world: RunnerWorld): RoutePoint {
     const wrong = world.wrongTurn;
     if (wrong) {
-      // The broken side is level with the corner plaza.
-      const point = this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
+      // The trap side is level with the corner plaza.
+      const point = wrong.wrong === "straight" ? this.route.straight(world.distance, wrong.z) : this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
       if (point) return { ...point, y: elevationAt(Math.min(world.distance, wrong.z)) };
     }
     const turn = world.approachingTurn;
     if (turn && !turn.taken && world.distance > turn.z - CORNER_RADIUS) return this.route.straight(world.distance, turn.z) ?? this.route.sample(world.distance);
     return this.route.sample(world.distance);
+  }
+
+  /** Height of the water the dog falls into. */
+  private fallSurface(world: RunnerWorld, obstacle: RunItem) {
+    const wrong = world.wrongTurn;
+    switch (obstacle.feature) {
+      case "rope": return -7;
+      case "bridge": return SEA_Y;
+      case "fork":
+        if (wrong?.wrong === "straight") return elevationAt(wrong.z) - SHAFT.water;
+        if (wrong?.bridge) return SEA_Y;
+        return sceneAt(wrong?.z ?? obstacle.z) === 0 ? -7 : BRIDGE_WATER_Y;
+      default: return elevationAt(obstacle.z) - waterDepth(obstacle.kind);
+    }
   }
 
   // ---------- per frame ----------
@@ -918,7 +1656,7 @@ export class RunnerRenderer3D {
     this.route.sync(world.turns, world.distance);
 
     const theme = world.sceneIndex, look = this.themes[theme], night = world.night;
-    const weather = theme === 2 ? "sunny" : world.weather; // no rain or snow underground
+    const weather = world.weather; // already sunny underground and snowing on the snowfield
     const capture = world.phase === "caught" || world.phase === "lost" || (world.phase === "paused" && world.reason !== "");
     const t = world.elapsed + (capture ? world.captureTime : 0);
     const running = world.phase === "running";
@@ -937,9 +1675,10 @@ export class RunnerRenderer3D {
     }
     const wrong = world.wrongTurn;
     if (wrong && this.seen.wrong !== wrong.z) {
-      // Same blend for a late press toward the broken side of a fork.
+      // Same blend for a late press toward the broken side of a fork. Running on straight needs none.
       this.seen.wrong = wrong.z;
-      const straight = world.distance > wrong.z - CORNER_RADIUS ? this.route.straight(world.distance, wrong.z) : undefined;
+      const late = wrong.wrong === "side" && world.distance > wrong.z - CORNER_RADIUS;
+      const straight = late ? this.route.straight(world.distance, wrong.z) : undefined;
       const bend = straight && this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
       if (straight && bend) { this.turnBlend.x += straight.x - bend.x; this.turnBlend.z += straight.z - bend.z; }
     }
@@ -990,9 +1729,7 @@ export class RunnerRenderer3D {
     this.dog.root.scaling.set(1 + land * .06 - takeoff * .05, 1 - land * .10 + takeoff * .09, 1);
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
-      const feature = world.fallObstacle.feature;
-      const canal = sceneAt(world.wrongTurn?.z ?? world.fallObstacle.z, world.startScene) === 0;
-      const surface = feature === "rope" ? -7 : feature === "bridge" ? BRIDGE_WATER_Y : feature === "fork" ? (canal ? -7 : BRIDGE_WATER_Y) : elevationAt(world.fallObstacle.z) - waterDepth(world.fallObstacle.kind);
+      const surface = this.fallSurface(world, world.fallObstacle);
       const below = surface - player.y - world.jumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
@@ -1042,12 +1779,14 @@ export class RunnerRenderer3D {
     this.sky.position.set(this.camera.position.x, SKY_HEIGHT / 2 - 12, this.camera.position.z);
     const gx = Math.round(this.camera.position.x / GROUND_SNAP) * GROUND_SNAP, gz = Math.round(this.camera.position.z / GROUND_SNAP) * GROUND_SNAP;
     this.groundPlane.position.set(gx, look.groundY, gz);
-    for (const [name, speed] of [["pit-water", 1], ["pit-water-long", 1], ["water", .35]] as const) {
+    this.sea.position.set(gx, SEA_Y, gz);
+    for (const [name, speed] of [["pit-water", 1], ["pit-water-long", 1], ["water", .35], ["sea", .25]] as const) {
       const water = this.mats[name].diffuseTexture as Texture;
       const drift = this.settings.reducedMotion ? 0 : t * speed;
       water.uOffset = drift * .022;
       water.vOffset = drift * .047;
     }
+    this.drawShark(world, dt);
     this.drawWeather(weather, t, running && world.boost > 0, centre.heading, player.y);
     this.scene.render();
   }
@@ -1070,6 +1809,7 @@ export class RunnerRenderer3D {
     this.camYaw = 0; this.camLateral = 0;
     this.captureCamera = undefined;
     this.cartLane = 0;
+    this.shark.active = false; this.shark.wait = 2; this.shark.root.setEnabled(false);
     this.cameraPos.set(0, 4.2, -8); this.cameraTarget.set(0, 1.2, 6);
   }
 
@@ -1092,13 +1832,17 @@ export class RunnerRenderer3D {
       const shade = index === 2 ? .62 : night ? .62 : weather === "rain" ? .84 : .97;
       for (const { name } of grove.trees) this.mats[`tree-${name}`].emissiveColor.setAll(shade);
     }
+    // Unlit leaf cards follow the light by hand.
+    const leaves = night ? .5 : weather === "sunny" ? .92 : .78;
+    this.mats["bamboo-leaves"].emissiveColor.setAll(leaves); this.mats["fern-leaves"].emissiveColor.setAll(leaves);
+    this.mats.snow.emissiveColor.setAll(night ? .12 : .34); this.mats.snowfield.emissiveColor.setAll(night ? .1 : .36);
     this.groundPlane.material = look.ground;
     const skies = this.skies[theme];
     if (skies) this.skyMat.diffuseTexture = night ? skies.night : skies.day;
     this.skyMat.emissiveColor.setAll(night ? .8 : weather === "sunny" ? 1 : .78);
     this.sky.setEnabled(theme !== 2);
     this.mats["lamp-halo"].alpha = night || theme === 2 ? .9 : 0;
-    this.mats["fork-sign"].emissiveColor.setAll(night ? .62 : theme === 2 ? .78 : .95);
+    for (const sign of ["fork-sign", "shaft-sign"]) this.mats[sign].emissiveColor.setAll(night ? .62 : theme === 2 ? .78 : .95);
   }
 
   /** Recycle slots only when the window moves; then fix up gap holes. */
@@ -1109,26 +1853,30 @@ export class RunnerRenderer3D {
       const depth = obstacleHalfDepth(item.kind, item.z);
       return [{ item, start: item.z - depth, end: item.z + depth }];
     });
+    // Holes in the landscape (the canal scene's ground is already water far below): the sea round the
+    // log bridge, ravines under broken bridges, mine shafts, then pits in the road.
     this.groundCuts.length = 0;
+    const bridge = this.bridgeNear(world);
+    this.sea.setEnabled(!!bridge);
+    if (bridge) this.cutSea(world, bridge);
     if (world.sceneIndex !== 0) {
-      const section = sectionFeature(world.distance, world.startScene);
-      if (section.kind === "bridge" && section.end >= world.distance - BEHIND && section.start <= world.distance + 145) {
-        this.cutGround(this.place((section.start + section.end) / 2), BRIDGE_RAVINE_HALF_WIDTH, (section.end - section.start) / 2);
-      }
       for (const turn of world.turns) {
-        if (!turn.fork || turn.z < world.distance - 30 || turn.z > world.distance + 170 || sceneAt(turn.z, world.startScene) === 0) continue;
+        if (!turn.fork || turn.bridge || turn.z < world.distance - 30 || turn.z > world.distance + 170 || sceneAt(turn.z) === 0) continue;
         const chasm = this.forkChasm(turn);
         if (chasm) this.cutGround(chasm, FORK_CHASM.half, (FORK_CHASM.end - FORK_CHASM.start) / 2);
+        const shaft = turn.three ? this.junctionPoint(turn, 0, (SHAFT.start + SHAFT.end) / 2) : undefined;
+        if (shaft) this.cutGround(shaft, SHAFT.half, (SHAFT.end - SHAFT.start) / 2);
       }
       for (const { item, start, end } of openings) {
+        if (this.groundCuts.length >= MAX_GROUND_OPENINGS) break;
         if (end < world.distance - BEHIND || start > world.distance + 145) continue;
         const p = this.place(item.z, itemOffset(item));
         const halfWidth = item.span === 3 ? ROAD_HALF : (item.span ?? 1) * LANE_WIDTH / 2;
         const halfDepth = (end - start) / 2;
         this.cutGround(p, halfWidth, halfDepth);
-        if (this.groundCuts.length === MAX_GROUND_OPENINGS) break;
       }
     }
+    this.groundCuts.length = Math.min(this.groundCuts.length, MAX_GROUND_OPENINGS);
     if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = -1; }
     for (let n = first; n < first + SLOTS; n++) {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
@@ -1138,7 +1886,7 @@ export class RunnerRenderer3D {
         slot.n = n;
         const p = this.route.sample(at);
         slot.root.position.set(p.x, p.y, p.z); slot.root.rotation.set(this.roadPitch(at, TILE / 2), p.heading, 0);
-        const theme = sceneAt(at, world.startScene);
+        const theme = sceneAt(at);
         if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
         this.placeTrees(slot, at, world.turns);
         for (const [index, ore] of slot.ores.entries()) {
@@ -1147,14 +1895,21 @@ export class RunnerRenderer3D {
           ore.setEnabled(visible);
           if (!visible) continue;
           const variant = (Math.floor((n + offset) / every) + index) % ORES.length;
-          const size = 1.3 + (n % 3) * .30, side = index === 0 ? -1 : 1;
+          const size = 1.5 + (n % 3) * .35, side = index === 0 ? -1 : 1;
           ore.material = this.mats[ORES[variant]];
-          ore.scaling.set(side * size, size, 1); ore.position.set(side * 4.14, size * .46 + (variant % 2) * .21, -.42);
+          ore.scaling.set(side * size, size, 1); ore.position.set(side * (MINE_WALL - .2), size * .46 + (variant % 2) * .6, -.42);
+        }
+        // Plants and rocks turn and change size from tile to tile, so the same few models never line up.
+        for (const d of slot.decor) {
+          if (!d.vary) continue;
+          const spin = hash01(n, d.offset), size = hash01(n, d.offset + 11);
+          d.node.rotation.y = (spin < .5 ? 0 : Math.PI) + (spin % .5 - .25) * .8;
+          d.node.scaling.set(1, .82 + size * .36, 1);
         }
       }
       const half = TILE_DEPTH / 2;
-      const section = sectionFeature(at, world.startScene);
-      const crossing = section.kind !== "cart" && section.start < at + half && section.end > at - half ? section : undefined;
+      const section = sectionFeature(at);
+      const crossing = section && section.kind !== "cart" && section.start < at + half && section.end > at - half ? section : undefined;
       const here = openings.filter(gap => gap.start < at + half && gap.end > at - half);
       const pierCut = here.length > 0;
       const forkCut = this.nearFork(world, at);
@@ -1197,7 +1952,43 @@ export class RunnerRenderer3D {
 
   /** Road just before and around a fork, kept open so the broken side can be seen on the way in. */
   private nearFork(world: RunnerWorld, at: number) {
-    return world.turns.some(turn => turn.fork && at > turn.z - CORNER_RADIUS - 16 && at < turn.z + CORNER_RADIUS + 4);
+    return world.turns.some(turn => turn.fork && !turn.bridge && at > turn.z - CORNER_RADIUS - 16 && at < turn.z + CORNER_RADIUS + 4);
+  }
+
+  /** The log bridge whose sea is in view, if any. */
+  private bridgeNear(world: RunnerWorld) {
+    for (let index = sectionIndexAt(world.distance - SEA_REACH); index <= sectionIndexAt(world.distance + 170); index++) {
+      const feature = featureOf(index);
+      if (feature?.kind === "bridge" && feature.start < world.distance + 170 && feature.end > world.distance - SEA_REACH - BEHIND) return feature;
+    }
+    return undefined;
+  }
+
+  /**
+   * Opens the ground into sea along each straight leg of the log bridge. Legs meet at the bridge's
+   * corners (known ones; the rest of the bridge is still straight ahead), and overlap round them.
+   */
+  private cutSea(world: RunnerWorld, bridge: Extract<CourseFeature, { kind: "bridge" }>) {
+    const start = this.place(bridge.start), end = this.place(bridge.end);
+    const corners = world.turns.filter(turn => turn.bridge && turn.z > bridge.start && turn.z < bridge.end)
+      .map(turn => this.route.corner(turn.z)).filter(corner => !!corner);
+    const points = [{ x: start.x, z: start.z }, ...corners.map(c => ({ x: c.x, z: c.z })), { x: end.x, z: end.z }];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const a = points[i], b = points[i + 1], length = Math.hypot(b.x - a.x, b.z - a.z);
+      if (length < .1) continue;
+      const dx = (b.x - a.x) / length, dz = (b.z - a.z) / length;
+      const back = i === 0 ? 0 : SEA_REACH, on = i + 2 === points.length ? 0 : SEA_REACH;
+      const middle = (on - back) / 2 + length / 2;
+      this.cutGround({ x: a.x + dx * middle, y: 0, z: a.z + dz * middle, heading: Math.atan2(dx, dz) }, SEA_REACH, (length + back + on) / 2);
+    }
+  }
+
+  /** A point in a corner's frame: `across` towards the incoming road's right, `along` straight on. */
+  private junctionPoint(turn: RunTurn, across: number, along: number): RoutePoint | undefined {
+    const corner = this.route.corner(turn.z);
+    if (!corner) return undefined;
+    const h = corner.heading;
+    return { x: corner.x + Math.sin(h) * along + Math.cos(h) * across, y: 0, z: corner.z + Math.cos(h) * along - Math.sin(h) * across, heading: h };
   }
 
   private cutGround(point: RoutePoint, halfWidth: number, halfDepth: number) {
@@ -1220,15 +2011,74 @@ export class RunnerRenderer3D {
       if (!live.has(turn.z) || this.corners.has(turn.z)) continue;
       const corner = this.route.corner(turn.z);
       if (!corner) continue;
-      const node = new TransformNode(`corner-${turn.z}`, this.scene);
-      const deck = new TransformNode(`corner-deck-${turn.z}`, this.scene);
-      deck.parent = node; deck.rotation.x = this.roadPitch(turn.z);
-      this.instance("plaza", deck);
-      const wall = this.instance("dead-end", deck); wall.position.z = ROAD_HALF + 1.4;
+      // `holder` stays at the origin for parts built in world coordinates; `node` sits on the corner.
+      const holder = new TransformNode(`corner-${turn.z}`, this.scene);
+      const node = new TransformNode(`corner-frame-${turn.z}`, this.scene); node.parent = holder;
       node.position.set(corner.x, elevationAt(turn.z), corner.z); node.rotation.y = corner.heading;
-      if (turn.fork) this.buildFork(node, turn, sceneAt(turn.z, world.startScene));
-      this.corners.set(turn.z, node);
+      if (turn.bridge) this.buildBridgeCorner(holder, node, turn);
+      else {
+        const deck = new TransformNode(`corner-deck-${turn.z}`, this.scene);
+        deck.parent = node; deck.rotation.x = this.roadPitch(turn.z);
+        this.instance("plaza", deck);
+        // A mine junction carries on straight to a shaft instead of ending in a wall.
+        if (turn.three) this.buildShaft(deck, turn);
+        else this.instance("dead-end", deck).position.z = ROAD_HALF + 1.4;
+        if (turn.fork) this.buildFork(node, turn, sceneAt(turn.z));
+      }
+      this.corners.set(turn.z, holder);
     }
+  }
+
+  /** Straight on from a mine junction: a short run of track, then the shaft. */
+  private buildShaft(deck: TransformNode, turn: RunTurn) {
+    const stub = SHAFT.start - FORK_STUB_START;
+    for (let i = 0; i < 3; i++) {
+      const tile = this.instance(`lane-${RUN_SCENES[2].id}`, deck);
+      tile.position.set((i - 1) * LANE_WIDTH, 0, FORK_STUB_START + stub / 2);
+      tile.scaling.z = stub / TILE_DEPTH;
+    }
+    // The warning sign stands on the broken bridge's side, so it never blocks the safe way.
+    this.instance(turn.direction === "left" ? "mine-shaft-right" : "mine-shaft-left", deck);
+  }
+
+  /**
+   * A corner on the log bridge: a mooring post marks the outside of the bend. At a fork the other
+   * log curves away the other way and snaps off over the sea.
+   */
+  private buildBridgeCorner(holder: TransformNode, node: TransformNode, turn: RunTurn) {
+    this.instance("mooring-post", node);
+    if (!turn.fork) return;
+    const other = turn.direction === "left" ? "right" : "left", side = other === "right" ? 1 : -1;
+    const y = elevationAt(turn.z) - .68, end = turn.z + BRIDGE_FORK_BREAK - .2, path: Vector3[] = [];
+    for (let d = turn.z - CORNER_RADIUS; d <= end + .01; d += 1) {
+      const p = this.route.branch(Math.min(d, end), turn.z, other);
+      if (!p) return;
+      // The broken log sags towards where it snapped.
+      const sag = Math.max(0, Math.min(1, (d - (end - 7)) / 7)) ** 2 * .5;
+      path.push(new Vector3(p.x, y - sag, p.z));
+    }
+    const log = MeshBuilder.CreateTube("bridge-broken-log", { path, radius: .66, tessellation: 18 }, this.scene);
+    log.parent = holder; log.material = this.mats["bridge-bark-short"]; log.isPickable = false;
+    const tip = this.route.branch(end, turn.z, other)!, fx = Math.sin(tip.heading), fz = Math.cos(tip.heading);
+    const random = seeded(Math.round(turn.z));
+    for (let k = 0; k < 7; k++) {
+      // Splinters where the log tore apart.
+      const angle = k / 7 * Math.PI * 2, r = .45 * random() + .1;
+      const splinter = this.cylinder("bridge-splinter", holder, { diameterTop: 0, diameterBottom: .12 + random() * .1, height: .4 + random() * .5, tessellation: 4 }, [tip.x + Math.cos(tip.heading) * Math.cos(angle) * r + fx * .15, y - .5 + Math.sin(angle) * r, tip.z - Math.sin(tip.heading) * Math.cos(angle) * r + fz * .15], "log-end");
+      splinter.rotation.set(Math.PI / 2 + (random() - .5) * .5, tip.heading + (random() - .5) * .5, 0);
+    }
+    // The far half lies in the water, one end sunk.
+    const fallen = this.cylinder("bridge-fallen-log", holder, { diameter: 1.25, height: 3.6, tessellation: 16 }, [tip.x + fx * 2.6, SEA_Y + .05, tip.z + fz * 2.6], "log-bark");
+    fallen.rotation.set(Math.PI / 2 + .3, tip.heading + .25, 0);
+    // A warning sign on a pile in the water, beside the log just before it splits, and a rag on the broken log.
+    const sign = this.instance("fork-sign", node);
+    sign.position.set(side * 2.6, 0, -CORNER_RADIUS - 3);
+    this.cylinder("bridge-sign-pile", node, { diameter: .22, height: 2.2, tessellation: 8 }, [side * 2.6, -1.05, -CORNER_RADIUS - 2.92], "wood");
+    const flagAt = this.route.branch(turn.z - CORNER_RADIUS + 6, turn.z, other)!;
+    this.cylinder("bridge-flag-stick", holder, { diameter: .06, height: 1.4, tessellation: 6 }, [flagAt.x, y + .9, flagAt.z], "wood");
+    const flag = MeshBuilder.CreatePlane("bridge-flag", { width: .55, height: .34 }, this.scene);
+    flag.parent = holder; flag.position.set(flagAt.x + Math.cos(flagAt.heading) * .29, y + 1.38, flagAt.z - Math.sin(flagAt.heading) * .29);
+    flag.rotation.y = flagAt.heading + Math.PI / 2; flag.material = this.mats["fork-flag"]; flag.isPickable = false;
   }
 
   /** The other side of a fork: a short road out of the plaza that ends at a broken bridge over a ravine. */
@@ -1282,27 +2132,26 @@ export class RunnerRenderer3D {
     return root;
   }
 
+  /** The long log over the sea, following the route round its corners, on crossed stakes, wound with creepers. */
   private buildBridge(section: Extract<CourseFeature, { kind: "bridge" }>) {
     const root = new TransformNode(`log-bridge-${section.start}`, this.scene);
     const length = section.end - section.start;
-    const segments = Math.ceil((length + 2) / 3);
+    const segments = Math.ceil((length + 2) / 2);
     const path = Array.from({ length: segments + 1 }, (_, i) => {
       const point = this.place(section.start - 1 + (length + 2) * i / segments);
       return new Vector3(point.x, point.y - .68, point.z);
     });
-    const log = MeshBuilder.CreateTube("bridge-log", { path, radius: .73, tessellation: 18 }, this.scene);
-    log.parent = root; log.material = this.mats["log-bark"]; log.isPickable = false;
-
-    const ravine = new TransformNode("bridge-ravine", this.scene); ravine.parent = root;
-    const middle = this.place((section.start + section.end) / 2);
-    ravine.position.set(middle.x, 0, middle.z); ravine.rotation.y = middle.heading;
-    const width = BRIDGE_RAVINE_HALF_WIDTH * 2;
-    const water = MeshBuilder.CreateGround("bridge-stream", { width: width + .3, height: length + .3 }, this.scene);
-    water.parent = ravine; water.position.y = BRIDGE_WATER_Y; water.material = this.mats["pit-water-long"]; water.isPickable = false;
-    for (const side of [-1, 1]) {
-      this.box("ravine-bank", ravine, [.52, 4.52, length + .25], [side * BRIDGE_RAVINE_HALF_WIDTH, -2.57, 0], "obstacle-rock");
-      this.box("ravine-cliff", ravine, [width + .4, 4.52, 1], [0, -2.57, side * length / 2], "obstacle-rock");
-    }
+    const log = MeshBuilder.CreateTube("bridge-log", { path, radius: .73, tessellation: 20 }, this.scene);
+    log.parent = root; log.material = this.mats["bridge-bark"]; log.isPickable = false;
+    const put = (name: string, at: number, roll = 0) => {
+      const p = this.place(at), node = this.instance(name, root);
+      node.position.set(p.x, p.y, p.z); node.rotation.set(0, p.heading, roll);
+      return node;
+    };
+    for (let at = section.start + 4; at < section.end; at += 9) put("bridge-pile", at);
+    for (let at = section.start + 7, k = 0; at < section.end - 3; at += 6.5 + (k % 3), k++) put("bridge-vine", at, k * 2.1);
+    put("bridge-shore", section.start);
+    put("bridge-shore", section.end).rotation.y += Math.PI;
     return root;
   }
 
@@ -1313,18 +2162,18 @@ export class RunnerRenderer3D {
       this.crossings.clear();
     }
     const live = new Set<number>();
-    const first = Math.floor(Math.max(0, world.distance - BEHIND) / SCENE_LENGTH);
-    const last = Math.floor((world.distance + 168) / SCENE_LENGTH);
+    // The sea and the shore at the far end of the log bridge stay in view a while after it.
+    const first = sectionIndexAt(world.distance - BEHIND - SEA_REACH), last = sectionIndexAt(world.distance + 168);
     for (let i = first; i <= last; i++) {
-      const section = sectionFeature(i * SCENE_LENGTH, world.startScene);
-      if (section.kind === "cart" || section.start > world.distance + 168 || section.end < world.distance - BEHIND) continue;
+      const section = featureOf(i);
+      if (!section || section.kind === "cart" || section.start > world.distance + 168 || section.end < world.distance - BEHIND - (section.kind === "bridge" ? SEA_REACH : 0)) continue;
       live.add(section.start);
       if (!this.crossings.has(section.start)) this.crossings.set(section.start, section.kind === "rope" ? this.buildRope(section) : this.buildBridge(section));
     }
     for (const [start, crossing] of this.crossings) if (!live.has(start)) { crossing.dispose(); this.crossings.delete(start); }
 
-    const mounted = world.ride, local = sectionFeature(world.distance, world.startScene);
-    const cart = local.kind === "cart" && world.distance >= local.start - 36 && world.distance < local.end + 16 ? local : undefined;
+    const mounted = world.ride, local = sectionFeature(world.distance);
+    const cart = local?.kind === "cart" && world.distance >= local.start - 36 && world.distance < local.end + 16 ? local : undefined;
     this.cart.setEnabled(!!cart);
     if (cart) {
       if (world.distance < cart.end) this.cartLane = lateral;
@@ -1369,7 +2218,7 @@ export class RunnerRenderer3D {
     tree.parent = root; tree.material = this.mats[`tree-${FRUIT_TREE}`]; tree.isPickable = false;
     const size = this.mats[`tree-${FRUIT_TREE}`].diffuseTexture!.getBaseSize();
     const roadHeight = elevationAt(item.z);
-    const base = sceneAt(item.z, world.startScene) === 0 ? -7 : -.35;
+    const base = sceneAt(item.z) === 0 ? -7 : -.35;
     const height = (roadHeight + 4.0 - base) / .75;
     const width = height * (size.height ? size.width / size.height : .78);
     const side = item.lane === 2 ? 1 : -1;
@@ -1394,6 +2243,15 @@ export class RunnerRenderer3D {
     fruit.rotation.set(.25 * drop, .1, -side * (drop * 1.35 + roll * 10.3));
   }
 
+  /** Template for an item: logs in the temple ruins are wound with creepers, and about half the two-lane log piles grow mushrooms. */
+  private propName(item: RunItem) {
+    if (item.kind === "coin") return `coin-${item.tier ?? "silver"}`;
+    const vine = item.kind === "block" && sceneAt(item.z) === 1 ? "-vine" : "";
+    if (item.span === 3) return `${item.kind}-wide${vine}`;
+    if (item.span === 2) return `${item.kind}-double${vine}${item.kind === "block" && hash01(item.id, 5) < .5 ? "-mushroom" : ""}`;
+    return item.kind;
+  }
+
   private drawProps(world: RunnerWorld, t: number, dt: number) {
     const visible = new Set<number>();
     for (const item of world.items) {
@@ -1406,7 +2264,7 @@ export class RunnerRenderer3D {
       if (!visible.has(item.id)) continue;
       let prop = this.props.get(item.id);
       if (!prop) {
-        const name = item.kind === "coin" ? `coin-${item.tier ?? "silver"}` : item.span === 3 ? `${item.kind}-wide` : item.span === 2 ? `${item.kind}-double` : item.kind;
+        const name = this.propName(item);
         prop = new TransformNode(`item-${item.id}`, this.scene);
         this.instance(this.templates.has(name) ? name : item.kind, prop);
         if (item.kind === "fruit") this.addFruitTree(prop, item, world);

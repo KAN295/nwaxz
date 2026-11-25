@@ -4,9 +4,9 @@
  * Coordinates: `distance` runs along the (possibly turning) route, lanes are 0/1/2,
  * `altitude` is metres above the road.
  */
-import { RIDE_LEAD, RIDE_START, SCENE_LENGTH, riderHeightAt, sceneAt, sectionFeature, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
+import { BRIDGE_TURNS, RIDE_LEAD, featureOf, nextBridgeTurn, riderHeightAt, sceneAt, sectionFeature, sectionStart, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
 
-export { SCENE_LENGTH, sceneAt } from "./course.ts";
+export { sceneAt } from "./course.ts";
 
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
@@ -21,19 +21,27 @@ export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
 /** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
 export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind | "fork" };
-/** `fork` corners also open the other way, onto a broken bridge; `wrong` marks the dog heading down that side. */
-export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean; fork?: boolean; wrong?: boolean };
+/**
+ * `fork` corners also open the other way, onto a broken bridge. `three` corners (in the mine) also
+ * carry on straight, into a shaft. `bridge` corners are on the log bridge over the sea. `wrong` marks
+ * the trap the dog ran into, until it falls.
+ */
+export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean; fork?: boolean; three?: boolean; bridge?: boolean; wrong?: "side" | "straight" };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
 const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => (RUN_POWERS as readonly string[]).includes(kind);
 
-export const RUN_SCENES = [
+/** Scenes in index order; the run visits them on one fixed itinerary (see course.ts). New scenes paint their sky in code. */
+export const RUN_SCENES: readonly { id: string; name: string; image?: string; night?: string }[] = [
   { id: "aqueduct", name: "峡谷水渠", image: "/assets/runner/aqueduct-scene-v1.png", night: "/assets/runner/aqueduct-night-v1.png" },
   { id: "temple", name: "遗迹长廊", image: "/assets/runner/temple-scene-v1.png", night: "/assets/runner/temple-night-v1.png" },
   { id: "mine", name: "矿洞轨道", image: "/assets/runner/mine-scene-v1.png", night: "/assets/runner/mine-night-v1.png" },
-] as const;
+  { id: "bamboo", name: "竹林小径" },
+  { id: "canyon", name: "赤岩峡谷" },
+  { id: "snow", name: "雪原" },
+];
 export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
 export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
 export const CHALLENGE_DISTANCE = 1000;
@@ -64,6 +72,12 @@ export const FORK_CHANCE = .55;
 /** Metres past the corner, along the wrong side of a fork, where the broken bridge deck starts and ends. */
 export const FORK_BRIDGE_START = 12;
 export const FORK_BRIDGE_BREAK = 15.2;
+/** Metres past a log-bridge fork where its broken side snaps off. */
+export const BRIDGE_FORK_BREAK = 13;
+/** Metres past a mine junction, straight on, where the dog drops into the shaft. */
+export const SHAFT_EDGE = 9.6;
+/** Turn and fork prompts only show for the first and middle part of a run; after this the player reads the scene. */
+export const TURN_HINT_END = 2000;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
@@ -86,6 +100,12 @@ export function weatherAt(seed: number, distance: number): RunWeather {
   return (["sunny", "rain", "snow"] as const)[hash % 3];
 }
 export const nightAt = (distance: number) => distance >= 1000 && (distance - 1000) % 2100 < 1500;
+/** No weather underground, always snowing on the snowfield, and no snow in the red-rock canyon. */
+export function sceneWeather(scene: number, weather: RunWeather): RunWeather {
+  if (scene === 2) return "sunny";
+  if (scene === 5) return "snow";
+  return scene === 4 && weather === "snow" ? "sunny" : weather;
+}
 
 /** Hash of the run seed and corner position, so forks never shift the obstacle random stream. */
 export function forkRoll(seed: number, z: number) {
@@ -106,6 +126,12 @@ export function readRunRecord(raw: string | null): RunRecord {
     return { version: 1, distance: value.distance, coins: value.coins, score: value.score };
   } catch { return empty; }
 }
+
+/** Whole-road obstacles each scene draws from, by scene index. */
+const WHOLE_ROAD: readonly (readonly ("gap" | "block" | "beam")[])[] = [
+  ["gap", "gap", "block", "beam"], ["block", "beam", "beam", "gap"], ["beam", "block", "gap"],
+  ["block", "beam", "beam", "gap"], ["gap", "gap", "block", "beam"], ["block", "block", "beam", "gap"],
+];
 
 const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   block: ["撞上了倒木", "整条路的倒木要跳过去。"],
@@ -165,7 +191,6 @@ export class RunnerWorld {
   private turnsMade = 0;
   lastTurnDirection: "left" | "right" = "left";
   readonly weatherSeed: number;
-  readonly startScene: number;
   /** Event counters for effects: they only ever increase. */
   powerPicked = 0;
   lastPower: RunPowerKind = "magnet";
@@ -185,17 +210,18 @@ export class RunnerWorld {
   private powerIndex = 0;
   private nextRow = 90;
   private nextTurn = 300;
+  /** Position of the last corner generated, regular or on the log bridge. */
+  private lastTurnZ = 0;
   private nextLongGap = LONG_GAP_START;
   private nextFeatureSection = 0;
   private mountedRide?: RideSection;
   private rideTakeoff = 0;
   private rideTakeoffGrade = 0;
 
-  constructor(seed = 1, mode: RunMode = "challenge", startScene = 0) {
+  constructor(seed = 1, mode: RunMode = "challenge") {
     this.seed = seed >>> 0 || 1;
     this.weatherSeed = seed >>> 0;
     this.endless = mode === "endless";
-    this.startScene = Number.isInteger(startScene) && startScene >= 0 && startScene < RUN_SCENES.length ? startScene : 0;
     this.nextTurn = this.turnOutsideFeature(this.nextTurn, 0);
     this.populate();
   }
@@ -209,12 +235,12 @@ export class RunnerWorld {
   get trapFall() { return !!this.fallObstacle; }
   get ride() { return this.mountedRide; }
   get bridge() {
-    const section = sectionFeature(this.distance, this.startScene);
-    return section.kind === "bridge" && this.distance >= section.start && this.distance < section.end ? section : undefined;
+    const section = sectionFeature(this.distance);
+    return section?.kind === "bridge" && this.distance >= section.start && this.distance < section.end ? section : undefined;
   }
   get upcomingFeature() {
-    const section = sectionFeature(this.distance, this.startScene);
-    return this.distance >= section.start - RIDE_LEAD && this.distance < section.start ? section : undefined;
+    const section = sectionFeature(this.distance);
+    return section && this.distance >= section.start - RIDE_LEAD && this.distance < section.start ? section : undefined;
   }
   get cycling() { return this.bike > 0 && !this.ride && !this.bridge; }
   get invincible() { return this.boost > 0 || this.fruit > 0; }
@@ -222,8 +248,10 @@ export class RunnerWorld {
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
   get score() { return Math.floor(this.distance) * 10 + this.coinScore + this.bonusDistanceScore; }
-  get sceneIndex() { return sceneAt(this.distance, this.startScene); }
-  get weather() { return weatherAt(this.weatherSeed, this.distance); }
+  get sceneIndex() { return sceneAt(this.distance); }
+  get weather() { return sceneWeather(this.sceneIndex, weatherAt(this.weatherSeed, this.distance)); }
+  /** Whether the HUD still says which way to turn. */
+  get turnHints() { return this.distance < TURN_HINT_END; }
   get night() { return nightAt(this.distance); }
   get approachingTurn() { return this.turns.find(turn => !turn.taken && turn.z >= this.distance - TURN_LATE); }
   /** The fork whose broken-bridge side the dog took, until it falls. */
@@ -252,8 +280,9 @@ export class RunnerWorld {
       if (turn && turn.z - this.distance <= TURN_WINDOW) {
         if (action !== turn.direction && this.fruit <= 0) {
           // A fork's other side is real road: the dog runs onto it and falls at the broken bridge.
-          if (turn.fork) { turn.taken = true; turn.wrong = true; return; }
-          this.fail("转错了方向", "按屏幕提示的方向转弯。"); return;
+          if (turn.fork) { turn.taken = true; turn.wrong = "side"; return; }
+          if (turn.bridge) { this.fallFromCourse("bridge", this.distance, "转错了方向", "桥上看清木头往哪边弯，另一边是海。"); return; }
+          this.fail("转错了方向", "看清弯道往哪边拐再转。"); return;
         }
         turn.taken = true; this.turnCount++; this.lastTurnDirection = turn.direction;
         return;
@@ -330,16 +359,29 @@ export class RunnerWorld {
 
     const wrong = this.wrongTurn;
     if (wrong) {
-      // The bridge is narrower than the road, so the dog lines up with it. Nothing on this side
-      // counts; the run ends where the deck breaks off.
+      // The broken way is narrower than the road, so the dog lines up with it. Nothing on this side
+      // counts; the run ends where it gives way.
       this.lane = 1;
-      if (this.distance >= wrong.z + FORK_BRIDGE_BREAK) this.fallFromCourse("fork", this.distance, "走上了断桥", "岔路口要看清：有断桥的一边是死路，走另一边。");
+      if (wrong.wrong === "straight") {
+        if (this.distance >= wrong.z + SHAFT_EDGE) this.fallFromCourse("fork", this.distance, "掉进了竖井", "矿洞三岔口只有一条活路：直走是竖井，断桥那边也走不通。");
+      } else if (wrong.bridge) {
+        if (this.distance >= wrong.z + BRIDGE_FORK_BREAK) this.fallFromCourse("fork", this.distance, "走上了断掉的独木桥", "桥上分岔时看清哪根木头断了，走完好的那根。");
+      } else if (this.distance >= wrong.z + FORK_BRIDGE_BREAK) this.fallFromCourse("fork", this.distance, "走上了断桥", "岔路口要看清：有断桥的一边是死路，走另一边。");
       return;
     }
 
     const turn = this.approachingTurn;
     if (turn && this.invincible && turn.z - this.distance <= 16) this.action(turn.direction);
-    if (turn && this.distance > turn.z + TURN_LATE - .01 && !turn.taken) { this.fail("冲出了弯道", "看到屏幕提示后及时转弯。"); return; }
+    // Checked against every corner, not just the approaching one: a single step can carry the dog
+    // past the last moment to turn, and the corner would otherwise be quietly skipped.
+    const missed = this.turns.find(corner => !corner.taken && this.distance > corner.z + TURN_LATE - .01);
+    if (missed) {
+      // A mine junction also carries on straight, into a shaft; the log bridge has only the sea ahead.
+      if (missed.three) { missed.taken = true; missed.wrong = "straight"; return; }
+      if (missed.bridge) { this.fallFromCourse("bridge", this.distance, "冲出了独木桥", "桥上的弯道也要及时转，木头不会等你。"); return; }
+      this.fail("冲出了弯道", "看到弯道及时转弯。");
+      return;
+    }
 
     for (const item of this.items) {
       if (item.done || (item.feature && item.feature !== (bridge?.kind ?? this.mountedRide?.kind))) continue;
@@ -368,8 +410,8 @@ export class RunnerWorld {
       }
       return true;
     }
-    const ride = sectionFeature(this.distance, this.startScene);
-    if (ride.kind === "bridge" || previousDistance >= ride.start || this.distance < ride.start) return true;
+    const ride = sectionFeature(this.distance);
+    if (!ride || ride.kind === "bridge" || previousDistance >= ride.start || this.distance < ride.start) return true;
     if (ride.kind === "rope" && this.altitude < .25 && !this.invincible) {
       this.fallFromCourse("rope", ride.start, "没抓住绳索", "靠近桥沿时跳起来，抓住滑索越过水面。");
       return false;
@@ -454,30 +496,43 @@ export class RunnerWorld {
   private nearTurn(z: number) { return this.turns.some(turn => z > turn.z - 45 && z < turn.z + 25); }
 
   private turnOutsideFeature(z: number, previous: number) {
-    const section = sectionFeature(z, this.startScene);
+    const section = sectionFeature(z);
+    if (!section) return z;
     const before = section.start - 48, after = section.end + 34;
     if (z <= before || z >= after) return z;
     return before - previous >= 260 ? before : after;
   }
 
   private populate() {
-    while (this.nextTurn < this.distance + 200) {
-      const z = this.nextTurn;
-      const fork = this.turnsMade++ > 0 && forkRoll(this.weatherSeed, z) < FORK_CHANCE;
-      this.turns.push({ z, direction: this.random() < .5 ? "left" : "right", taken: false, ...(fork ? { fork } : {}) });
-      // Silver coins curve into the safe side of a fork, like a trail to follow.
-      if (fork) for (let i = 0; i < 4; i++) this.add(z + 2 + i * 3, 1, "coin", { tier: "silver" });
-      this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
+    for (;;) {
+      // Corners on the log bridge sit at fixed places along it; the others are spaced out between features.
+      const bridgeZ = nextBridgeTurn(Math.max(this.lastTurnZ, this.distance)), onBridge = bridgeZ < this.nextTurn;
+      const z = onBridge ? bridgeZ : this.nextTurn;
+      if (z >= this.distance + 200) break;
+      const scene = sceneAt(z), first = this.turnsMade++ === 0;
+      // The middle corner of the bridge always splits; elsewhere about half of them do. Every mine
+      // corner is a three-way junction with two traps.
+      const middle = onBridge && z - (sectionFeature(z)?.start ?? 0) === BRIDGE_TURNS[1];
+      const fork = onBridge ? middle || forkRoll(this.weatherSeed, z + 1) < .5 : !first && (scene === 2 || forkRoll(this.weatherSeed, z) < FORK_CHANCE);
+      const three = !onBridge && fork && scene === 2;
+      this.turns.push({ z, direction: this.random() < .5 ? "left" : "right", taken: false, ...(fork ? { fork } : {}), ...(three ? { three } : {}), ...(onBridge ? { bridge: true } : {}) });
+      this.lastTurnZ = z;
+      // Silver coins curve into the safe side of a fork, like a trail to follow. The log bridge already has its own.
+      if (fork && !onBridge) for (let i = 0; i < 4; i++) this.add(z + 2 + i * 3, 1, "coin", { tier: "silver" });
+      if (!onBridge) this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
     }
-    while (this.nextFeatureSection * SCENE_LENGTH + RIDE_START < this.distance + 150) {
-      this.addFeatureItems(sectionFeature(this.nextFeatureSection++ * SCENE_LENGTH, this.startScene));
+    while (sectionStart(this.nextFeatureSection) < this.distance + 150) {
+      const feature = featureOf(this.nextFeatureSection);
+      if (feature && feature.start >= this.distance + 150) break;
+      if (feature) this.addFeatureItems(feature);
+      this.nextFeatureSection++;
     }
     while (this.nextRow < this.distance + 150) {
       const z = this.nextRow;
       const speed = baseSpeedAt(z);
       const milestone = !this.endless && z > CHALLENGE_DISTANCE - 40 && z < CHALLENGE_DISTANCE + 20;
-      const section = sectionFeature(z, this.startScene);
-      const nearFeature = z > section.start - 26 && z < section.end + 23;
+      const section = sectionFeature(z);
+      const nearFeature = !!section && z > section.start - 26 && z < section.end + 23;
       const longGap = !this.nearTurn(z) && !milestone && !nearFeature && this.row(z);
       // Leave at least ~1.15 s of reaction time between rows, a bit more early on.
       const early = Math.max(0, 1 - z / 600);
@@ -488,7 +543,8 @@ export class RunnerWorld {
 
   private addFeatureItems(ride: CourseFeature) {
     if (ride.kind === "bridge") {
-      const branches = [ride.start + 24, ride.end - 24];
+      // Branches lie across the log between its corners, more than 45 m before and 25 m after each.
+      const branches = [28, 122, 208].map(offset => ride.start + offset);
       for (const z of branches) this.add(z, 1, "bridge-branch", { span: 3, feature: "bridge" });
       for (let z = ride.start + 6; z < ride.end - 4; z += 4.2) {
         const y = branches.some(near => Math.abs(z - near) < 6) ? 1.46 : .8;
@@ -504,7 +560,7 @@ export class RunnerWorld {
       return;
     }
     const first = this.pick([0, 2]);
-    for (const [i, offset] of [24, 52, 81, 109, 137].entries()) {
+    for (const [i, offset] of [24, 52, 81, 109, 137, 163, 189].entries()) {
       const z = ride.start + offset, clear = i % 2 ? 2 - first : first;
       this.add(z, clear === 0 ? 1 : 0, "cart-block", { span: 2, feature: "cart" });
       for (let j = -3; j <= 1; j++) this.addCoin(z + j * 2, clear, { y: 1.26, feature: "cart" });
@@ -512,7 +568,7 @@ export class RunnerWorld {
   }
 
   private row(z: number) {
-    const scene = sceneAt(z, this.startScene);
+    const scene = sceneAt(z);
     const roll = this.random();
     const pattern = this.rows++;
     let free = Math.floor(this.random() * 3);
@@ -540,7 +596,7 @@ export class RunnerWorld {
       free = lane === 0 ? 2 : 0;
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
-      const kind = this.pick(scene === 0 ? ["gap", "gap", "block", "beam"] as const : scene === 1 ? ["block", "beam", "beam", "gap"] as const : ["beam", "block", "gap"] as const);
+      const kind = this.pick(WHOLE_ROAD[scene] ?? WHOLE_ROAD[0]);
       this.add(z, 1, kind, { span: 3 });
       free = 1; jumpArc = kind !== "beam";
     }
@@ -554,7 +610,7 @@ export class RunnerWorld {
       const pickup = z + (longGap ? longGapDepth + 4 : 9);
       const normal = STANDARD_POWERS[this.powerIndex++ % STANDARD_POWERS.length];
       const roll = pickup >= FRUIT_START && this.powerIndex > 4 ? this.random() : 1;
-      const fruitChance = sceneAt(pickup, this.startScene) === 2 ? 0 : FRUIT_CHANCE;
+      const fruitChance = sceneAt(pickup) === 2 ? 0 : FRUIT_CHANCE;
       const rare = roll < fruitChance ? "fruit" : pickup >= BIKE_START && roll < fruitChance + BIKE_CHANCE ? "bike" : normal;
       this.add(pickup, free, rare);
     }

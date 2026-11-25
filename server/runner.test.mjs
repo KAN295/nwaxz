@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, FORK_BRIDGE_BREAK, FORK_CHANCE, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt } from '../src/runner/world.ts';
+import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
-import { elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature } from '../src/runner/course.ts';
+import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
@@ -13,6 +13,18 @@ import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
 
 const run = (world, seconds) => { for (let i = 0; i < Math.round(seconds * 120); i++) world.advance(1 / 120); };
+/** Moves a fresh world to `distance`, generating only the special stretches (and their corners) from there on. */
+function skipTo(w, distance) {
+  w.distance = distance; w.items = []; w.turns = [];
+  w.nextRow = Infinity; w.nextTurn = Infinity; w.lastTurnZ = distance;
+  w.nextFeatureSection = sectionIndexAt(distance);
+  w.populate();
+  return w;
+}
+/** Takes every corner the right way as soon as its window opens. */
+const steer = w => { if (w.turnWindow) w.action(w.approachingTurn.direction); };
+/** The first log bridge, rope or cart ride of the run. */
+const firstFeature = kind => { for (let d = 0; ; d += 50) { const f = sectionFeature(d); if (f?.kind === kind) return f; } };
 /** A running world with nothing but one item 5 m ahead in the middle lane. */
 function place(kind, extra = {}) {
   const world = new RunnerWorld(4); world.start(); world.turns = [];
@@ -144,7 +156,8 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
 });
 
 test('a long gap needs two jumps at both introduction and top speed, with or without slow time', () => {
-  for (const z of [705, 2600]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
+  // 960 m is the first open road after the first log bridge; 2600 m is on the snowfield.
+  for (const z of [960, 2600]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
     const half = obstacleHalfDepth('long-gap', z), edge = z - half;
     const attempt = (double) => {
       const w = place('long-gap', { z, span: 3 });
@@ -281,6 +294,12 @@ test('corners: left/right turns inside the window, wrong or missed turns fail', 
   w.distance = 35; w.action('left'); assert.equal(w.turnCount, 1); assert.equal(w.lane, 0);
   const wrong = new RunnerWorld(); wrong.start(); wrong.turns = [{ z: 10, direction: 'right', taken: false }]; wrong.action('left'); assert.equal(wrong.phase, 'caught');
   const missed = new RunnerWorld(); missed.start(); missed.items = []; missed.turns = [{ z: 1, direction: 'left', taken: false }]; run(missed, .3); assert.equal(missed.phase, 'caught');
+  // However big each step is, running past a corner never skips it.
+  for (const speedUp of [1, 3, 7]) {
+    const fast = skipTo(new RunnerWorld(1, 'endless'), 500 * speedUp); fast.start(); fast.items = [];
+    fast.turns = [{ z: fast.distance + 20, direction: 'left', taken: false }];
+    run(fast, 3); assert.equal(fast.reason, '冲出了弯道', `at ${fast.distance}`);
+  }
 });
 
 test('forks: the wrong side runs onto the broken bridge and falls; the right side carries on', () => {
@@ -311,22 +330,57 @@ test('forks: the wrong side runs onto the broken bridge and falls; the right sid
 });
 
 test('forks are common after the first corner and lay a coin trail into the safe side', () => {
-  let corners = 0, forks = 0;
+  let corners = 0, forks = 0, bridgeCorners = 0, bridgeForks = 0, mineCorners = 0;
   for (let seed = 1; seed <= 60; seed++) {
-    const w = new RunnerWorld(seed, 'endless', seed % 3); w.start();
+    const w = new RunnerWorld(seed, 'endless'); w.start();
     const seen = [];
     for (let tick = 0; tick < 120 * 140 && w.phase === 'running' && w.distance < 2600; tick++) {
       for (const t of w.turns) if (!seen.some(s => s.z === t.z)) {
         seen.push(t);
-        if (t.fork) assert.equal(w.items.filter(i => i.kind === 'coin' && i.lane === 1 && i.z > t.z && i.z < t.z + 14).length >= 4, true);
+        if (t.fork && !t.bridge) assert.equal(w.items.filter(i => i.kind === 'coin' && i.lane === 1 && i.z > t.z && i.z < t.z + 14).length >= 4, true);
       }
       drive(w); w.advance(1 / 120);
     }
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
     assert.ok(!seen[0].fork, `seed ${seed}: the first corner is a plain one`);
-    corners += seen.length - 1; forks += seen.filter(t => t.fork).length;
+    for (const t of seen.slice(1)) {
+      if (t.bridge) { bridgeCorners++; if (t.fork) bridgeForks++; continue; }
+      // Every mine corner is a three-way junction; the rest fork by chance.
+      if (sceneAt(t.z) === 2) { mineCorners++; assert.ok(t.fork && t.three, `seed ${seed}: mine corner ${t.z}`); continue; }
+      assert.ok(!t.three); corners++; if (t.fork) forks++;
+    }
   }
   assert.ok(Math.abs(forks / corners - FORK_CHANCE) < .12, `fork share ${forks}/${corners}`);
+  assert.ok(mineCorners > 30, `mine junctions ${mineCorners}`);
+  assert.equal(bridgeCorners, 60 * BRIDGE_TURNS.length);
+  assert.ok(bridgeForks >= 60 && bridgeForks < bridgeCorners, `bridge forks ${bridgeForks}/${bridgeCorners}`);
+});
+
+test('turn prompts stop after the middle of a run', () => {
+  const w = new RunnerWorld(3);
+  w.distance = TURN_HINT_END - 1; assert.equal(w.turnHints, true);
+  w.distance = TURN_HINT_END; assert.equal(w.turnHints, false);
+});
+
+test('mine junctions: straight on drops into the shaft, the other side is a broken bridge', () => {
+  // Past the minecart ride, on open mine road.
+  const base = sectionStart([...Array(12).keys()].find(i => sectionScene(i) === 2)) + 450, z = base + 30;
+  assert.equal(sceneAt(z), 2);
+  const junction = (lane = 1) => {
+    const w = skipTo(new RunnerWorld(3, 'endless'), base); w.start(); w.lane = w.position = lane;
+    w.turns = [{ z, direction: 'left', taken: false, fork: true, three: true }];
+    return w;
+  };
+  const straight = junction(0);
+  while (straight.phase === 'running' && straight.distance < z + 30) straight.advance(1 / 120);
+  assert.equal(straight.reason, '掉进了竖井'); assert.equal(straight.trapFall, true);
+  assert.ok(Math.abs(straight.distance - (z + SHAFT_EDGE)) < .5);
+  assert.equal(straight.lane, 1);
+  const side = junction(); side.distance = z - 15; side.action('right');
+  while (side.phase === 'running' && side.distance < z + 30) side.advance(1 / 120);
+  assert.equal(side.reason, '走上了断桥');
+  const safe = junction(); safe.distance = z - 15; safe.action('left'); run(safe, 2);
+  assert.equal(safe.phase, 'running'); assert.equal(safe.turnCount, 1);
 });
 
 test('long frames are clamped and fixed steps prevent tunnelling', () => {
@@ -359,11 +413,14 @@ function drive(w) {
 test('40 seeded courses are solvable for 3 km with bounded memory and keep corners clear', () => {
   let sawJoinedLogs = false;
   for (let seed = 1; seed <= 40; seed++) {
-    const w = new RunnerWorld(seed, 'endless', seed % 3); w.start(); let full = 0, long = 0; const seen = new Set();
+    const w = new RunnerWorld(seed, 'endless'); w.start(); let full = 0, long = 0; const seen = new Set();
     const earlyPickups = new Set();
+    // The log bridge lays all its coins at once, so the item list peaks just before it.
+    let maxItems = 0;
     for (let tick = 0; tick < 120 * 150 && w.phase === 'running' && w.distance < 3000; tick++) {
+      maxItems = Math.max(maxItems, w.items.length);
       for (const i of w.items) {
-        if (i.z < 1000 && (i.kind === 'slow' || i.kind === 'double')) earlyPickups.add(i.kind);
+        if (i.z < 1500 && (i.kind === 'slow' || i.kind === 'double')) earlyPickups.add(i.kind);
         if (!isRunObstacle(i.kind)) continue;
         for (const t of w.turns) assert.ok(i.z < t.z - 45 || i.z > t.z + 25, `seed ${seed}: obstacle ${i.z} near corner ${t.z}`);
         if (i.span === 2 && i.kind === 'block') sawJoinedLogs = true;
@@ -378,7 +435,8 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
     }
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
     assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
-    assert.equal(earlyPickups.size, 2, `seed ${seed}: both new pickups appear before 1000m`);
+    assert.ok(maxItems < 140, `seed ${seed}: at most ${maxItems} items at once`);
+    assert.equal(earlyPickups.size, 2, `seed ${seed}: both new pickups appear before 1500m`);
   }
   assert.ok(sawJoinedLogs);
 });
@@ -421,8 +479,14 @@ test('record parser rejects corrupt or foreign records', () => {
   assert.deepEqual(readRunRecord('{"version":1,"distance":1000,"coins":9,"score":10450,"extra":"x"}'), { version: 1, distance: 1000, coins: 9, score: 10450 });
 });
 
-test('scenes rotate every 450 m; weather is reproducible; night alternates after 1000 m', () => {
-  assert.equal(sceneAt(0, 1), 1); assert.equal(sceneAt(450, 1), 2); assert.equal(sceneAt(900, 1), 0);
+test('scenes follow one itinerary; snow comes half as often; weather is reproducible; night alternates after 1000 m', () => {
+  for (const [d, scene] of [[0, 0], [449, 0], [450, 1], [1009, 1], [1010, 2], [1690, 3], [2140, 5], [2640, 4], [3090, 0]]) assert.equal(sceneAt(d), scene, `at ${d} m`);
+  const visits = [0, 0, 0, 0, 0, 0], metres = [0, 0, 0, 0, 0, 0];
+  for (let i = 0; i < 44; i++) { visits[sectionScene(i)]++; metres[sectionScene(i)] += sectionStart(i + 1) - sectionStart(i); }
+  for (const scene of [0, 1, 2, 3, 4]) assert.equal(visits[scene], visits[5] * 2);
+  assert.ok(metres[2] / visits[2] > metres[0] / visits[0], 'the mine runs longer than the canal');
+  for (let i = 0; i < 44; i++) for (const d of [sectionStart(i) - .01, sectionStart(i) + .01]) assert.ok(Number.isFinite(elevationAt(d)));
+  assert.equal(sceneWeather(5, 'sunny'), 'snow'); assert.equal(sceneWeather(2, 'rain'), 'sunny'); assert.equal(sceneWeather(4, 'snow'), 'sunny'); assert.equal(sceneWeather(1, 'rain'), 'rain');
   const values = new Set(); for (let seed = 0; seed < 20; seed++) for (let d = 0; d < 6000; d += 300) { values.add(weatherAt(seed, d)); assert.equal(weatherAt(seed, d), weatherAt(seed, d + 1)); }
   assert.deepEqual([...values].sort(), ['rain', 'snow', 'sunny']);
   for (const [d, v] of [[999, false], [1000, true], [1499, true], [2499, true], [2500, false], [3099, false], [3100, true]]) assert.equal(nightAt(d), v);
@@ -463,13 +527,17 @@ test('terrain rises and falls continuously and stays level across scene boundari
   assert.equal(route.sample(140).y, elevationAt(140));
   assert.ok(route.sample(88).y > route.sample(50).y);
   assert.ok(route.sample(196).y > route.sample(252).y);
-  for (const z of [45, 120, 157, 270, 450, 900]) assert.ok(Math.abs(elevationAt(z + .01) - elevationAt(z - .01)) < .001);
+  for (const z of [45, 120, 157, 270, 450, 1010, 1690, 2140, 2640, 3090]) assert.ok(Math.abs(elevationAt(z + .01) - elevationAt(z - .01)) < .001);
+  // The sea crossing and the mine gallery are level.
+  const bridge = firstFeature('bridge');
+  for (let d = bridge.start - 20; d <= bridge.end + 20; d += 5) assert.equal(elevationAt(d), 0);
+  for (let d = 1010; d < 1690; d += 10) assert.equal(elevationAt(d), 0);
 });
 
 test('the aqueduct requires grabbing the rope, and the rope can be steered and exited', () => {
   const use = jump => {
-    const w = new RunnerWorld(9, 'endless', 0);
-    const rope = sectionFeature(0, w.startScene);
+    const w = new RunnerWorld(9, 'endless');
+    const rope = sectionFeature(0);
     assert.equal(rope.kind, 'rope');
     w.start(); w.distance = rope.start - 4;
     if (jump) w.action('jump');
@@ -490,30 +558,30 @@ test('the aqueduct requires grabbing the rope, and the rope can be steered and e
   assert.equal(w.ride, undefined);
   assert.equal(w.jumpHeight, 0);
   assert.ok(Number.isFinite(w.ropeLandedAt));
-  assert.equal(sectionFeature(0, 1).kind, 'bridge');
+  assert.equal(sectionFeature(600).kind, 'bridge');
 });
 
-test('the longer minecart ride has five rockfalls and its next turn starts beyond the exit', () => {
+test('the longer minecart ride has seven rockfalls and corners stay beyond the exit', () => {
+  const cart = firstFeature('cart');
   const board = () => {
-    const w = new RunnerWorld(5, 'endless', 2);
-    const cart = sectionFeature(0, w.startScene);
-    assert.equal(cart.kind, 'cart');
-    w.start(); w.distance = cart.start - 2; run(w, .27);
+    const w = skipTo(new RunnerWorld(5, 'endless'), cart.start - 2);
+    w.start(); run(w, .27);
     assert.equal(w.ride.kind, 'cart');
-    return { w, cart };
+    return w;
   };
-  const blocked = board().w;
+  const blocked = board();
   run(blocked, 1.6);
   assert.equal(blocked.reason, '矿车撞上了塌方');
-  const { w, cart } = board();
-  assert.equal(cart.end - cart.start, 154);
-  assert.equal(w.items.filter(item => item.kind === 'cart-block').length, 5);
+  const w = board();
+  assert.equal(cart.end - cart.start, CART_LENGTH);
+  assert.equal(w.items.filter(item => item.kind === 'cart-block').length, 7);
   while (w.distance < cart.end && w.phase === 'running') { drive(w); w.advance(1 / 120); }
   assert.equal(w.phase, 'running');
   assert.equal(w.ride, undefined);
-  assert.ok(w.elapsed > 8.5);
-  assert.ok(w.coins >= 16);
-  assert.ok(w.approachingTurn.z >= cart.end + 34);
+  assert.ok(w.elapsed > 7, `ride lasted ${w.elapsed}s`);
+  assert.ok(w.coins >= 24);
+  // A corner that would fall during the ride waits until past the exit.
+  assert.equal(w.turnOutsideFeature(cart.start + 20, cart.start - 200), cart.end + 34);
 });
 
 test('rope preserves the initial jump height and releases onto the deck with a descending arc', () => {
@@ -526,30 +594,56 @@ test('rope preserves the initial jump height and releases onto the deck with a d
   assert.equal(riderHeightAt(rope.end, rope), 0);
 });
 
-test('the longer log bridge requires staying in the middle and jumping two branches', () => {
-  const approach = (lane) => {
-    const w = new RunnerWorld(5, 'endless', 1);
-    w.start(); w.distance = 136; w.lane = w.position = lane;
+test('the long log bridge over the sea: stay in the middle, jump three branches, take its corners', () => {
+  const bridge = firstFeature('bridge');
+  const approach = (lane, seed = 5) => {
+    const w = skipTo(new RunnerWorld(seed, 'endless'), bridge.start - 4);
+    w.start(); w.lane = w.position = lane;
     return w;
   };
   const edge = approach(2); run(edge, .6);
   assert.equal(edge.reason, '掉下了独木桥'); assert.equal(edge.trapFall, true);
   const branch = approach(1);
   const branchZ = branch.items.filter(item => item.kind === 'bridge-branch').map(item => item.z).sort((a, b) => a - b);
-  while (branch.distance < branchZ[0] + 1 && branch.phase === 'running') branch.advance(1 / 120);
+  while (branch.distance < branchZ[0] + 1 && branch.phase === 'running') { steer(branch); branch.advance(1 / 120); }
   assert.equal(branch.phase, 'running');
   assert.equal(branch.stumbles, 1); assert.ok(branch.danger > 0);
   assert.equal(branch.lane, 1);
-  while (branch.phase === 'running' && branch.distance < branchZ[1] + 1) branch.advance(1 / 120);
+  // The next branch comes round within the eight seconds the frog stays close.
+  while (branch.phase === 'running' && branch.distance < branchZ[1] + 1) { steer(branch); branch.advance(1 / 120); }
   assert.equal(branch.reason, '被恐怖奶蛙抓住了');
+
   const clear = approach(1);
-  const bridge = clear.upcomingFeature;
-  assert.equal(bridge.end - bridge.start, 82);
-  assert.equal(clear.items.filter(item => item.kind === 'bridge-branch').length, 2);
-  while (clear.distance < bridge.end && clear.phase === 'running') { drive(clear); clear.advance(1 / 120); }
+  assert.equal(bridge.end - bridge.start, BRIDGE_LENGTH);
+  assert.equal(clear.items.filter(item => item.kind === 'bridge-branch').length, 3);
+  const corners = new Set();
+  while (clear.distance < bridge.end && clear.phase === 'running') {
+    for (const t of clear.turns) if (t.bridge) corners.add(t.z);
+    drive(clear); clear.advance(1 / 120);
+  }
   assert.equal(clear.phase, 'running');
   assert.equal(clear.bridge, undefined);
-  assert.ok(clear.elapsed > 5);
+  assert.deepEqual([...corners].sort((a, b) => a - b), BRIDGE_TURNS.map(offset => bridge.start + offset));
+  assert.equal(clear.turnCount, BRIDGE_TURNS.length);
+
+  // Running straight on at a corner, or turning the wrong way where the log does not split, ends in the sea.
+  const corner = bridge.start + BRIDGE_TURNS[0];
+  const missed = approach(1); missed.items = [];
+  while (missed.phase === 'running') missed.advance(1 / 120);
+  assert.equal(missed.reason, '冲出了独木桥'); assert.equal(missed.trapFall, true);
+  assert.ok(Math.abs(missed.distance - (corner + 1.5)) < .5);
+  for (let seed = 1; seed < 40; seed++) {
+    const w = approach(1, seed); w.items = [];
+    const turn = w.turns.find(t => t.z === corner);
+    w.distance = corner - 10;
+    w.action(turn.direction === 'left' ? 'right' : 'left');
+    if (!turn.fork) { assert.equal(w.reason, '转错了方向'); assert.equal(w.trapFall, true); continue; }
+    // Where it does split, the other log has broken off.
+    assert.equal(w.phase, 'running'); assert.equal(w.wrongTurn, turn);
+    while (w.phase === 'running') w.advance(1 / 120);
+    assert.equal(w.reason, '走上了断掉的独木桥');
+    assert.ok(Math.abs(w.distance - (corner + BRIDGE_FORK_BREAK)) < .5);
+  }
 });
 
 test('bicycle clears logs and debris and leaves low gates and pits dangerous', () => {
