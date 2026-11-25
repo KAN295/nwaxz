@@ -4,14 +4,15 @@
  * Coordinates: `distance` runs along the (possibly turning) route, lanes are 0/1/2,
  * `altitude` is metres above the road.
  */
-import { RIDE_LEAD, RIDE_START, SCENE_LENGTH, riderHeightAt, sceneAt, sectionFeature, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
+import { BRIDGE_TURNS, RIDE_LEAD, featureOf, isDownhillRope, nextBridgeTurn, riderHeightAt, sceneAt, sectionFeature, sectionIndexAt, sectionScene, sectionStart, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
 
-export { SCENE_LENGTH, sceneAt } from "./course.ts";
+export { sceneAt } from "./course.ts";
 
 export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
-export type RunMode = "challenge" | "endless";
-export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap" | "cart-block" | "bridge-branch";
+/** `chase` is the short special mode: win back the golden apple from the frog running ahead. */
+export type RunMode = "endless" | "chase";
+export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap" | "cart-block" | "bridge-branch" | "crate";
 export type CoinTier = "silver" | "gold" | "diamond";
 const STANDARD_POWERS = ["shield", "magnet", "slow", "double", "boost"] as const;
 export const RUN_POWERS = [...STANDARD_POWERS, "bike", "fruit"] as const;
@@ -19,23 +20,47 @@ export type RunPowerKind = typeof RUN_POWERS[number];
 export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shield: 20, boost: 5, slow: 5, double: 8, bike: 9, fruit: 15 };
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
-/** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind };
-export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean };
+/** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. `thrownAt` marks a crate the frog threw, for its flight. */
+export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind | "fork"; thrownAt?: number };
+/** The frog in chase mode: metres ahead of the dog, seconds left, the lane it runs in. */
+export type RunChase = { gap: number; timeLeft: number; lane: number; nextThrow: number; throws: number; escaped: boolean };
+/**
+ * `fork` corners also open the other way, onto a broken bridge. `three` corners (in the mine) also
+ * carry on straight, into a shaft. `bridge` corners are on the log bridge over the sea. `wrong` marks
+ * the trap the dog ran into, until it falls.
+ */
+export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean; fork?: boolean; three?: boolean; bridge?: boolean; wrong?: "side" | "straight" };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch"];
+const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch", "crate"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => (RUN_POWERS as readonly string[]).includes(kind);
 
-export const RUN_SCENES = [
+/** Scenes in index order; the run visits them on one fixed itinerary (see course.ts). New scenes paint their sky in code. */
+export const RUN_SCENES: readonly { id: string; name: string; image?: string; night?: string }[] = [
   { id: "aqueduct", name: "峡谷水渠", image: "/assets/runner/aqueduct-scene-v1.png", night: "/assets/runner/aqueduct-night-v1.png" },
   { id: "temple", name: "遗迹长廊", image: "/assets/runner/temple-scene-v1.png", night: "/assets/runner/temple-night-v1.png" },
   { id: "mine", name: "矿洞轨道", image: "/assets/runner/mine-scene-v1.png", night: "/assets/runner/mine-night-v1.png" },
-] as const;
-export const RUN_RECORD_KEY = "nwaxz-runner-record-v1";
+  { id: "bamboo", name: "竹林小径" },
+  { id: "canyon", name: "赤岩峡谷" },
+  { id: "snow", name: "雪原" },
+];
+/** The retired 1000 m challenge kept its records under "nwaxz-runner-record-v1"; that key is left alone. */
+export const CHASE_RECORD_KEY = "nwaxz-runner-chase-record-v1";
 export const ENDLESS_RECORD_KEY = "nwaxz-runner-endless-record-v1";
-export const CHALLENGE_DISTANCE = 1000;
+/** Chase mode: through the snowfield and the red-rock canyon, both downhill ziplines on the way. */
+export const CHASE_START = (() => { let index = 0; while (sectionScene(index) !== 5) index++; return sectionStart(index); })();
+export const CHASE_SECONDS = 80;
+export const CHASE_START_GAP = 30;
+/** The frog runs this much slower than the dog's normal pace, so a clean run closes in. */
+const CHASE_FROG_PACE = .99;
+/** Metres the frog gains on each stumble or wall bump, and loses on each coin collected. */
+const CHASE_HIT_GAP = 10;
+const CHASE_COIN_GAP = .1;
+/** The dog closes in by at most this many metres a second, even on a dash or a zipline. */
+const CHASE_MAX_CLOSE = 2.2;
+/** Within this many metres the dog grabs the apple back. */
+export const CHASE_CATCH = 1.4;
 export const LONG_GAP_START = 600;
 export const GOLD_START = 1500;
 export const DIAMOND_START = 4000;
@@ -58,12 +83,23 @@ const GRACE_TIME = 1;
 const CAPTURE_TIME = 2.4;
 const TURN_WINDOW = 24;
 const TURN_LATE = 1.5;
+/** Share of corners after the first that become forks with a broken-bridge side. */
+export const FORK_CHANCE = .55;
+/** Metres past the corner, along the wrong side of a fork, where the broken bridge deck starts and ends. */
+export const FORK_BRIDGE_START = 12;
+export const FORK_BRIDGE_BREAK = 15.2;
+/** Metres past a log-bridge fork where its broken side snaps off. */
+export const BRIDGE_FORK_BREAK = 13;
+/** Metres past a mine junction, straight on, where the dog drops into the shaft. */
+export const SHAFT_EDGE = 9.6;
+/** Turn and fork prompts only show for the first and middle part of a run; after this the player reads the scene. */
+export const TURN_HINT_END = 2000;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48, crate: .85 };
 /** Half depth along the route. */
-const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49 };
+const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49, crate: .5 };
 const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
@@ -80,6 +116,20 @@ export function weatherAt(seed: number, distance: number): RunWeather {
   return (["sunny", "rain", "snow"] as const)[hash % 3];
 }
 export const nightAt = (distance: number) => distance >= 1000 && (distance - 1000) % 2100 < 1500;
+/** No weather underground, always snowing on the snowfield, and no snow in the red-rock canyon. */
+export function sceneWeather(scene: number, weather: RunWeather): RunWeather {
+  if (scene === 2) return "sunny";
+  if (scene === 5) return "snow";
+  return scene === 4 && weather === "snow" ? "sunny" : weather;
+}
+
+/** Hash of the run seed and corner position, so forks never shift the obstacle random stream. */
+export function forkRoll(seed: number, z: number) {
+  let hash = (seed ^ Math.imul(Math.round(z) + 7, 0x2c1b3c6d)) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 15), 0x297a2d39) >>> 0;
+  hash = (hash ^ (hash >>> 13)) >>> 0;
+  return hash / 4294967296;
+}
 
 export function readRunRecord(raw: string | null): RunRecord {
   const empty: RunRecord = { version: 1, distance: 0, coins: 0, score: 0 };
@@ -93,6 +143,12 @@ export function readRunRecord(raw: string | null): RunRecord {
   } catch { return empty; }
 }
 
+/** Whole-road obstacles each scene draws from, by scene index. */
+const WHOLE_ROAD: readonly (readonly ("gap" | "block" | "beam")[])[] = [
+  ["gap", "gap", "block", "beam"], ["block", "beam", "beam", "gap"], ["beam", "block", "gap"],
+  ["block", "beam", "beam", "gap"], ["gap", "gap", "block", "beam"], ["block", "block", "beam", "gap"],
+];
+
 const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   block: ["撞上了倒木", "整条路的倒木要跳过去。"],
   gap: ["掉进了裂缝", "看到裂缝提前起跳，空中还能再跳一次。"],
@@ -104,6 +160,7 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   trap: ["掉进了落穴", "看见活动木板就提前跳过去，或换到空着的跑道。"],
   "cart-block": ["矿车撞上了塌方", "矿车里要提前换到畅通的轨道。"],
   "bridge-branch": ["撞上了桥上的横枝", "走在桥中央，靠近横枝时跳过去。"],
+  crate: ["撞上了木箱", "奶蛙扔来的木箱要换道躲开，或者跳过去。"],
 };
 
 export class RunnerWorld {
@@ -134,6 +191,9 @@ export class RunnerWorld {
   bike = 0;
   fruit = 0;
   ropeLandedAt = -Infinity;
+  /** Times of the last take-off and touchdown, for squash-and-stretch. */
+  jumpedAt = -Infinity;
+  landedAt = -Infinity;
   /** Seconds the chaser stays close after a stumble. */
   danger = 0;
   stumble = 0;
@@ -145,14 +205,22 @@ export class RunnerWorld {
   items: RunItem[] = [];
   turns: RunTurn[] = [];
   turnCount = 0;
+  private turnsMade = 0;
   lastTurnDirection: "left" | "right" = "left";
   readonly weatherSeed: number;
-  readonly startScene: number;
   /** Event counters for effects: they only ever increase. */
   powerPicked = 0;
   lastPower: RunPowerKind = "magnet";
   shieldSaves = 0;
   stumbles = 0;
+  /** Bumps against the side wall: count, and which side (-1 left, 1 right) the last one was. */
+  wallBumps = 0;
+  wallSide = 0;
+  wallBumpAt = -10;
+  readonly mode: RunMode;
+  /** Where the run starts on the course: 0 in endless mode, the snowfield in chase mode. */
+  readonly origin: number;
+  chase?: RunChase;
 
   private altitude = 0;
   private verticalSpeed = 0;
@@ -167,47 +235,68 @@ export class RunnerWorld {
   private powerIndex = 0;
   private nextRow = 90;
   private nextTurn = 300;
+  /** Position of the last corner generated, regular or on the log bridge. */
+  private lastTurnZ = 0;
   private nextLongGap = LONG_GAP_START;
   private nextFeatureSection = 0;
   private mountedRide?: RideSection;
   private rideTakeoff = 0;
   private rideTakeoffGrade = 0;
 
-  constructor(seed = 1, mode: RunMode = "challenge", startScene = 0) {
+  constructor(seed = 1, mode: RunMode = "endless") {
     this.seed = seed >>> 0 || 1;
     this.weatherSeed = seed >>> 0;
+    this.mode = mode;
     this.endless = mode === "endless";
-    this.startScene = Number.isInteger(startScene) && startScene >= 0 && startScene < RUN_SCENES.length ? startScene : 0;
-    this.nextTurn = this.turnOutsideFeature(this.nextTurn, 0);
+    this.origin = mode === "chase" ? CHASE_START : 0;
+    if (mode === "chase") {
+      // Straight into the chase: no opening stretch, no long pits, the frog already running ahead.
+      this.distance = this.origin; this.lastTurnZ = this.origin;
+      this.nextRow = this.origin + 45; this.nextTurn = this.origin + 170;
+      this.nextLongGap = Infinity; this.nextFeatureSection = sectionIndexAt(this.origin); this.rows = 2;
+      this.chase = { gap: CHASE_START_GAP, timeLeft: CHASE_SECONDS, lane: 1, nextThrow: 6, throws: 0, escaped: false };
+    }
+    this.nextTurn = this.turnOutsideFeature(this.nextTurn, this.origin);
     this.populate();
   }
 
+  /** Metres run so far in this run. */
+  get runDistance() { return this.distance - this.origin; }
+  /** Pace follows the distance run; the chase starts at a brisk 16 m/s. */
+  private paceAt(distance: number) { return baseSpeedAt(distance - this.origin + (this.chase ? 330 : 0)); }
   private get courseSpeed() {
     const multiplier = this.boost > 0 ? 1.5 : this.fruit > 0 ? 1.27 : this.cycling ? 1.22 : this.mountedRide ? 1.17 : this.stumble > 0 ? .7 : 1;
-    return baseSpeedAt(this.distance) * multiplier;
+    return this.paceAt(this.distance) * multiplier;
   }
   get timeScale() { return this.slow > 0 ? .7 : 1; }
   get speed() { return this.courseSpeed * this.timeScale; }
   get trapFall() { return !!this.fallObstacle; }
   get ride() { return this.mountedRide; }
   get bridge() {
-    const section = sectionFeature(this.distance, this.startScene);
-    return section.kind === "bridge" && this.distance >= section.start && this.distance < section.end ? section : undefined;
+    const section = sectionFeature(this.distance);
+    return section?.kind === "bridge" && this.distance >= section.start && this.distance < section.end ? section : undefined;
   }
   get upcomingFeature() {
-    const section = sectionFeature(this.distance, this.startScene);
-    return this.distance >= section.start - RIDE_LEAD && this.distance < section.start ? section : undefined;
+    const section = sectionFeature(this.distance);
+    return section && this.distance >= section.start - RIDE_LEAD && this.distance < section.start ? section : undefined;
   }
   get cycling() { return this.bike > 0 && !this.ride && !this.bridge; }
   get invincible() { return this.boost > 0 || this.fruit > 0; }
   get jumpHeight() { return this.mountedRide ? riderHeightAt(this.distance, this.mountedRide, this.rideTakeoff, this.rideTakeoffGrade) : this.altitude; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
-  get score() { return Math.floor(this.distance) * 10 + this.coinScore + this.bonusDistanceScore; }
-  get sceneIndex() { return sceneAt(this.distance, this.startScene); }
-  get weather() { return weatherAt(this.weatherSeed, this.distance); }
-  get night() { return nightAt(this.distance); }
+  get score() { return Math.floor(this.runDistance) * 10 + this.coinScore + this.bonusDistanceScore + this.chaseBonus; }
+  /** Winning the chase pays for every second still on the clock. */
+  get chaseBonus() { return this.chase && this.phase === "won" ? 2000 + Math.ceil(this.chase.timeLeft) * 300 : 0; }
+  get sceneIndex() { return sceneAt(this.distance); }
+  get weather() { return sceneWeather(this.sceneIndex, weatherAt(this.weatherSeed, this.distance)); }
+  /** Whether the HUD still says which way to turn. */
+  get turnHints() { return this.runDistance < TURN_HINT_END; }
+  /** The chase always runs by day. */
+  get night() { return !this.chase && nightAt(this.distance); }
   get approachingTurn() { return this.turns.find(turn => !turn.taken && turn.z >= this.distance - TURN_LATE); }
+  /** The fork whose broken-bridge side the dog took, until it falls. */
+  get wrongTurn() { return this.turns.find(turn => turn.wrong); }
   /** True while a left/right input would take the next corner instead of changing lanes. */
   get turnWindow() { const turn = this.approachingTurn; return !!turn && turn.z - this.distance <= TURN_WINDOW; }
   /** Next obstacle the player still has to deal with. */
@@ -220,7 +309,6 @@ export class RunnerWorld {
   start() { if (this.phase === "ready") this.phase = "running"; }
   pause() { if (this.phase === "running" || this.phase === "caught") { this.pausedFrom = this.phase; this.phase = "paused"; this.accumulator = 0; } }
   resume() { if (this.phase === "paused") this.phase = this.pausedFrom; }
-  continue() { if (this.phase === "won") { this.endless = true; this.phase = "running"; this.accumulator = 0; } }
   finishCapture() { if (this.phase === "caught") { this.captureTime = CAPTURE_TIME; this.phase = "lost"; } }
   /** Tilt control: jump straight to a lane. */
   steer(lane: number) { if (this.phase === "running" && Number.isInteger(lane) && lane >= 0 && lane <= 2 && !this.turnWindow) this.lane = lane; }
@@ -230,20 +318,47 @@ export class RunnerWorld {
     if (action === "left" || action === "right") {
       const turn = this.approachingTurn;
       if (turn && turn.z - this.distance <= TURN_WINDOW) {
-        if (action !== turn.direction && this.fruit <= 0) { this.fail("转错了方向", "按屏幕提示的方向转弯。"); return; }
+        if (action !== turn.direction && this.fruit <= 0) {
+          // A fork's other side is real road: the dog runs onto it and falls at the broken bridge.
+          if (turn.fork) { turn.taken = true; turn.wrong = "side"; return; }
+          if (turn.bridge) { this.fallFromCourse("bridge", this.distance, "转错了方向", "桥上看清木头往哪边弯，另一边是海。"); return; }
+          this.fail("转错了方向", "看清弯道往哪边拐再转。"); return;
+        }
         turn.taken = true; this.turnCount++; this.lastTurnDirection = turn.direction;
         return;
       }
-      this.lane = Math.max(0, Math.min(2, this.lane + (action === "left" ? -1 : 1)));
+      const lane = this.lane + (action === "left" ? -1 : 1);
+      if (lane < 0 || lane > 2) { this.bumpWall(action === "left" ? -1 : 1); return; }
+      this.lane = lane;
     } else if (this.mountedRide) return;
     else if (action === "jump") {
       if (this.jumpCount < 2) {
-        this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime();
+        this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime(); this.jumpedAt = this.elapsed;
       } else this.jumpBuffer = .15;
     } else if (this.airborne) {
       // Slide in the air slams the dog down and slides on landing.
       this.verticalSpeed = Math.min(this.verticalSpeed, -14); this.jumpBuffer = 0; this.slide = SLIDE_TIME + this.airTime();
     } else this.slide = SLIDE_TIME;
+  }
+
+  /**
+   * Steering past the outer lane runs the dog into the side of the road. That stumbles like a light
+   * hit and sets the frog on it; doing it again while chased is fatal. Not on rides, on the log bridge
+   * (where leaving the middle is a fall anyway) or while invincible.
+   */
+  private bumpWall(side: number) {
+    if (this.mountedRide || this.bridge || this.wrongTurn || this.invincible || this.grace > 0) return;
+    this.wallBumps++; this.wallSide = side; this.wallBumpAt = this.elapsed; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
+    if (this.shield > 0) { this.grace = GRACE_TIME; return; }
+    this.stumbleFrom(CHASE_HIT_GAP * .6, "撞墙后被恐怖奶蛙抓住了", "被追的时候别往路边撞，看准再换道。");
+  }
+
+  /** A recoverable knock: the frog closes in (or, in the chase, gets further away). Returns false when it ends the run. */
+  private stumbleFrom(chaseGap: number, reason: string, hint: string) {
+    if (this.chase) { this.chase.gap += chaseGap; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++; return true; }
+    if (this.danger > 0) { this.fail(reason, hint); return false; }
+    this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
+    return true;
   }
 
   advance(seconds: number) {
@@ -273,10 +388,7 @@ export class RunnerWorld {
     const previousMetre = Math.floor(this.distance);
     this.elapsed += dt;
     this.distance += speed * dt;
-    if (this.double > 0 || this.fruit > 0) {
-      const scoredMetre = Math.floor(this.endless ? this.distance : Math.min(this.distance, CHALLENGE_DISTANCE));
-      this.bonusDistanceScore += (scoredMetre - previousMetre) * 10;
-    }
+    if (this.double > 0 || this.fruit > 0) this.bonusDistanceScore += (Math.floor(this.distance) - previousMetre) * 10;
     this.gait += dt * Math.min(3.6, 1.8 + speed / 20);
     const bridge = this.bridge, upcoming = this.upcomingFeature;
     if (this.invincible && (bridge || (upcoming?.kind === "bridge" && upcoming.start - this.distance <= 18))) this.lane = 1;
@@ -290,7 +402,7 @@ export class RunnerWorld {
       this.jump = Math.max(0, this.jump - dt);
       if (this.altitude === 0 && this.verticalSpeed < 0) {
         landingVelocity = this.verticalSpeed;
-        this.verticalSpeed = 0; this.jumpCount = 0; this.jump = 0;
+        this.verticalSpeed = 0; this.jumpCount = 0; this.jump = 0; this.landedAt = this.elapsed;
         if (this.jumpBuffer > 0) { this.jumpBuffer = 0; this.action("jump"); }
       }
     }
@@ -304,24 +416,82 @@ export class RunnerWorld {
       return;
     }
 
+    const wrong = this.wrongTurn;
+    if (wrong) {
+      // The broken way is narrower than the road, so the dog lines up with it. Nothing on this side
+      // counts; the run ends where it gives way.
+      this.lane = 1;
+      if (wrong.wrong === "straight") {
+        if (this.distance >= wrong.z + SHAFT_EDGE) this.fallFromCourse("fork", this.distance, "掉进了竖井", "矿洞三岔口只有一条活路：直走是竖井，断桥那边也走不通。");
+      } else if (wrong.bridge) {
+        if (this.distance >= wrong.z + BRIDGE_FORK_BREAK) this.fallFromCourse("fork", this.distance, "走上了断掉的独木桥", "桥上分岔时看清哪根木头断了，走完好的那根。");
+      } else if (this.distance >= wrong.z + FORK_BRIDGE_BREAK) this.fallFromCourse("fork", this.distance, "走上了断桥", "岔路口要看清：有断桥的一边是死路，走另一边。");
+      return;
+    }
+
     const turn = this.approachingTurn;
     if (turn && this.invincible && turn.z - this.distance <= 16) this.action(turn.direction);
-    if (turn && this.distance > turn.z + TURN_LATE - .01 && !turn.taken) { this.fail("冲出了弯道", "看到屏幕提示后及时转弯。"); return; }
+    // Checked against every corner, not just the approaching one: a single step can carry the dog
+    // past the last moment to turn, and the corner would otherwise be quietly skipped.
+    const missed = this.turns.find(corner => !corner.taken && this.distance > corner.z + TURN_LATE - .01);
+    if (missed) {
+      // A mine junction also carries on straight, into a shaft; the log bridge has only the sea ahead.
+      if (missed.three) { missed.taken = true; missed.wrong = "straight"; return; }
+      if (missed.bridge) { this.fallFromCourse("bridge", this.distance, "冲出了独木桥", "桥上的弯道也要及时转，木头不会等你。"); return; }
+      this.fail("冲出了弯道", "看到弯道及时转弯。");
+      return;
+    }
 
+    const coinsBefore = this.coins;
     for (const item of this.items) {
       if (item.done || (item.feature && item.feature !== (bridge?.kind ?? this.mountedRide?.kind))) continue;
       if (item.kind === "coin") this.touchCoin(item, dt);
       else if (isRunPower(item.kind)) this.touchPower(item, item.kind);
       else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind, landingVelocity)) return;
     }
+    if (this.chase && !this.stepChase(realDt, dt, speed, this.coins - coinsBefore)) return;
 
-    if (!this.endless && this.distance >= CHALLENGE_DISTANCE) { this.distance = CHALLENGE_DISTANCE; this.phase = "won"; }
     this.items = this.items.filter(item => item.z + (item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0) > this.distance - 10);
     this.turns = this.turns.filter(t => t.z > this.distance - 30);
     this.populate();
   }
 
-  private fallFromCourse(kind: FeatureKind, at: number, reason: string, hint: string) {
+  /**
+   * The frog keeps a little under the dog's normal pace, so a clean run closes the gap; coins close
+   * it faster, knocks open it up. Now and then it throws a crate back into the dog's way. Returns
+   * false when the chase is over.
+   */
+  private stepChase(realDt: number, dt: number, speed: number, coins: number) {
+    const chase = this.chase!;
+    chase.timeLeft = Math.max(0, chase.timeLeft - realDt);
+    let closing = Math.min(CHASE_MAX_CLOSE, speed - this.paceAt(this.distance) * CHASE_FROG_PACE);
+    // Within a few metres the dog lunges for it, so the last stretch never crawls.
+    if (chase.gap < 5 && closing > 0) closing = Math.max(closing, .9);
+    chase.gap -= closing * dt + coins * CHASE_COIN_GAP;
+    chase.gap = Math.min(60, chase.gap);
+    if (chase.gap <= CHASE_CATCH) { chase.gap = CHASE_CATCH; this.phase = "won"; return false; }
+    if (chase.timeLeft <= 0) {
+      // No capture scene: the frog simply gets away, laughing.
+      chase.escaped = true; this.reason = "奶蛙带着金苹果跑掉了"; this.deathHint = "少撞东西、多收银币就能追得更快；冲刺道具能一口气拉近距离。";
+      this.captureTime = CAPTURE_TIME; this.phase = "lost";
+      return false;
+    }
+    // The frog drifts between lanes as it runs, and throws from the lane it is in.
+    if (Math.floor(this.elapsed / 2.6) !== Math.floor((this.elapsed - dt) / 2.6)) chase.lane = this.pick([0, 1, 2]);
+    chase.nextThrow -= realDt;
+    if (chase.nextThrow <= 0) {
+      // Only where the crate has room of its own; otherwise try again a moment later.
+      const z = this.distance + chase.gap - 1.5, section = sectionFeature(z);
+      const clear = chase.gap > 9 && !this.mountedRide && !this.wrongTurn && !this.nearTurn(z)
+        && !(section && z > section.start - 20 && z < section.end + 10)
+        && !this.items.some(item => isRunObstacle(item.kind) && Math.abs(item.z - z) < 6);
+      if (clear) { this.add(z, chase.lane, "crate", { thrownAt: this.elapsed }); chase.throws++; }
+      chase.nextThrow = clear ? 3.5 + this.random() * 3 : .5;
+    }
+    return true;
+  }
+
+  private fallFromCourse(kind: FeatureKind | "fork", at: number, reason: string, hint: string) {
     this.fallObstacle = { id: -1, kind: "long-gap", z: at + obstacleHalfDepth("long-gap", at), lane: 1, span: 3, done: true, feature: kind };
     this.fallVelocity = Math.min(0, this.verticalSpeed);
     this.fail(reason, hint);
@@ -335,10 +505,10 @@ export class RunnerWorld {
       }
       return true;
     }
-    const ride = sectionFeature(this.distance, this.startScene);
-    if (ride.kind === "bridge" || previousDistance >= ride.start || this.distance < ride.start) return true;
+    const ride = sectionFeature(this.distance);
+    if (!ride || ride.kind === "bridge" || previousDistance >= ride.start || this.distance < ride.start) return true;
     if (ride.kind === "rope" && this.altitude < .25 && !this.invincible) {
-      this.fallFromCourse("rope", ride.start, "没抓住绳索", "靠近桥沿时跳起来，抓住滑索越过水面。");
+      this.fallFromCourse("rope", ride.start, "没抓住绳索", isDownhillRope(ride) ? "跑到崖边时跳起来，抓住滑索滑下去。" : "靠近桥沿时跳起来，抓住滑索越过水面。");
       return false;
     }
     this.mountedRide = ride;
@@ -389,7 +559,7 @@ export class RunnerWorld {
 
     item.done = true; this.hitAt = this.elapsed; this.streak = 0; this.streakTimer = 0;
     if (this.shield > 0) { this.shield = 0; this.grace = GRACE_TIME; this.shieldSaves++; return true; }
-    const recoverable = item.span !== 3 && (kind === "block" || kind === "beam");
+    const recoverable = kind === "bridge-branch" || kind === "crate" || (item.span !== 3 && (kind === "block" || kind === "beam"));
     if (!recoverable) {
       if (isFallObstacle(kind)) {
         this.fallObstacle = item;
@@ -398,10 +568,10 @@ export class RunnerWorld {
       this.fail(...FAIL_TEXT[kind]);
       return false;
     }
-    if (this.danger > 0) { this.fail("被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。"); return false; }
-    this.danger = DANGER_TIME; this.stumble = 1; this.grace = GRACE_TIME; this.stumbles++;
+    if (!this.stumbleFrom(CHASE_HIT_GAP, "被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。")) return false;
     // Bumping a lane obstacle knocks the dog back toward the lane it came from.
-    if (Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
+    // Not on the log bridge, where leaving the middle would drop the dog off it.
+    if (kind !== "bridge-branch" && Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
     return true;
   }
 
@@ -420,29 +590,46 @@ export class RunnerWorld {
   private nearTurn(z: number) { return this.turns.some(turn => z > turn.z - 45 && z < turn.z + 25); }
 
   private turnOutsideFeature(z: number, previous: number) {
-    const section = sectionFeature(z, this.startScene);
+    const section = sectionFeature(z);
+    if (!section) return z;
     const before = section.start - 48, after = section.end + 34;
     if (z <= before || z >= after) return z;
     return before - previous >= 260 ? before : after;
   }
 
   private populate() {
-    while (this.nextTurn < this.distance + 200) {
-      this.turns.push({ z: this.nextTurn, direction: this.random() < .5 ? "left" : "right", taken: false });
-      this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
+    for (;;) {
+      // Corners on the log bridge sit at fixed places along it; the others are spaced out between features.
+      const bridgeZ = nextBridgeTurn(Math.max(this.lastTurnZ, this.distance)), onBridge = bridgeZ < this.nextTurn;
+      const z = onBridge ? bridgeZ : this.nextTurn;
+      if (z >= this.distance + 200) break;
+      const scene = sceneAt(z), first = this.turnsMade++ === 0;
+      // The middle corner of the bridge always splits; elsewhere about half of them do. Every mine
+      // corner is a three-way junction with two traps.
+      const middle = onBridge && z - (sectionFeature(z)?.start ?? 0) === BRIDGE_TURNS[1];
+      const fork = onBridge ? middle || forkRoll(this.weatherSeed, z + 1) < .5 : !first && (scene === 2 || forkRoll(this.weatherSeed, z) < FORK_CHANCE);
+      const three = !onBridge && fork && scene === 2;
+      this.turns.push({ z, direction: this.random() < .5 ? "left" : "right", taken: false, ...(fork ? { fork } : {}), ...(three ? { three } : {}), ...(onBridge ? { bridge: true } : {}) });
+      this.lastTurnZ = z;
+      // Silver coins curve into the safe side of a fork, like a trail to follow. The log bridge already has its own.
+      if (fork && !onBridge) for (let i = 0; i < 4; i++) this.add(z + 2 + i * 3, 1, "coin", { tier: "silver" });
+      if (!onBridge) this.nextTurn = this.turnOutsideFeature(this.nextTurn + 260 + Math.floor(this.random() * 120), this.nextTurn);
     }
-    while (this.nextFeatureSection * SCENE_LENGTH + RIDE_START < this.distance + 150) {
-      this.addFeatureItems(sectionFeature(this.nextFeatureSection++ * SCENE_LENGTH, this.startScene));
+    while (sectionStart(this.nextFeatureSection) < this.distance + 150) {
+      const feature = featureOf(this.nextFeatureSection);
+      if (feature && feature.start >= this.distance + 150) break;
+      if (feature) this.addFeatureItems(feature);
+      this.nextFeatureSection++;
     }
     while (this.nextRow < this.distance + 150) {
       const z = this.nextRow;
-      const speed = baseSpeedAt(z);
-      const milestone = !this.endless && z > CHALLENGE_DISTANCE - 40 && z < CHALLENGE_DISTANCE + 20;
-      const section = sectionFeature(z, this.startScene);
-      const nearFeature = z > section.start - 26 && z < section.end + 23;
-      const longGap = !this.nearTurn(z) && !milestone && !nearFeature && this.row(z);
-      // Leave at least ~1.15 s of reaction time between rows, a bit more early on.
-      const early = Math.max(0, 1 - z / 600);
+      const speed = this.paceAt(z);
+      const section = sectionFeature(z);
+      const nearFeature = !!section && z > section.start - 26 && z < section.end + 23;
+      const longGap = !this.nearTurn(z) && !nearFeature && this.row(z);
+      // Leave at least ~1.15 s of reaction time between rows, a bit more early on. The chase spaces
+      // its rows out a little more, leaving room for the frog's crates.
+      const early = Math.max(0, 1 - (z - this.origin) / 600) + (this.chase ? .35 : 0);
       const landingSpace = longGap ? .42 : 0;
       this.nextRow += speed * (1.15 + early * .6 + landingSpace) + this.random() * 8;
     }
@@ -450,7 +637,8 @@ export class RunnerWorld {
 
   private addFeatureItems(ride: CourseFeature) {
     if (ride.kind === "bridge") {
-      const branches = [ride.start + 24, ride.end - 24];
+      // Branches lie across the log between its corners, more than 45 m before and 25 m after each.
+      const branches = [28, 122, 208].map(offset => ride.start + offset);
       for (const z of branches) this.add(z, 1, "bridge-branch", { span: 3, feature: "bridge" });
       for (let z = ride.start + 6; z < ride.end - 4; z += 4.2) {
         const y = branches.some(near => Math.abs(z - near) < 6) ? 1.46 : .8;
@@ -459,14 +647,15 @@ export class RunnerWorld {
       return;
     }
     if (ride.kind === "rope") {
+      const step = (ride.end - ride.start - 16) / 11;
       for (let i = 0; i < 12; i++) {
-        const z = ride.start + 8 + i * 3.4;
+        const z = ride.start + 8 + i * step;
         this.addCoin(z, [1, 0, 2, 1][Math.floor(i / 3)], { y: riderHeightAt(z, ride) + .82, feature: "rope" });
       }
       return;
     }
     const first = this.pick([0, 2]);
-    for (const [i, offset] of [24, 52, 81, 109, 137].entries()) {
+    for (const [i, offset] of [24, 52, 81, 109, 137, 163, 189].entries()) {
       const z = ride.start + offset, clear = i % 2 ? 2 - first : first;
       this.add(z, clear === 0 ? 1 : 0, "cart-block", { span: 2, feature: "cart" });
       for (let j = -3; j <= 1; j++) this.addCoin(z + j * 2, clear, { y: 1.26, feature: "cart" });
@@ -474,7 +663,7 @@ export class RunnerWorld {
   }
 
   private row(z: number) {
-    const scene = sceneAt(z, this.startScene);
+    const scene = sceneAt(z);
     const roll = this.random();
     const pattern = this.rows++;
     let free = Math.floor(this.random() * 3);
@@ -502,7 +691,7 @@ export class RunnerWorld {
       free = lane === 0 ? 2 : 0;
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
-      const kind = this.pick(scene === 0 ? ["gap", "gap", "block", "beam"] as const : scene === 1 ? ["block", "beam", "beam", "gap"] as const : ["beam", "block", "gap"] as const);
+      const kind = this.pick(WHOLE_ROAD[scene] ?? WHOLE_ROAD[0]);
       this.add(z, 1, kind, { span: 3 });
       free = 1; jumpArc = kind !== "beam";
     }
@@ -516,7 +705,7 @@ export class RunnerWorld {
       const pickup = z + (longGap ? longGapDepth + 4 : 9);
       const normal = STANDARD_POWERS[this.powerIndex++ % STANDARD_POWERS.length];
       const roll = pickup >= FRUIT_START && this.powerIndex > 4 ? this.random() : 1;
-      const fruitChance = sceneAt(pickup, this.startScene) === 2 ? 0 : FRUIT_CHANCE;
+      const fruitChance = sceneAt(pickup) === 2 ? 0 : FRUIT_CHANCE;
       const rare = roll < fruitChance ? "fruit" : pickup >= BIKE_START && roll < fruitChance + BIKE_CHANCE ? "bike" : normal;
       this.add(pickup, free, rare);
     }

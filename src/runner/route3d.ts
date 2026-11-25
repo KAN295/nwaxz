@@ -10,6 +10,19 @@ export type RoutePoint = { x: number; y: number; z: number; heading: number };
 
 export const CORNER_RADIUS = 11;
 
+/** Point on the rounded quarter turn joining a corner's incoming and outgoing straights. */
+function arc(c: Corner, distance: number): RoutePoint {
+  const r = CORNER_RADIUS;
+  const t = (distance - c.z + r) / (2 * r), angle = t * Math.PI / 2;
+  const dx = Math.sin(c.heading), dz = Math.cos(c.heading), ox = Math.sin(c.out), oz = Math.cos(c.out);
+  return {
+    x: c.x - dx * r + ox * r - ox * r * Math.cos(angle) + dx * r * Math.sin(angle),
+    y: elevationAt(distance),
+    z: c.y - dz * r + oz * r - oz * r * Math.cos(angle) + dz * r * Math.sin(angle),
+    heading: c.heading + (c.out - c.heading) * t,
+  };
+}
+
 export class RunnerRoute3D {
   private corners: Corner[] = [];
   private base = { z: 0, x: 0, y: 0, heading: 0 };
@@ -42,19 +55,21 @@ export class RunnerRoute3D {
     let start = this.base;
     for (const c of this.corners) {
       if (distance < c.z - r) break;
-      if (distance <= c.z + r) {
-        const t = (distance - c.z + r) / (2 * r), angle = t * Math.PI / 2;
-        const dx = Math.sin(c.heading), dz = Math.cos(c.heading), ox = Math.sin(c.out), oz = Math.cos(c.out);
-        return {
-          x: c.x - dx * r + ox * r - ox * r * Math.cos(angle) + dx * r * Math.sin(angle),
-          y: elevationAt(distance),
-          z: c.y - dz * r + oz * r - oz * r * Math.cos(angle) + dz * r * Math.sin(angle),
-          heading: c.heading + (c.out - c.heading) * t,
-        };
-      }
+      if (distance <= c.z + r) return arc(c, distance);
       start = { z: c.z, x: c.x, y: c.y, heading: c.out };
     }
     return { x: start.x + Math.sin(start.heading) * (distance - start.z), y: elevationAt(distance), z: start.y + Math.cos(start.heading) * (distance - start.z), heading: start.heading };
+  }
+
+  /** Where the dog runs after taking the other side of the fork at `z` (straight in, round the bend, straight out). */
+  branch(distance: number, z: number, direction: "left" | "right"): RoutePoint | undefined {
+    const found = this.corners.find(c => c.z === z);
+    if (!found) return undefined;
+    const c = { ...found, out: found.heading + (direction === "left" ? -1 : 1) * Math.PI / 2 };
+    const r = CORNER_RADIUS, d = distance - c.z;
+    if (Math.abs(d) <= r) return arc(c, distance);
+    const heading = d < 0 ? c.heading : c.out;
+    return { x: c.x + Math.sin(heading) * d, y: elevationAt(distance), z: c.y + Math.cos(heading) * d, heading };
   }
 
   /** Where the dog would be if it ignored the corner at `z` and kept running straight. */

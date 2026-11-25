@@ -3,7 +3,7 @@ import type { StandardMaterial } from "@babylonjs/core/Materials/standardMateria
 import type { UniformBuffer } from "@babylonjs/core/Materials/uniformBuffer.js";
 
 export type GroundOpening = [left: number, near: number, right: number, far: number];
-export const MAX_GROUND_OPENINGS = 10;
+export const MAX_GROUND_OPENINGS = 14;
 
 const cuts = Array.from({ length: MAX_GROUND_OPENINGS }, (_, i) => `runnerGroundOpening${i}`);
 const fragmentCuts = cuts.map((name, i) => `

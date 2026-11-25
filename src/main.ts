@@ -145,7 +145,7 @@ function renderHub(page: "home" | "baths") {
   leaveGame(); mode = "normal"; audio.setMode(mode);
   document.body.classList.remove("horror-theme"); document.body.classList.add("hub-theme");
   screen = page;
-  const modes: { id: string; title: string; name: string; caption: string; art: string; hot?: boolean; planned?: boolean }[] = page === "baths" ? [
+  const modes: { id: string; title: string; name: string; caption: string; art: string; hot?: boolean; fresh?: boolean; planned?: boolean }[] = page === "baths" ? [
     { id: "normal", title: "泡泡浴场", name: "引水解谜", caption: "挖土 · 引水", art: "/assets/scenes/bath-cover-v2.webp" },
     { id: "horror", title: "午夜浴场", name: "暗夜机关", caption: "暗夜 · 机关", art: "/assets/scenes/haunted-cover-v1.webp" },
     { id: "halloween", title: "万圣浴场", name: "南瓜夜宴", caption: "南瓜 · 限时", art: "/assets/scenes/halloween-cover-v1.png" },
@@ -153,11 +153,11 @@ function renderHub(page: "home" | "baths") {
   ] : [
     { id: "bath", title: "浴场模式", name: "泡泡浴场 · 午夜浴场", caption: "挖土 · 引水", art: "/assets/scenes/bath-cover-v2.webp" },
     { id: "extreme", title: ESCAPE_TITLE, name: "单人 · 多人", caption: "搜寻 · 躲藏", art: "/assets/scenes/escape-cover-v1.webp", hot: true },
-    { id: "runner", title: "奶狗快跑", name: "无限跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png" },
+    { id: "runner", title: "奶狗快跑", name: "无限跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png", fresh: true },
     { id: "pvp", title: "奶娃峡谷", name: "3v3 · 阵容预演", caption: "两岸 · 争流", art: "/assets/scenes/versus-cover-v1.png" },
   ];
   chrome(`<main class="game-hub screen-enter" data-hub-page="${page}" aria-label="${page === "home" ? "游戏主界面" : "选择浴场"}"><header class="hub-header"><div class="hub-heading">${page === "baths" ? buttonIcon("back", "返回模式选择", "hub-back") : ""}<h1>${page === "home" ? "奶蛙<span>爱洗澡</span>" : "浴场<span>模式</span>"}</h1></div>${buttonIcon("settings", "设置", "settings")}</header>
-    <nav class="mode-posters" data-count="${modes.length}" aria-label="${page === "baths" ? "选择浴场" : "选择模式"}">${modes.map(m => `<button id="${m.id}" class="mode-poster mode-${m.id}" aria-label="${m.title} · ${m.name}${m.id === "extreme" ? "，单人 AI 决策" : ""}${m.planned ? "，尚未开放" : ""}" ${m.planned ? "disabled" : ""}><img class="mode-art" src="${m.art}" alt=""/>${m.hot ? '<span class="mode-flags"><span class="mode-hot">HOT</span><span class="mode-ai" title="单人 AI 决策">AI</span></span>' : m.id === "pvp" ? '<span class="mode-badge">3v3</span>' : ''}<span class="mode-content"><span class="mode-caption">${m.caption}</span><strong>${m.id === "extreme" ? `<span>${ESCAPE_SERIES}：</span><wbr><span>${ESCAPE_EPISODE}</span>` : m.title}</strong><span class="mode-name">${m.name}</span><span class="mode-enter">${m.planned ? "筹备中" : m.id === "pvp" ? "进入大厅" : page === "baths" ? "进入浴场" : "进入模式"} ${icon(m.planned ? "lock" : "play")}</span></span></button>`).join("")}</nav>
+    <nav class="mode-posters" data-count="${modes.length}" aria-label="${page === "baths" ? "选择浴场" : "选择模式"}">${modes.map(m => `<button id="${m.id}" class="mode-poster mode-${m.id}" aria-label="${m.title} · ${m.name}${m.id === "extreme" ? "，单人 AI 决策" : ""}${m.fresh ? "，新内容" : ""}${m.planned ? "，尚未开放" : ""}" ${m.planned ? "disabled" : ""}><img class="mode-art" src="${m.art}" alt=""/>${m.hot ? '<span class="mode-flags"><span class="mode-hot">HOT</span><span class="mode-ai" title="单人 AI 决策">AI</span></span>' : m.fresh ? '<span class="mode-flags"><span class="mode-new">NEW</span></span>' : m.id === "pvp" ? '<span class="mode-badge">3v3</span>' : ''}<span class="mode-content"><span class="mode-caption">${m.caption}</span><strong>${m.id === "extreme" ? `<span>${ESCAPE_SERIES}：</span><wbr><span>${ESCAPE_EPISODE}</span>` : m.title}</strong><span class="mode-name">${m.name}</span><span class="mode-enter">${m.planned ? "筹备中" : m.id === "pvp" ? "进入大厅" : page === "baths" ? "进入浴场" : "进入模式"} ${icon(m.planned ? "lock" : "play")}</span></span></button>`).join("")}</nav>
     <footer class="hub-footer"><span>v${version}</span><button id="update" ${updateAvailable ? "" : "hidden"}>有新版本 ${icon("restart")}</button></footer></main>`);
   if (page === "baths") {
     $("#normal").onclick = () => openMode("normal");
