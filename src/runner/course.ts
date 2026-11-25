@@ -27,8 +27,8 @@ export type CourseFeature = RideSection | Section<"bridge">;
 
 /** Scene indices: 0 aqueduct, 1 temple, 2 mine, 3 bamboo, 4 canyon, 5 snow. */
 export const SCENE_COUNT = 6;
-/** Metres of road each scene lasts. The mine runs longest. */
-const SCENE_LENGTHS = [450, 560, 680, 450, 450, 500] as const;
+/** Metres of road each scene lasts (about half a minute of running or more). The mine runs longest. */
+const SCENE_LENGTHS = [700, 860, 1000, 700, 700, 760] as const;
 /** One fixed itinerary for every run. Snow comes round once for every two visits to each other scene. */
 const ITINERARY = [0, 1, 2, 3, 5, 4, 0, 1, 2, 3, 4] as const;
 const LOOP_STARTS = ITINERARY.map((_, i) => ITINERARY.slice(0, i).reduce<number>((sum, scene) => sum + SCENE_LENGTHS[scene], 0));
@@ -85,10 +85,17 @@ const HILLS: readonly (readonly [up: number, upLength: number, down: number, dow
   [45, 75, 140, 70, 8.5, 10], // snow: up a ridge, then the zipline drops into the valley
 ];
 
+/** A second, lower hill on the later part of each scene, so the longer stretches are not flat. The mine stays level. */
+const SECOND_HILLS: readonly (readonly [up: number, upLength: number, down: number, downLength: number, height: number] | undefined)[] = [
+  [430, 70, 520, 90, 5.5], [480, 60, 560, 80, 2.8], undefined, [420, 70, 520, 90, 4.5], [420, 70, 520, 90, 5], [430, 70, 530, 90, 4.5],
+];
+
 export function elevationAt(distance: number) {
-  const index = sectionIndexAt(distance), at = Math.max(0, distance) - sectionStart(index);
-  const [up, upLength, down, downLength, low, high] = HILLS[sectionScene(index)];
-  return (index % 2 ? high : low) * (ease((at - up) / upLength) - ease((at - down) / downLength));
+  const index = sectionIndexAt(distance), at = Math.max(0, distance) - sectionStart(index), scene = sectionScene(index);
+  const [up, upLength, down, downLength, low, high] = HILLS[scene];
+  const second = SECOND_HILLS[scene];
+  const later = second ? second[4] * (ease((at - second[0]) / second[1]) - ease((at - second[2]) / second[3])) : 0;
+  return (index % 2 ? high : low) * (ease((at - up) / upLength) - ease((at - down) / downLength)) + later;
 }
 
 export function ropeHeightAt(distance: number, ride: Section<"rope">) {

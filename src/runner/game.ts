@@ -63,6 +63,8 @@ export class RunnerGame {
   private error = "";
   private destroyed = false;
   private frame = 0;
+  /** Set after the first frame that threw, so the console gets one report rather than one per frame. */
+  private frameFailed = false;
   private last = 0;
   private shownPhase: RunPhase | "loading" = "loading";
   private captureAudio: "waiting" | "grab" | "laugh" = "waiting";
@@ -309,14 +311,20 @@ export class RunnerGame {
 
   private tick = (time: number) => {
     if (this.destroyed) return;
-    const coins = this.world.coins;
-    if (!document.hidden) this.world.advance(this.last ? (time - this.last) / 1000 : 0);
-    this.last = time;
-    if (this.world.coins > coins) this.audio.effect("coin");
-    this.sync();
-    if (this.ready) this.renderer?.draw(this.world);
-    this.drawPortraits(time / 1000);
+    // Book the next frame first: an error in one frame must never stop the game for good, which
+    // used to leave it frozen until the page was reloaded.
     this.frame = requestAnimationFrame(this.tick);
+    try {
+      const coins = this.world.coins;
+      if (!document.hidden) this.world.advance(this.last ? (time - this.last) / 1000 : 0);
+      this.last = time;
+      if (this.world.coins > coins) this.audio.effect("coin");
+      this.sync();
+      if (this.ready) this.renderer?.draw(this.world);
+      this.drawPortraits(time / 1000);
+    } catch (error) {
+      if (!this.frameFailed) { this.frameFailed = true; console.error("奶狗快跑：这一帧出错，已跳过", error); }
+    }
   };
 
   /** Pushes world state into the DOM; writes only when something changed. */

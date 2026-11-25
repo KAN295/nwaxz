@@ -2304,7 +2304,9 @@ export class RunnerRenderer3D {
     // NaN never equals a tile number: -1 is a real tile just behind the start, and a slot marked -1 would
     // skip being placed and keep the last run's holes.
     for (const slot of this.slots) { slot.n = Number.NaN; slot.theme = -1; slot.holes.fill(undefined); }
-    this.routeVersion = -1;
+    // The new route counts its versions from zero again, so a stale number could match and leave
+    // bridges and ziplines built for an older shape of the route.
+    this.routeVersion = -1; this.crossingRouteVersion = -1;
     this.lastWorld = world;
     this.lastTime = 0;
     this.fireParticleTime = 0;

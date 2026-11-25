@@ -156,8 +156,8 @@ test('falling through a gap or trap plays the fall, while other hits do not', ()
 });
 
 test('a long gap needs two jumps at both introduction and top speed, with or without slow time', () => {
-  // 960 m is the first open road after the first log bridge; 2600 m is on the snowfield.
-  for (const z of [960, 2600]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
+  // 650 m is just after long pits begin, on the canal; 2600 m is in the bamboo grove.
+  for (const z of [650, 2600]) for (const lane of [0, 1, 2]) for (const slow of [0, 5]) {
     const half = obstacleHalfDepth('long-gap', z), edge = z - half;
     const attempt = (double) => {
       const w = place('long-gap', { z, span: 3 });
@@ -480,7 +480,7 @@ test('record parser rejects corrupt or foreign records', () => {
 });
 
 test('scenes follow one itinerary; snow comes half as often; weather is reproducible; night alternates after 1000 m', () => {
-  for (const [d, scene] of [[0, 0], [449, 0], [450, 1], [1009, 1], [1010, 2], [1690, 3], [2140, 5], [2640, 4], [3090, 0]]) assert.equal(sceneAt(d), scene, `at ${d} m`);
+  for (const [d, scene] of [[0, 0], [699, 0], [700, 1], [1559, 1], [1560, 2], [2560, 3], [3260, 5], [4020, 4], [4720, 0]]) assert.equal(sceneAt(d), scene, `at ${d} m`);
   const visits = [0, 0, 0, 0, 0, 0], metres = [0, 0, 0, 0, 0, 0];
   for (let i = 0; i < 44; i++) { visits[sectionScene(i)]++; metres[sectionScene(i)] += sectionStart(i + 1) - sectionStart(i); }
   for (const scene of [0, 1, 2, 3, 4]) assert.equal(visits[scene], visits[5] * 2);
@@ -527,11 +527,12 @@ test('terrain rises and falls continuously and stays level across scene boundari
   assert.equal(route.sample(140).y, elevationAt(140));
   assert.ok(route.sample(88).y > route.sample(50).y);
   assert.ok(route.sample(196).y > route.sample(252).y);
-  for (const z of [45, 120, 157, 270, 450, 1010, 1690, 2140, 2640, 3090]) assert.ok(Math.abs(elevationAt(z + .01) - elevationAt(z - .01)) < .001);
+  for (const z of [45, 120, 157, 270, 430, 520, 700, 1560, 2560, 3260, 4020, 4720]) assert.ok(Math.abs(elevationAt(z + .01) - elevationAt(z - .01)) < .001);
   // The sea crossing and the mine gallery are level.
   const bridge = firstFeature('bridge');
   for (let d = bridge.start - 20; d <= bridge.end + 20; d += 5) assert.equal(elevationAt(d), 0);
-  for (let d = 1010; d < 1690; d += 10) assert.equal(elevationAt(d), 0);
+  const mine = sectionStart([...Array(12).keys()].find(i => sectionScene(i) === 2));
+  for (let d = mine; d < mine + 1000; d += 10) assert.equal(elevationAt(d), 0);
 });
 
 test('the aqueduct requires grabbing the rope, and the rope can be steered and exited', () => {
@@ -558,7 +559,7 @@ test('the aqueduct requires grabbing the rope, and the rope can be steered and e
   assert.equal(w.ride, undefined);
   assert.equal(w.jumpHeight, 0);
   assert.ok(Number.isFinite(w.ropeLandedAt));
-  assert.equal(sectionFeature(600).kind, 'bridge');
+  assert.equal(sectionFeature(900).kind, 'bridge');
 });
 
 test('the longer minecart ride has seven rockfalls and corners stay beyond the exit', () => {
@@ -578,7 +579,8 @@ test('the longer minecart ride has seven rockfalls and corners stay beyond the e
   while (w.distance < cart.end && w.phase === 'running') { drive(w); w.advance(1 / 120); }
   assert.equal(w.phase, 'running');
   assert.equal(w.ride, undefined);
-  assert.ok(w.elapsed > 7, `ride lasted ${w.elapsed}s`);
+  // The ride comes late enough in the run to go at nearly top speed.
+  assert.ok(w.elapsed > 5.5, `ride lasted ${w.elapsed}s`);
   assert.ok(w.coins >= 24);
   // A corner that would fall during the ride waits until past the exit.
   assert.equal(w.turnOutsideFeature(cart.start + 20, cart.start - 200), cart.end + 34);
