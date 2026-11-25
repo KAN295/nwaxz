@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
+import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, CHASE_START, CHASE_SECONDS, CHASE_START_GAP, CHASE_CATCH, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
 import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
@@ -441,11 +441,58 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
   assert.ok(sawJoinedLogs);
 });
 
-test('1000 m challenge stops for the laugh and can continue endlessly', () => {
-  const w = new RunnerWorld(7); w.start();
-  for (let tick = 0; tick < 120 * 80 && w.phase === 'running'; tick++) { drive(w); w.advance(1 / 120); }
-  assert.equal(w.phase, 'won'); assert.equal(w.distance, 1000); run(w, 2); assert.equal(w.distance, 1000);
-  w.continue(); w.advance(.1); assert.equal(w.phase, 'running'); assert.ok(w.distance > 1000);
+test('chase mode: a clean run catches the frog on the snowfield and in the canyon before time runs out', () => {
+  let wins = 0, throws = 0;
+  for (let seed = 1; seed <= 12; seed++) {
+    const w = new RunnerWorld(seed, 'chase');
+    assert.equal(w.distance, CHASE_START); assert.equal(sceneAt(w.distance), 5); assert.equal(w.runDistance, 0);
+    assert.equal(w.night, false); assert.equal(w.chase.gap, CHASE_START_GAP); assert.equal(w.chase.timeLeft, CHASE_SECONDS);
+    w.start();
+    for (let tick = 0; tick < 120 * (CHASE_SECONDS + 5) && w.phase === 'running'; tick++) { drive(w); w.advance(1 / 120); }
+    assert.notEqual(w.phase, 'caught', `seed ${seed}: ${w.reason} at ${Math.round(w.runDistance)} m`);
+    if (w.phase === 'won') {
+      wins++;
+      assert.ok(w.chase.gap <= CHASE_CATCH + .01); assert.ok(w.chase.timeLeft > 0);
+      assert.ok(w.score >= Math.floor(w.runDistance) * 10 + 2000, 'catching the frog pays a bonus');
+      assert.ok([5, 4].includes(sceneAt(w.distance)), 'the chase stays on the snowfield and in the canyon');
+    }
+    throws += w.chase.throws;
+    // No long pits in the chase, and the dog never stood still.
+    assert.ok(!w.items.some(i => i.kind === 'long-gap'));
+  }
+  assert.ok(wins >= 10, `caught the frog in ${wins} of 12`);
+  assert.ok(throws > 12, `the frog threw ${throws} crates`);
+});
+
+test('chase mode: knocks let the frog get away instead of catching the dog; time running out ends the chase', () => {
+  const w = new RunnerWorld(3, 'chase'); w.start(); w.nextRow = w.nextTurn = Infinity; w.turns = []; w.chase.nextThrow = Infinity;
+  w.items = [{ id: 1, z: w.distance + 5, lane: 1, kind: 'block', done: false }, { id: 2, z: w.distance + 32, lane: 1, kind: 'crate', done: false }];
+  const gap = w.chase.gap; run(w, 2.6);
+  assert.equal(w.phase, 'running', 'two knocks in a row are not fatal in the chase');
+  assert.equal(w.stumbles, 2); assert.equal(w.danger, 0);
+  assert.ok(w.chase.gap > gap + 15, `the frog pulled away to ${w.chase.gap}`);
+  w.chase.timeLeft = .05; run(w, .2);
+  assert.equal(w.phase, 'lost'); assert.equal(w.chase.escaped, true); assert.equal(w.reason, '奶蛙带着金苹果跑掉了');
+  // Crates land between the dog and the frog, in the frog's lane.
+  const thrower = new RunnerWorld(4, 'chase'); thrower.start(); thrower.nextRow = Infinity; thrower.items = []; thrower.chase.nextThrow = 0;
+  thrower.advance(1 / 120);
+  const crate = thrower.items.find(i => i.kind === 'crate');
+  assert.ok(crate && crate.z > thrower.distance && crate.z < thrower.distance + thrower.chase.gap && crate.lane === thrower.chase.lane);
+});
+
+test('steering into the side of the road stumbles the dog and sets the frog on it', () => {
+  const w = new RunnerWorld(2); w.start(); w.items = []; w.turns = []; w.nextRow = w.nextTurn = Infinity;
+  w.lane = w.position = 0; w.action('left');
+  assert.equal(w.wallBumps, 1); assert.equal(w.wallSide, -1); assert.ok(w.danger > 0); assert.equal(w.lane, 0); assert.equal(w.phase, 'running');
+  w.action('left'); assert.equal(w.wallBumps, 1, 'a second press during the knock does not count twice');
+  run(w, 1.2); w.lane = w.position = 2; w.action('right');
+  assert.equal(w.phase, 'caught'); assert.equal(w.reason, '撞墙后被恐怖奶蛙抓住了');
+  // No bumps while invincible, on the log bridge, or in the chase (where the frog just gains ground).
+  const golden = new RunnerWorld(2); golden.start(); golden.fruit = 5; golden.lane = golden.position = 0; golden.action('left'); assert.equal(golden.wallBumps, 0);
+  const bridge = firstFeature('bridge'), onBridge = skipTo(new RunnerWorld(2, 'endless'), bridge.start + 10); onBridge.start();
+  onBridge.lane = onBridge.position = 2; onBridge.action('right'); assert.equal(onBridge.wallBumps, 0);
+  const chase = new RunnerWorld(2, 'chase'); chase.start(); chase.lane = chase.position = 2; const gap = chase.chase.gap;
+  chase.action('right'); assert.equal(chase.wallBumps, 1); assert.ok(chase.chase.gap > gap + 4); assert.equal(chase.danger, 0);
 });
 
 test('capture pauses independently and settles after the animation or a skip', () => {

@@ -20,7 +20,7 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
-import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
+import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, riderHeightAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
@@ -129,7 +129,7 @@ const PAINTED_SKIES: Partial<Record<number, { top: string; horizon: string; nigh
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number; vary: boolean };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; themes: TransformNode[]; lanes: RoadLane[][]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean };
+type Slot = { n: number; root: TransformNode; group?: TransformNode; lanes: RoadLane[]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 /** Repeatable pseudo-random numbers for building scenery: the same seed always gives the same plants. */
@@ -148,6 +148,7 @@ export class RunnerRenderer3D {
   private route = new RunnerRoute3D();
   private lastWorld?: RunnerWorld;
   private slots: Slot[] = [];
+  private orePlane!: Mesh;
   private templates = new Map<string, TransformNode>();
   private props = new Map<number, TransformNode>();
   private corners = new Map<number, TransformNode>();
@@ -185,12 +186,16 @@ export class RunnerRenderer3D {
   private silverSparks: ParticleSystem;
   private diamondSparks: ParticleSystem;
   private magic: ParticleSystem;
+  private appleSparkles: ParticleSystem;
+  /** Chase mode: the golden apple held over the fleeing frog's head, and the lane it is drifting into. */
+  private chaseApple!: TransformNode;
+  private frogLane = 1;
   private fireEmbers: ParticleSystem;
   private fireSmoke: ParticleSystem;
   private fireParticleTime = 0;
   private coinMats: Record<"silver" | "gold" | "diamond", StandardMaterial>;
   private dogLook = "original";
-  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1 };
+  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1, bumps: 0 };
   private flash = { shield: 0, power: 0 };
   private turnBlend = { x: 0, z: 0 };
   private camYaw = 0;
@@ -201,6 +206,11 @@ export class RunnerRenderer3D {
   private captureCamera?: { position: Vector3; target: Vector3 };
   private lastTime = 0;
   private disposed = false;
+  /** Share of the full render resolution in use; lowered on devices that cannot keep up. */
+  private renderScale = 1;
+  private frameAverage = 1 / 60;
+  private slowTime = 0;
+  private fastTime = 0;
 
   constructor(private canvas: HTMLCanvasElement, private settings: Settings) {
     this.engine = new Engine(canvas, true, { stencil: false, powerPreference: "high-performance", preserveDrawingBuffer: false }, false);
@@ -246,6 +256,9 @@ export class RunnerRenderer3D {
     this.silverSparks = this.particles("silver-sparks", 240, "#ffffff", "#a8cfdf");
     this.diamondSparks = this.particles("diamond-sparks", 240, "#eaffff", "#6bd6ff");
     this.magic = this.particles("power-sparks", 300, "#ffffff", "#ffffff");
+    this.appleSparkles = this.particles("apple-sparkles", 260, "#fff2a0", "#c38bff");
+    this.appleSparkles.gravity.set(0, .8, 0); this.appleSparkles.minEmitPower = .3; this.appleSparkles.maxEmitPower = 1.2;
+    this.appleSparkles.minSize = .06; this.appleSparkles.maxSize = .2; this.appleSparkles.minLifeTime = .4; this.appleSparkles.maxLifeTime = .9;
     this.fireEmbers = this.particles("fire-embers", 220, "#fff0a0", "#ff4c16");
     this.fireEmbers.gravity.set(0, 2.4, 0); this.fireEmbers.minSize = .035; this.fireEmbers.maxSize = .14;
     this.fireEmbers.minLifeTime = .25; this.fireEmbers.maxLifeTime = 1; this.fireEmbers.minEmitPower = .4; this.fireEmbers.maxEmitPower = 2.3;
@@ -263,6 +276,8 @@ export class RunnerRenderer3D {
     this.ropeHandle = this.instance("rope-handle", new TransformNode("runner-rope-handle", this.scene));
     this.ropeLanyard = this.ropeHandle.getChildMeshes().find(mesh => mesh.name === "rope-lanyard")!;
     this.cart.setEnabled(false); this.bicycle.setEnabled(false); this.ropeHandle.setEnabled(false);
+    this.chaseApple = new TransformNode("runner-chase-apple", this.scene);
+    this.instance("fruit", this.chaseApple); this.chaseApple.setEnabled(false);
     this.buildShark();
     this.buildSlots();
     this.buildWeather();
@@ -453,6 +468,9 @@ export class RunnerRenderer3D {
     this.mat("bike-rubber", "#202528").specularColor.setAll(.04);
     this.mat("bike-chrome", "#8a9b9e").specularColor.setAll(.55);
     this.glow("fruit-peel", "#ffca35", "#825014").specularColor.set(.7, .42, .19);
+    const gold = this.glow("apple-gold", "#ffd03c", "#a8680a"); gold.specularColor.set(1, .92, .62); gold.specularPower = 72;
+    const glint = this.glow("apple-glint", "#e4b8ff", "#9a5cff"); glint.alpha = .3; glint.alphaMode = Engine.ALPHA_ADD; glint.disableLighting = true; glint.backFaceCulling = false;
+    this.radialMaterial("apple-glow", "rgba(255,212,92,.85)", true);
     this.mat("fruit-leaf", "#719237");
     this.mat("metal", "#9a9a9a", rust);
     this.mat("rail", "#b9b4aa", rust);
@@ -590,7 +608,6 @@ export class RunnerRenderer3D {
     const warm = new TransformNode("runner-warm-up", this.scene);
     warm.position.set(0, 0, 12);
     for (const name of this.templates.keys()) this.instance(name, warm);
-    for (const slot of this.slots) slot.themes.forEach(group => group.setEnabled(true));
     const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0], this.sea];
     this.shark.root.setEnabled(true); this.shark.root.position.set(0, 0, 14);
     effects.forEach(mesh => { mesh.setEnabled(true); mesh.position.set(0, 1, 10); });
@@ -599,7 +616,9 @@ export class RunnerRenderer3D {
     this.camera.position.set(0, 4, -8); this.camera.setTarget(new Vector3(0, 1, 8));
     this.scene.render();
     warm.dispose();
-    for (const slot of this.slots) slot.themes.forEach(group => group.setEnabled(false));
+    // Templates only feed instances from here on, and instances keep drawing when their source is
+    // switched off; this keeps some 1,600 template meshes out of the per-frame walk.
+    this.templates.values().next().value?.parent?.setEnabled(false);
     [...effects, ...this.rain, ...this.snow, ...this.streaks].forEach(mesh => mesh.setEnabled(false));
     this.shark.root.setEnabled(false);
   }
@@ -674,10 +693,21 @@ export class RunnerRenderer3D {
     return texture;
   }
 
+  /** Lowers the render resolution a step at a time while frames run slow, and wins it back when there is headroom. */
+  private adaptResolution(world: RunnerWorld, dt: number) {
+    if (dt <= 0 || world.phase !== "running" || document.hidden) { this.slowTime = this.fastTime = 0; return; }
+    this.frameAverage += (dt - this.frameAverage) * .08;
+    const fps = 1 / this.frameAverage;
+    this.slowTime = fps < 47 ? this.slowTime + dt : 0;
+    this.fastTime = fps > 57 ? this.fastTime + dt : 0;
+    if (this.slowTime > 1.5 && this.renderScale > .55) { this.renderScale = Math.max(.55, this.renderScale - .12); this.slowTime = 0; this.resize(); }
+    else if (this.fastTime > 8 && this.renderScale < 1) { this.renderScale = Math.min(1, this.renderScale + .12); this.fastTime = 0; this.resize(); }
+  }
+
   resize() {
     if (this.disposed) return;
     const rect = this.canvas.getBoundingClientRect();
-    const ratio = Math.min(devicePixelRatio || 1, this.settings.quality === "high" ? 2 : 1.25);
+    const ratio = Math.min(devicePixelRatio || 1, this.settings.quality === "high" ? 2 : 1.25) * this.renderScale;
     this.engine.setSize(Math.max(1, Math.round(rect.width * ratio)), Math.max(1, Math.round(rect.height * ratio)));
   }
   setDogLook(id: string, image?: HTMLImageElement) {
@@ -1269,7 +1299,7 @@ export class RunnerRenderer3D {
         for (const side of [-1, 1]) this.box("rail", r, [.1, .1, D], [side * .55, .05, 0], "rail");
         for (const z of [-1, 1]) this.box("sleeper", r, [1.6, .06, .28], [0, .01, z], "wood");
       }
-    });
+    }, true);
     make("aqueduct-wall", r => { for (const s of [-1, 1]) { this.box("parapet", r, [.45, .8, D], [s * (ROAD_HALF + .2), .15, 0], "stone"); this.box("coping", r, [.6, .14, D], [s * (ROAD_HALF + .2), .6, 0], "stone-dark"); } });
     make("aqueduct-pier", r => { this.box("pier", r, [W + 1.4, 18, 1.6], [0, -9.5, 0], "stone-dark"); for (const s of [-1, 1]) this.box("buttress", r, [1.4, 18, 2.2], [s * (ROAD_HALF + .3), -9.5, 0], "stone-dark"); });
     make("temple-ledge", r => { for (const s of [-1, 1]) { this.box("ledge", r, [.9, .55, D], [s * (ROAD_HALF + .45), .02, 0], "moss-stone"); this.box("hedge", r, [1.4, 1.1, D], [s * (ROAD_HALF + 1.6), .3, 0], "foliage-dark"); } });
@@ -1373,13 +1403,22 @@ export class RunnerRenderer3D {
       rod(r, head, [1.15, .56], .06, "bike-chrome");
       this.box("handlebar", r, [.65, .061, .073], [0, 1.15, .55], "bike-rubber");
     });
+    // The enchanted golden apple: a turned apple shape in polished gold, a shimmering violet-gold
+    // skin over it and a soft glow, so it reads from far off as it drops and rolls.
     make("fruit", r => {
-      const body = MeshBuilder.CreateSphere("rolling-fruit", { diameter: .68, segments: 18 }, this.scene);
-      body.parent = r; body.scaling.y = .88; body.material = this.mats["fruit-peel"]; body.isPickable = false;
-      this.cylinder("fruit-stem", r, { height: .14, diameterTop: .047, diameterBottom: .062, tessellation: 8 }, [0, .34, 0], "wood");
-      const leaf = MeshBuilder.CreateSphere("fruit-leaf", { diameter: .24, segments: 10 }, this.scene);
-      leaf.parent = r; leaf.position.set(.108, .37, 0); leaf.scaling.set(1, .19, .56); leaf.rotation.z = .46;
+      const profile = [[0, -.3], [.12, -.31], [.23, -.27], [.31, -.17], [.35, -.03], [.34, .1], [.3, .2], [.22, .27], [.12, .29], [.05, .25], [0, .21]]
+        .map(([x, y]) => new Vector3(x, y, 0));
+      const apple = new TransformNode("golden-apple", this.scene); apple.parent = r; apple.scaling.setAll(1.25);
+      const body = MeshBuilder.CreateLathe("golden-apple-body", { shape: profile, tessellation: 28 }, this.scene);
+      body.parent = apple; body.material = this.mats["apple-gold"]; body.isPickable = false;
+      const glint = MeshBuilder.CreateLathe("golden-apple-glint", { shape: profile, tessellation: 20 }, this.scene);
+      glint.parent = apple; glint.scaling.setAll(1.1); glint.material = this.mats["apple-glint"]; glint.isPickable = false;
+      this.cylinder("fruit-stem", apple, { height: .16, diameterTop: .035, diameterBottom: .055, tessellation: 8 }, [0, .3, 0], "wood");
+      const leaf = MeshBuilder.CreateSphere("fruit-leaf", { diameter: .26, segments: 10 }, this.scene);
+      leaf.parent = apple; leaf.position.set(.11, .34, 0); leaf.scaling.set(1, .17, .52); leaf.rotation.z = .46;
       leaf.material = this.mats["fruit-leaf"]; leaf.isPickable = false;
+      const glow = MeshBuilder.CreatePlane("apple-glow", { size: 3 }, this.scene);
+      glow.parent = r; glow.material = this.mats["apple-glow"]; glow.billboardMode = Mesh.BILLBOARDMODE_ALL; glow.isPickable = false;
     });
     make("minecart", r => {
       this.box("cart-floor", r, [1.55, .26, 1.86], [0, .28, 0], "metal");
@@ -1728,6 +1767,20 @@ export class RunnerRenderer3D {
       this.box("rockfall-crossbar", r, [4.35, .23, .27], [0, .9, -.72], "wood");
       for (const x of [-1.92, 1.92]) this.box("rockfall-marker", r, [.23, .24, .15], [x, .93, -.895], "warning");
     }, true);
+    // Crates the frog throws back in chase mode: a slatted wooden box with iron corners (snow-capped on the snowfield).
+    for (const snowy of [false, true]) make(snowy ? "crate@snow" : "crate", r => {
+      this.box("crate-body", r, [1.1, .92, 1], [0, .46, 0], "wood");
+      for (const s of [-1, 1]) {
+        for (const y of [.1, .82]) this.box("crate-rail", r, [1.14, .1, .06], [0, y, s * .51], "log-bark");
+        const brace = this.box("crate-brace", r, [1.32, .1, .06], [0, .46, s * .51], "log-bark"); brace.rotation.z = s * .66;
+        for (const x of [-1, 1]) this.box("crate-corner", r, [.14, .94, .14], [x * .5, .46, s * .45], "lamp-iron");
+      }
+      this.box("crate-lid", r, [1.14, .06, 1.04], [0, .94, 0], "log-bark");
+      if (snowy) {
+        const cap = MeshBuilder.CreateSphere("crate-snow", { diameter: 1, segments: 8 }, this.scene);
+        cap.parent = r; cap.position.y = 1; cap.scaling.set(1.1, .2, 1); cap.material = this.mats.snow;
+      }
+    }, true);
     make("bridge-branch-wide", r => {
       const branch = this.fallenLog("bridge-cross-branch", r, 1.93, .63, [0, .30, 0]);
       branch.rotation.set(.10, -.14, 1.40);
@@ -1740,7 +1793,7 @@ export class RunnerRenderer3D {
         const ring = MeshBuilder.CreateTorus("coin-rim", { diameter: .47, thickness: .045, tessellation: 18 }, this.scene);
         ring.parent = r; ring.position.z = side * .065; ring.rotation.x = Math.PI / 2; ring.material = this.coinMats[tier];
       }
-    });
+    }, true);
     make("coin-diamond", r => {
       const gem = MeshBuilder.CreatePolyhedron("diamond-gem", { type: 1, size: .38 }, this.scene);
       gem.parent = r; gem.material = this.coinMats.diamond;
@@ -1998,29 +2051,46 @@ export class RunnerRenderer3D {
     const treePlane = MeshBuilder.CreatePlane("runner-tree-source", { size: 1 }, this.scene);
     treePlane.setEnabled(false);
     treePlane.isPickable = false;
+    this.orePlane = MeshBuilder.CreatePlane("mine-ore-vein", { size: 1 }, this.scene);
+    this.orePlane.setEnabled(false); this.orePlane.isPickable = false;
     for (let i = 0; i < SLOTS; i++) {
       const root = new TransformNode(`road-slot-${i}`, this.scene);
       // Babylon billboards ignore the parent's rotation, including when placing local offsets.
       const trees = [treePlane.clone(`runner-tree-${i}-left`), treePlane.clone(`runner-tree-${i}-right`)];
       for (const tree of trees) tree.setEnabled(false);
-      const themes: TransformNode[] = [], lanes: RoadLane[][] = [], decor: Decor[] = [];
-      RUN_SCENES.forEach(({ id }, t) => {
-        const group = new TransformNode(`slot-${i}-${id}`, this.scene); group.parent = root; themes.push(group);
-        lanes.push([0, 1, 2].map(lane => {
-          const main = this.instance(`lane-${id}`, group);
-          main.position.x = (lane - 1) * LANE_WIDTH;
-          return { main };
-        }));
-        for (const [name, every, offset, vary] of SCENE_DECOR[t]) decor.push({ node: this.instance(name, group), every, offset, vary: !!vary });
-        group.setEnabled(false);
-      });
-      const ores = [-1, 1].map(side => {
-        const ore = MeshBuilder.CreatePlane("mine-ore-vein", { size: 1 }, this.scene);
-        ore.parent = themes[2]; ore.rotation.y = side * 1.15; ore.isPickable = false;
-        ore.setEnabled(false);
-        return ore;
-      });
-      this.slots.push({ n: Number.NaN, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false, forkCut: false });
+      this.slots.push({ n: Number.NaN, root, lanes: [], trees, ores: [], decor: [], theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false, forkCut: false });
+    }
+  }
+
+  /**
+   * Dresses a slot for the scene it now sits in. Only that scene's road and scenery exist in the
+   * slot; keeping all six sets ready made the scene graph eight thousand meshes deep, and Babylon
+   * walks every one of them each frame.
+   */
+  private dressSlot(slot: Slot, theme: number) {
+    slot.group?.dispose();
+    const { id } = RUN_SCENES[theme];
+    const group = new TransformNode(`slot-${id}`, this.scene); group.parent = slot.root;
+    slot.group = group; slot.theme = theme; slot.holes.fill(undefined);
+    slot.lanes = [0, 1, 2].map(lane => {
+      const main = this.instance(`lane-${id}`, group);
+      main.position.x = (lane - 1) * LANE_WIDTH;
+      return { main };
+    });
+    slot.decor = SCENE_DECOR[theme].map(([name, every, offset, vary]) => ({ node: this.instance(name, group), every, offset, vary: !!vary }));
+    slot.ores = theme !== 2 ? [] : [-1, 1].map(side => {
+      const ore = this.orePlane.clone("mine-ore-vein");
+      ore.parent = group; ore.rotation.y = side * 1.15; ore.setEnabled(false);
+      return ore;
+    });
+  }
+
+  /** Slot scenery only moves when the slot is placed again, so its world matrices stay frozen in between. */
+  private setSlotFrozen(slot: Slot, frozen: boolean) {
+    for (const node of [slot.root, ...slot.root.getDescendants(false)]) {
+      // Billboards turn to the camera every frame.
+      if (!(node instanceof TransformNode) || node.billboardMode !== TransformNode.BILLBOARDMODE_NONE) continue;
+      if (frozen) node.freezeWorldMatrix(); else node.unfreezeWorldMatrix();
     }
   }
 
@@ -2157,6 +2227,7 @@ export class RunnerRenderer3D {
     const now = performance.now() / 1000, dt = this.lastTime ? Math.min(.1, now - this.lastTime) : 0;
     this.lastTime = now;
     if (this.lastWorld !== world) this.reset(world);
+    this.adaptResolution(world, dt);
     this.route.sync(world.turns, world.distance);
 
     const theme = world.sceneIndex, look = this.themes[theme], night = world.night;
@@ -2189,13 +2260,17 @@ export class RunnerRenderer3D {
     const decay = Math.exp(-dt * 9); this.turnBlend.x *= decay; this.turnBlend.z *= decay;
     const centre = this.dogCentre(world);
     centre.x += this.turnBlend.x; centre.z += this.turnBlend.z;
-    const lateral = (world.position - 1) * LANE_WIDTH * rideLateralScale(world.distance, world.ride);
+    // A bump against the side of the road throws the dog at the edge and straight back.
+    const sinceBump = world.elapsed - world.wallBumpAt;
+    const lurch = sinceBump >= 0 && sinceBump < .28 && !this.settings.reducedMotion ? world.wallSide * .55 * Math.sin(Math.PI * sinceBump / .28) : 0;
+    const lateral = (world.position - 1) * LANE_WIDTH * rideLateralScale(world.distance, world.ride) + lurch;
     const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), fx = Math.sin(centre.heading), fz = Math.cos(centre.heading);
     const player = new Vector3(centre.x + rx * lateral, centre.y, centre.z + rz * lateral);
     this.drawRides(world, player, centre, lateral);
 
     const falling = world.trapFall && capture;
-    const grab = capture && !falling ? captureMotion(world.captureTime, this.settings.reducedMotion) : undefined;
+    // In the chase nobody grabs the dog from behind: it just stops where it was hit.
+    const grab = capture && !falling && !world.chase ? captureMotion(world.captureTime, this.settings.reducedMotion) : undefined;
     const pose = dogPose(world, this.settings.reducedMotion, falling);
     const fall = dogFall(world, this.settings.reducedMotion);
     if (this.schoolSheet) {
@@ -2262,7 +2337,11 @@ export class RunnerRenderer3D {
     // Chaser: shown for the opening sprint and after a stumble.
     const frog = this.chaserSprite;
     const close = capture ? 1 : world.phase === "ready" ? 0 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
-    if (falling) {
+    this.chaseApple.setEnabled(false);
+    if (world.chase) {
+      this.drawFrogAhead(world, t, dt);
+      if (falling) this.shadow.setEnabled(false);
+    } else if (falling) {
       frog.root.setEnabled(false);
       this.shadow.setEnabled(false);
     } else if (!capture) {
@@ -2290,9 +2369,48 @@ export class RunnerRenderer3D {
       water.uOffset = drift * .022;
       water.vOffset = drift * .047;
     }
+    this.mats["apple-glint"].alpha = .22 + (this.settings.reducedMotion ? 0 : Math.sin(t * 5) * .1);
     this.drawShark(world, dt);
     this.drawWeather(weather, t, running && world.boost > 0, centre.heading, player.y);
     this.scene.render();
+  }
+
+  /**
+   * Chase mode: the frog runs ahead with the golden apple held over its head, drifting between
+   * lanes. When the run ends either way it turns round and laughs.
+   */
+  private drawFrogAhead(world: RunnerWorld, t: number, dt: number) {
+    const chase = world.chase!, frog = this.chaserSprite, motion = this.settings.reducedMotion ? 0 : 1;
+    const z = world.distance + chase.gap;
+    this.frogLane += (chase.lane - this.frogLane) * (dt > 0 ? 1 - Math.exp(-dt * 3) : 1);
+    const ride = sectionFeature(z), onBridge = ride?.kind === "bridge" && z > ride.start && z < ride.end;
+    const lane = onBridge || (ride?.kind === "rope" && z > ride.start && z < ride.end) ? 1 : this.frogLane;
+    const at = this.place(z, (lane - 1) * LANE_WIDTH);
+    // Over a zipline it hangs from the cable like the dog does.
+    const hang = ride?.kind === "rope" && z > ride.start && z < ride.end ? Math.max(0, riderHeightAt(z, ride)) : 0;
+    const done = world.phase !== "running" && world.phase !== "paused";
+    const bob = done ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12 * motion;
+    frog.root.position.set(at.x, at.y + hang + FROG_SIZE * FROG_FEET + bob, at.z);
+    frog.material.alpha = 1;
+    frog.root.setEnabled(true);
+    if (done) {
+      // Turned to face the camera, doubled up laughing.
+      const atlas = FROG_EXTRA_ART.directionLaugh, rect = atlas.frames[0], scale = 1.15;
+      frog.region(this.sheets.laugh!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
+      frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
+      frog.root.rotation.setAll(0);
+      frog.root.scaling.set(scale * rect.width / rect.height, scale, 1);
+      frog.root.position.y += Math.abs(Math.sin(t * 9)) * .08 * motion;
+    } else {
+      frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
+      frog.root.rotation.setAll(0); frog.root.scaling.setAll(1);
+      frog.frame(this.sheets.walk!, chaserFrame(world, this.settings.reducedMotion), 4, 4);
+    }
+    // The stolen apple, held high (dropped at the frog's feet once the dog has caught up).
+    const caught = world.phase === "won";
+    this.chaseApple.setEnabled(true);
+    this.chaseApple.position.set(at.x, at.y + hang + (caught ? .5 : FROG_SIZE * .98 + Math.sin(t * 4) * .06 * motion), at.z);
+    this.chaseApple.rotation.y = t * 2 * motion;
   }
 
   private reset(world: RunnerWorld) {
@@ -2303,7 +2421,7 @@ export class RunnerRenderer3D {
     this.props.clear(); this.corners.clear(); this.crossings.clear();
     // NaN never equals a tile number: -1 is a real tile just behind the start, and a slot marked -1 would
     // skip being placed and keep the last run's holes.
-    for (const slot of this.slots) { slot.n = Number.NaN; slot.theme = -1; slot.holes.fill(undefined); }
+    for (const slot of this.slots) { slot.n = Number.NaN; slot.holes.fill(undefined); }
     // The new route counts its versions from zero again, so a stale number could match and leave
     // bridges and ziplines built for an older shape of the route.
     this.routeVersion = -1; this.crossingRouteVersion = -1;
@@ -2311,7 +2429,7 @@ export class RunnerRenderer3D {
     this.lastTime = 0;
     this.fireParticleTime = 0;
     this.waterImpact = false;
-    this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1 };
+    this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1, bumps: world.wallBumps };
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -2395,12 +2513,15 @@ export class RunnerRenderer3D {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
       const recycled = slot.n !== n;
       const at = n * TILE + TILE / 2;
+      // Placing a slot (or opening a hole in it) briefly thaws its frozen world matrices.
+      let thawed = recycled;
       if (recycled) {
+        this.setSlotFrozen(slot, false);
         slot.n = n;
         const p = this.route.sample(at);
         slot.root.position.set(p.x, p.y, p.z); slot.root.rotation.set(this.roadPitch(at, TILE / 2), p.heading, 0);
         const theme = sceneAt(at);
-        if (slot.theme !== theme) { slot.themes.forEach((group, i) => group.setEnabled(i === theme)); slot.theme = theme; }
+        if (slot.theme !== theme) this.dressSlot(slot, theme);
         this.placeTrees(slot, at, world.turns);
         for (const [index, ore] of slot.ores.entries()) {
           const every = index === 0 ? 4 : 5, offset = index === 0 ? 1 : 2;
@@ -2439,8 +2560,9 @@ export class RunnerRenderer3D {
         const gap = crossing ?? opening;
         const id = crossing?.kind ?? opening?.item;
         if (!recycled && id === slot.holes[lane]) continue;
+        if (!thawed) { this.setSlotFrozen(slot, false); thawed = true; }
         slot.holes[lane] = id;
-        const tile = slot.lanes[slot.theme][lane];
+        const tile = slot.lanes[lane];
         if (!gap) {
           this.sizeLane(tile.main, -half, half);
           tile.otherSide?.setEnabled(false);
@@ -2449,7 +2571,7 @@ export class RunnerRenderer3D {
         const before = Math.max(-half, gap.start - at), after = Math.min(half, gap.end - at);
         if (before > -half && after < half) {
           if (!tile.otherSide) {
-            tile.otherSide = this.instance(`lane-${RUN_SCENES[slot.theme].id}`, slot.themes[slot.theme]);
+            tile.otherSide = this.instance(`lane-${RUN_SCENES[slot.theme].id}`, slot.group!);
             tile.otherSide.position.x = tile.main.position.x;
           }
           this.sizeLane(tile.main, -half, before);
@@ -2460,6 +2582,7 @@ export class RunnerRenderer3D {
           tile.otherSide?.setEnabled(false);
         }
       }
+      if (thawed) this.setSlotFrozen(slot, true);
     }
   }
 
@@ -2761,20 +2884,32 @@ export class RunnerRenderer3D {
     tree.rotation.y = side * .21;
   }
 
-  private drawFruit(prop: TransformNode, item: RunItem, distance: number) {
+  private drawFruit(prop: TransformNode, item: RunItem, distance: number, t: number) {
     const tree = prop.getChildMeshes(true).find(mesh => mesh.name === "fruit-source-tree")!;
     const fruit = prop.getChildTransformNodes(true).find(node => node.name === "tpl-fruit")!;
     fruit.setEnabled(!item.done);
+    tree.rotation.z = 0;
     if (item.done) return;
-    const ahead = item.z - distance, side = item.lane === 2 ? 1 : -1;
+    const ahead = item.z - distance, side = item.lane === 2 ? 1 : -1, motion = this.settings.reducedMotion ? 0 : 1;
     const drop = Math.max(0, Math.min(1, (36 - ahead) / 10));
     const roll = Math.max(0, Math.min(1, (26 - ahead) / 20));
+    // The tree shudders just before it lets go, so the eye is already on it when the apple falls.
+    const shake = Math.max(0, Math.min(1, (48 - ahead) / 12)) * (1 - drop);
+    tree.rotation.z = Math.sin(t * 38) * .04 * shake * motion;
     const origin = tree.position.x - side * Math.abs(tree.scaling.x) * .37;
     const shoulder = side * (ROAD_HALF - .52) - itemOffset(item);
     const edge = origin + (shoulder - origin) * drop;
     const bounce = Math.abs(Math.sin(Math.PI * 5 * roll)) * Math.exp(-8 * roll) * .70;
-    fruit.position.set(edge * (1 - roll), .32 + 3.85 * (1 - drop * drop) + bounce, .5 - .65 * Math.sin(Math.PI * roll));
+    fruit.position.set(edge * (1 - roll), .42 + 3.85 * (1 - drop * drop) + bounce, .5 - .65 * Math.sin(Math.PI * roll));
     fruit.rotation.set(.25 * drop, .1, -side * (drop * 1.35 + roll * 10.3));
+    const glow = fruit.getChildMeshes(true).find(mesh => mesh.name === "apple-glow");
+    glow?.scaling.setAll(1 + Math.sin(t * 7) * .14 * motion);
+    // A trail of gold and violet sparks while it falls and rolls in.
+    if (ahead < 48 && roll < 1 && motion) {
+      const at = fruit.getAbsolutePosition();
+      (this.appleSparkles.emitter as Vector3).copyFrom(at);
+      this.appleSparkles.manualEmitCount += drop > 0 ? 3 : 1;
+    }
   }
 
   /** Template for an item: logs in the temple ruins are wound with creepers, and about half the two-lane log piles grow mushrooms. */
@@ -2816,11 +2951,17 @@ export class RunnerRenderer3D {
       }
       const p = this.place(item.z, itemOffset(item) * (item.feature === "rope" ? ROPE_LANE_SCALE : 1));
       prop.position.set(p.x, p.y, p.z); prop.rotation.set(isRunObstacle(item.kind) ? this.roadPitch(item.z) : 0, p.heading, 0);
+      if (item.thrownAt !== undefined) {
+        // A crate the frog has just tossed back: it drops in tumbling and lands with a bump.
+        const k = Math.max(0, Math.min(1, (world.elapsed - item.thrownAt) / .5));
+        prop.position.y += 3.2 * (1 - k) * (1 - k) + Math.sin(Math.PI * k) * .9;
+        prop.rotation.x += (1 - k) * 4; prop.rotation.z += (1 - k) * 2.5;
+      }
       if (item.kind === "coin") {
         prop.position.y += item.y ?? .8; prop.rotation.y += t * 3 + item.id;
         if (item.pulled) prop.scaling.setAll(1.25);
       }
-      else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance);
+      else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance, t);
       else if (isRunPower(item.kind)) { prop.position.y += Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
@@ -2872,7 +3013,14 @@ export class RunnerRenderer3D {
       if (world[tier] > this.seen[tier]) this.burst(system, coinAt, Math.min(30, (world[tier] - this.seen[tier]) * 8));
       this.seen[tier] = world[tier];
     }
-    if (world.powerPicked > this.seen.power) { this.burst(this.magic, at, 70, POWER_COLORS[world.lastPower]); this.flash.power = 1; }
+    if (world.powerPicked > this.seen.power) {
+      // The golden apple goes off like fireworks.
+      const apple = world.lastPower === "fruit";
+      this.burst(this.magic, at, apple ? 200 : 70, POWER_COLORS[world.lastPower]); this.flash.power = 1;
+      if (apple) this.burst(this.appleSparkles, at, 120);
+    }
+    if (world.wallBumps > this.seen.bumps) this.burst(this.magic, new Vector3(player.x, player.y + .5, player.z), 26, ["#d9c7a4", "#7a6648"]);
+    this.seen.bumps = world.wallBumps;
     this.seen.power = world.powerPicked;
     if (world.shieldSaves > this.seen.shield) { this.burst(this.magic, at, 90, POWER_COLORS.shield); this.flash.shield = 1; }
     this.seen.shield = world.shieldSaves;
