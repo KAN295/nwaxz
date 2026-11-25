@@ -1,5 +1,6 @@
 import "./style.css";
 import "./menu.css";
+import { ESCAPE_TITLE, ESCAPE_SERIES, ESCAPE_EPISODE } from "./escape/title.ts";
 import type { EscapeGame } from "./escape/game.ts";
 import type { VersusClient } from "./versus/client.ts";
 import type { RunnerGame } from "./runner/game.ts";
@@ -26,6 +27,7 @@ import {
   type Progress,
 } from "./progress";
 
+const siteTitle = document.title;
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let progress: Progress = emptyProgress(),
   settings: Settings = defaultSettings(),
@@ -133,6 +135,7 @@ function openMode(target: GameMode) {
   renderLevels();
 }
 function renderHome() {
+  document.title = siteTitle;
   renderHub("home");
 }
 function renderBaths() {
@@ -149,12 +152,12 @@ function renderHub(page: "home" | "baths") {
     { id: "infernal", title: "地狱浴场", name: "炉火禁区", caption: "噩梦 · 限时", art: "/assets/scenes/infernal-cover-v1.png" },
   ] : [
     { id: "bath", title: "浴场模式", name: "泡泡浴场 · 午夜浴场", caption: "挖土 · 引水", art: "/assets/scenes/bath-cover-v2.webp" },
-    { id: "extreme", title: "逃生模式", name: "下水道逃生", caption: "搜寻 · 躲藏", art: "/assets/scenes/escape-cover-v1.webp", hot: true },
+    { id: "extreme", title: ESCAPE_TITLE, name: "单人 · 多人", caption: "搜寻 · 躲藏", art: "/assets/scenes/escape-cover-v1.webp", hot: true },
     { id: "runner", title: "奶狗快跑", name: "无限跑酷", caption: "跳跃 · 转向", art: "/assets/runner/aqueduct-scene-v1.png" },
     { id: "pvp", title: "奶娃峡谷", name: "3v3 · 阵容预演", caption: "两岸 · 争流", art: "/assets/scenes/versus-cover-v1.png" },
   ];
   chrome(`<main class="game-hub screen-enter" data-hub-page="${page}" aria-label="${page === "home" ? "游戏主界面" : "选择浴场"}"><header class="hub-header"><div class="hub-heading">${page === "baths" ? buttonIcon("back", "返回模式选择", "hub-back") : ""}<h1>${page === "home" ? "奶蛙<span>爱洗澡</span>" : "浴场<span>模式</span>"}</h1></div>${buttonIcon("settings", "设置", "settings")}</header>
-    <nav class="mode-posters" data-count="${modes.length}" aria-label="${page === "baths" ? "选择浴场" : "选择模式"}">${modes.map(m => `<button id="${m.id}" class="mode-poster mode-${m.id}" aria-label="${m.title} · ${m.name}${m.id === "extreme" ? "，单人 AI 决策" : ""}${m.planned ? "，尚未开放" : ""}" ${m.planned ? "disabled" : ""}><img class="mode-art" src="${m.art}" alt=""/>${m.hot ? '<span class="mode-flags"><span class="mode-hot">HOT</span><span class="mode-ai" title="单人 AI 决策">AI</span></span>' : m.id === "pvp" ? '<span class="mode-badge">3v3</span>' : ''}<span class="mode-content"><span class="mode-caption">${m.caption}</span><strong>${m.title}</strong><span class="mode-name">${m.name}</span><span class="mode-enter">${m.planned ? "筹备中" : m.id === "pvp" ? "进入大厅" : page === "baths" ? "进入浴场" : "进入模式"} ${icon(m.planned ? "lock" : "play")}</span></span></button>`).join("")}</nav>
+    <nav class="mode-posters" data-count="${modes.length}" aria-label="${page === "baths" ? "选择浴场" : "选择模式"}">${modes.map(m => `<button id="${m.id}" class="mode-poster mode-${m.id}" aria-label="${m.title} · ${m.name}${m.id === "extreme" ? "，单人 AI 决策" : ""}${m.planned ? "，尚未开放" : ""}" ${m.planned ? "disabled" : ""}><img class="mode-art" src="${m.art}" alt=""/>${m.hot ? '<span class="mode-flags"><span class="mode-hot">HOT</span><span class="mode-ai" title="单人 AI 决策">AI</span></span>' : m.id === "pvp" ? '<span class="mode-badge">3v3</span>' : ''}<span class="mode-content"><span class="mode-caption">${m.caption}</span><strong>${m.id === "extreme" ? `<span>${ESCAPE_SERIES}：</span><wbr><span>${ESCAPE_EPISODE}</span>` : m.title}</strong><span class="mode-name">${m.name}</span><span class="mode-enter">${m.planned ? "筹备中" : m.id === "pvp" ? "进入大厅" : page === "baths" ? "进入浴场" : "进入模式"} ${icon(m.planned ? "lock" : "play")}</span></span></button>`).join("")}</nav>
     <footer class="hub-footer"><span>v${version}</span><button id="update" ${updateAvailable ? "" : "hidden"}>有新版本 ${icon("restart")}</button></footer></main>`);
   if (page === "baths") {
     $("#normal").onclick = () => openMode("normal");
@@ -208,9 +211,10 @@ async function enterVersus() {
 }
 async function enterEscape() {
   leaveGame(); screen = "escape";
+  document.title = ESCAPE_TITLE;
   const request = preparationId;
   document.body.classList.add("horror-theme", "escape-theme");
-  chrome('<main class="escape-entry-screen" aria-label="正在进入逃生大厅"><div class="escape-entry-status" role="status"><small>逃生模式</small><p>正在进入大厅…</p><span class="escape-entry-line" aria-hidden="true"></span></div><button id="escape-load-return" class="escape-entry-back">返回首页</button></main>');
+  chrome(`<main class="escape-entry-screen" aria-label="正在进入逃生大厅"><div class="escape-entry-status" role="status"><small>${ESCAPE_TITLE}</small><p>正在进入大厅…</p><span class="escape-entry-line" aria-hidden="true"></span></div><button id="escape-load-return" class="escape-entry-back">返回首页</button></main>`);
   $("#escape-load-return").onclick = renderHome;
   try {
     const { EscapeGame } = await import("./escape/game.ts");
@@ -218,7 +222,7 @@ async function enterEscape() {
     escapeGame = new EscapeGame(app, audio, settings, renderHome);
   } catch {
     if (screen !== "escape" || request !== preparationId) return;
-    chrome('<main class="escape-entry-screen" aria-label="逃生大厅载入失败"><div class="escape-entry-status" role="status"><small>逃生模式</small><p>大厅暂时未能载入</p><button id="escape-load-retry" class="escape-entry-back">刷新重试</button></div><button id="escape-load-return" class="escape-entry-back">返回首页</button></main>');
+    chrome(`<main class="escape-entry-screen" aria-label="逃生大厅载入失败"><div class="escape-entry-status" role="status"><small>${ESCAPE_TITLE}</small><p>大厅暂时未能载入</p><button id="escape-load-retry" class="escape-entry-back">刷新重试</button></div><button id="escape-load-return" class="escape-entry-back">返回首页</button></main>`);
     $("#escape-load-retry").onclick = () => location.reload();
     $("#escape-load-return").onclick = renderHome;
   }
@@ -544,7 +548,7 @@ function openSettings(fromPause = false) {
       },
     ];
   const dialog = showDialog(
-    `${dialogTop("设置")}<div class="settings-options">${toggles.map(({ key, title, description }) => `<label class="setting-row"><span>${title}${description ? `<small>${description}</small>` : ""}</span><input type="checkbox" role="switch" data-setting="${key}" ${settings[key] ? "checked" : ""}/><span class="switch-knob" aria-hidden="true"></span></label>`).join("")}<label class="setting-row"><span>画质</span><select id="quality" aria-label="画质"><option value="balanced" ${settings.quality === "balanced" ? "selected" : ""}>平衡</option><option value="high" ${settings.quality === "high" ? "selected" : ""}>高清</option></select></label></div><details class="save-settings"><summary>存档管理</summary><h3>关卡存档</h3><span>${levels.filter((l) => progress.levels[l.id]?.completed).length} / ${levels.length} 关 · ${bathModes.reduce((sum,target)=>sum+totalCoins(target),0)} 枚泡泡币</span><div><button id="export">导出存档</button><button id="import">导入存档</button></div><small>四座浴场的关卡成绩。逃生存档在逃生模式内管理。</small></details><div class="settings-bottom"><span>${offlineReady ? "完整离线包已就绪" : "资源按需下载"} · v${version}</span>${updateAvailable ? '<button id="settings-update">更新游戏</button>' : ""}<button id="help">怎么玩</button></div>`,
+    `${dialogTop("设置")}<div class="settings-options">${toggles.map(({ key, title, description }) => `<label class="setting-row"><span>${title}${description ? `<small>${description}</small>` : ""}</span><input type="checkbox" role="switch" data-setting="${key}" ${settings[key] ? "checked" : ""}/><span class="switch-knob" aria-hidden="true"></span></label>`).join("")}<label class="setting-row"><span>画质</span><select id="quality" aria-label="画质"><option value="balanced" ${settings.quality === "balanced" ? "selected" : ""}>平衡</option><option value="high" ${settings.quality === "high" ? "selected" : ""}>高清</option></select></label></div><details class="save-settings"><summary>存档管理</summary><h3>关卡存档</h3><span>${levels.filter((l) => progress.levels[l.id]?.completed).length} / ${levels.length} 关 · ${bathModes.reduce((sum,target)=>sum+totalCoins(target),0)} 枚泡泡币</span><div><button id="export">导出存档</button><button id="import">导入存档</button></div><small>四座浴场的关卡成绩。逃生存档请到《${ESCAPE_TITLE}》内管理。</small></details><div class="settings-bottom"><span>${offlineReady ? "完整离线包已就绪" : "资源按需下载"} · v${version}</span>${updateAvailable ? '<button id="settings-update">更新游戏</button>' : ""}<button id="help">怎么玩</button></div>`,
     () => {
       offlineDownload?.abort();
       audio.stopPreview();
@@ -642,7 +646,7 @@ function applySettings() {
 }
 function openHelp(fromPause = false) {
   const overview = screen === "home" || screen === "baths";
-  const modesHelp = "<div class=\"help-modes\"><section><h3>浴场模式</h3><p>泡泡浴场：挖土引水，收集泡泡币。午夜浴场：借灯光辨认水路，破解暗夜机关。万圣浴场与地狱浴场：限时接满清水，超时会被奶蛙抓走。</p></section><section><h3>逃生模式</h3><p>搜寻钥匙和工具，躲开奶蛙，逃进下水道。可单人游玩或与朋友组队。</p></section><section><h3>奶娃峡谷</h3><p>3v3 阵容预演与峡谷图鉴；对局尚未开放。</p></section></div>";
+  const modesHelp = `<div class="help-modes"><section><h3>浴场模式</h3><p>泡泡浴场：挖土引水，收集泡泡币。午夜浴场：借灯光辨认水路，破解暗夜机关。万圣浴场与地狱浴场：限时接满清水，超时会被奶蛙抓走。</p></section><section><h3>${ESCAPE_TITLE}</h3><p>搜寻钥匙和工具，躲开奶蛙，逃进下水道。可单人游玩或与朋友组队。</p></section><section><h3>奶娃峡谷</h3><p>3v3 阵容预演与峡谷图鉴；对局尚未开放。</p></section></div>`;
   const dialog = showDialog(
     `${dialogTop(overview ? "玩法" : modeName())}${overview ? modesHelp : `<ol class="how-to"><li>按住鼠标或划动手指，挖开泥土。</li><li>把清水引进右下方的管道，接够 100 滴水。</li><li>顺路收集 3 枚泡泡币，用时越短得分越高。</li><li>石板挖不动，要绕个弯。</li><li>轻点风扇可以推水；喷水阀可开关，水量有限。</li><li>紫色污水会污染清水，流进浴缸就要重试。</li><li>水草挡水，吸收紫水后会枯萎；海绵吸水，轻点可以挤水。</li></ol><p class="keyboard-help">键盘：方向键移动，空格挖土，Shift + 方向键连续挖土，F 切换风扇，V 切换清水阀，B 切换污水阀，E 挤水，Esc 暂停。</p>`}<button id="help-ok" class="game-button gold">知道了</button>`,
     () => openSettings(fromPause),

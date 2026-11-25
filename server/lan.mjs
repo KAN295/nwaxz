@@ -1,3 +1,4 @@
+import { ESCAPE_TITLE } from "../src/escape/title.ts";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { BlockList } from "node:net";
@@ -40,7 +41,7 @@ const server = createServer((req, res) => {
   else res.writeHead(403).end();
 });
 attachCoopSockets(server, service, allow);
-server.listen(port, selected.address, () => console.log(`局域网已开启。请在同一网络的浏览器打开 http://${address}/ ，再进入逃生模式 → 多人游戏。`));
+server.listen(port, selected.address, () => console.log(`局域网已开启。请在同一网络的浏览器打开 http://${address}/ ，再进入《${ESCAPE_TITLE}》 → 多人游戏。`));
 const stop = () => {
   service.shutdown();
   app.locals.social.close();

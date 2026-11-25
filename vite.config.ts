@@ -1,3 +1,4 @@
+import { ESCAPE_TITLE } from "./src/escape/title.ts";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
@@ -37,7 +38,7 @@ export default defineConfig({
         name: "奶蛙爱洗澡",
         short_name: "nwaxz",
         lang: "zh-CN",
-        description: "泡泡浴场、午夜浴场、下水道逃生。选择你的冒险。",
+        description: `泡泡浴场、午夜浴场、《${ESCAPE_TITLE}》。选择你的冒险。`,
         theme_color: "#286f70",
         background_color: "#286f70",
         display: "standalone",

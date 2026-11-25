@@ -16,7 +16,7 @@ from fontTools import subset
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "public" / "assets" / "fonts" / "escape"
 SOURCES = [*(ROOT / "src" / "escape").glob("*.ts"), *(ROOT / "src" / "escape").glob("*.css"), *(ROOT / "server").glob("coop-*.mjs"), ROOT / "server" / "social-service.mjs"]
-TITLE = "奶蛙下水道逃生"
+TITLE = "下水道"  # Large episode wordmark. The series name uses the regular UI subset.
 # Printable ASCII plus the full-width punctuation and symbols used in the UI.
 BASE = "".join(chr(c) for c in range(0x20, 0x7F)) + "，。、！？：；（）【】《》「」『』“”‘’…—～·×→←↑↓◇✦❄✉♥＋　"
 

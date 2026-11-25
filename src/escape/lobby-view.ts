@@ -1,3 +1,4 @@
+import { ESCAPE_TITLE, ESCAPE_SERIES, ESCAPE_EPISODE } from "./title.ts";
 import type { CoopPlayer, CoopRoomView } from "./coop-protocol.ts";
 import { DEFAULT_HUNTER_DIFFICULTY } from "./hunter-search-model.ts";
 import { PUBLIC_ROUTES, HIGH_LATENCY_MS, type PublicRouteId, type RouteLatencies } from "./public-route.ts";
@@ -77,7 +78,7 @@ export function renderLobbyView(container: HTMLElement, model: LobbyModel, actio
   const activeMainScreen = subScreen ? undefined : (["friends", "profile"].includes(model.screen) ? model.screen : mainScreen);
   container.innerHTML = `<section class="escape-lobby" data-lobby-screen="${model.screen}" aria-label="逃生大厅">
     <header class="lv-top"><div class="lv-status" ${model.screen==="servers" && model.network!=="lan"?"":"hidden"}><i class="${model.servers.some(s=>/online|在线|ready|可用/i.test(s.state))?"is-up":"is-down"}"></i>${model.servers[0]?esc(model.servers[0].state):"无服务器"} · ${model.servers.length?`${model.servers[0].players} 人在线`:"--"}${!model.routeLatencies && model.servers.find(s=>s.latency!=null)?` · ${model.servers.find(s=>s.latency!=null)!.latency} ms`:""}</div><button class="lv-user" data-screen="profile">${avatar(model.profile.avatar)}<span>${esc(model.profile.name)}</span></button></header>
-    <aside class="lv-rail"><button class="lv-title" data-screen="home" aria-label="回到标题画面"><small>奶蛙</small><strong>下水道逃生</strong></button>
+    <aside class="lv-rail"><button class="lv-title" data-screen="home" aria-label="回到《${ESCAPE_TITLE}》标题画面"><small>${ESCAPE_SERIES}：</small><strong>${ESCAPE_EPISODE}</strong></button>
       <nav class="lv-menu" aria-label="主菜单">
         <button class="lv-nav ${["solo","saves","restart"].includes(model.screen)?"is-active":""}" data-action="single" id="escape-menu-solo">单人游戏</button>
         <button class="lv-nav ${["servers","room"].includes(activeMainScreen??"")?"is-active":""}" data-screen="${model.selectedRoom?"room":"servers"}" id="escape-menu-coop">${model.selectedRoom?"返回房间":"多人游戏"}</button>

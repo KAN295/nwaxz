@@ -1,3 +1,4 @@
+import { ESCAPE_TITLE } from "./title.ts";
 import "./style.css";
 import "./hud.css";
 import "./ability-hud.css";
@@ -137,7 +138,7 @@ export class EscapeGame {
       if (sound && typeof sound.music === "boolean" && typeof sound.sound === "boolean") { this.music = sound.music; this.sound = sound.sound; }
       else this.sound = settings.sound;
     } catch { this.storageWarning = "存档读取失败，可从备份恢复。"; }
-    this.root.innerHTML = `<main class="escape-shell" aria-label="逃生模式"><canvas id="escape-view" tabindex="0" aria-label="3D第一人称逃生。WASD移动，Shift切换奔跑，C切换蹲行；点击画面后移动鼠标转头，手机滑动转头。E交互，Esc暂停并释放鼠标。"></canvas>
+    this.root.innerHTML = `<main class="escape-shell" aria-label="${ESCAPE_TITLE}"><canvas id="escape-view" tabindex="0" aria-label="3D第一人称逃生。WASD移动，Shift切换奔跑，C切换蹲行；点击画面后移动鼠标转头，手机滑动转头。E交互，Esc暂停并释放鼠标。"></canvas>
       <header class="escape-hud"><button id="escape-pause" class="escape-round" aria-label="暂停逃生">${icon("pause")}</button><button id="escape-bag" class="escape-round escape-bag-button" aria-label="打开背包，快捷键B" title="背包 B"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-1.2 11H6.2Z"/><path d="M9 9V7a3 3 0 0 1 6 0v2M9 13h6"/></svg><kbd>B</kbd></button><div class="escape-location"><span id="escape-room">${safe(this.world.room)}</span><span id="escape-night">第1夜 · 00:00</span><div id="escape-lives" aria-label="剩余机会"></div></div></header><p class="escape-objective" id="escape-objective" aria-live="polite"></p>
       <button id="escape-map" class="escape-map-button" aria-label="查看地图，当前位置：${safe(this.world.room)}"><canvas id="escape-minimap" width="208" height="208" aria-hidden="true"></canvas><span>浴场地图 <kbd>M</kbd></span><small id="escape-map-room">${safe(this.world.room)}</small></button>
       <div class="escape-inventory" id="escape-inventory" aria-label="随身物品"></div>
@@ -420,7 +421,7 @@ export class EscapeGame {
     this.save(); this.started = false; this.paused = true;
     this.audio.setMode("escape"); this.applySound(); void this.audio.unlock();
     if (!document.fullscreenElement && document.documentElement.requestFullscreen) void document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
-    this.panel('<p class="escape-eyebrow">下水道逃生</p><h2>正在进入浴场…</h2><p id="escape-preparing" role="status"></p><button id="escape-prepare-back" class="escape-primary">返回菜单</button>');
+    this.panel(`<p class="escape-eyebrow">${ESCAPE_TITLE}</p><h2>正在进入浴场…</h2><p id="escape-preparing" role="status"></p><button id="escape-prepare-back" class="escape-primary">返回菜单</button>`);
     this.button("escape-prepare-back", () => { this.preparationSequence++; this.cinematic?.close(); this.intro(); });
     const opening = resume ? undefined : this.playCinematic(randomOpeningClip());
     try {
@@ -573,7 +574,7 @@ export class EscapeGame {
     const d = this.world.data;
     if (d.phase === "won") {
       const noteTotal = d.expansion?.enabled ? PROPS.filter(prop => prop.kind === "note").length : 3;
-      this.panel(`<p class="escape-eyebrow">下水道逃生</p><h1>逃生成功</h1><div class="escape-result-stats"><span>用时<strong>${time(d.elapsed)}</strong></span><span>被抓<strong>${d.captures} / 3</strong></span><span>纸条<strong>${d.notes.length} / ${noteTotal}</strong></span></div><p class="escape-record">最佳 ${time((this.record?.bestTimeMs ?? d.elapsed * 1000) / 1000)}</p><button id="escape-again" class="escape-primary">再玩一次</button><button id="escape-result-exit" class="escape-secondary">返回首页</button>`);
+      this.panel(`<p class="escape-eyebrow">${ESCAPE_TITLE}</p><h1>逃生成功</h1><div class="escape-result-stats"><span>用时<strong>${time(d.elapsed)}</strong></span><span>被抓<strong>${d.captures} / 3</strong></span><span>纸条<strong>${d.notes.length} / ${noteTotal}</strong></span></div><p class="escape-record">最佳 ${time((this.record?.bestTimeMs ?? d.elapsed * 1000) / 1000)}</p><button id="escape-again" class="escape-primary">再玩一次</button><button id="escape-result-exit" class="escape-secondary">返回首页</button>`);
       this.button("escape-again", () => void this.start(false)); this.button("escape-result-exit", this.exit);
     } else {
       this.panel(`<p class="escape-eyebrow">${d.phase === "lost" ? "第三次被抓住" : `第 ${d.captures} 次被抓住`}</p><h2>${d.phase === "lost" ? "逃生失败" : "被抓住了"}</h2><p>${d.phase === "lost" ? `坚持了 ${time(d.elapsed)}` : "物品和已打开的锁会保留。"}</p><button id="escape-next" class="escape-primary">${d.phase === "lost" ? "重新开始" : `醒来 · 第 ${d.captures + 1} 夜`}</button><div class="escape-links"><button id="escape-replay-laugh">再听笑声</button><button id="escape-result-exit">保存并退出</button></div>`);

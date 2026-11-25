@@ -42,6 +42,7 @@
 .mode-halloween{border-color:#d6954e99;background:#25142b}.mode-halloween::after{background:linear-gradient(180deg,transparent 28%,#24102a66 52%,#1a0b20f5 88%)}.mode-halloween .mode-content strong{color:#ffd199;font-family:Georgia,'SimSun',serif}.mode-halloween .mode-name{color:#d4b7d7}
 .mode-infernal{border-color:#c4654e99;background:#230d0e}.mode-infernal::after{background:linear-gradient(180deg,transparent 28%,#270d0f66 52%,#1b070bf5 88%)}.mode-infernal .mode-content strong{color:#efaa91;font-family:Georgia,'SimSun',serif}.mode-infernal .mode-name{color:#c99a95}
 .mode-posters[data-count="4"] .mode-content strong{font-size:clamp(23px,2.8vw,50px)}
+.mode-extreme .mode-content strong span { display:inline-block; }
 .mode-extreme { border-color:#a16b586e; }.mode-extreme .mode-content strong { color:#e5b6a1; font-family:Georgia,'SimSun',serif; }.mode-extreme::after { background:linear-gradient(180deg,transparent 28%,#160e0b44 52%,#160e0bf5 88%); }.mode-extreme .mode-caption { color:#bf9f8d; }
 .hub-footer { display:flex; align-items:center; justify-content:space-between; min-height:21px; font:10px ui-monospace,monospace; color:#b2b69f70; }
 .hub-footer button { display:flex; align-items:center; gap:7px; padding:4px 10px; font:11px inherit; color:#d5c599; background:#142018; border:1px solid #9c90694f; border-radius:3px; cursor:pointer; }

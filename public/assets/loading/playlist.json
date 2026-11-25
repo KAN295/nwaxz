@@ -2,7 +2,7 @@
   "items": [
     { "type": "image", "src": "/assets/scenes/bath-cover-v2.webp", "title": "泡泡浴场", "seconds": 8 },
     { "type": "image", "src": "/assets/scenes/haunted-cover-v1.webp", "title": "午夜浴场", "seconds": 8 },
-    { "type": "image", "src": "/assets/scenes/escape-cover-v1.webp", "title": "下水道逃生", "seconds": 8 },
+    { "type": "image", "src": "/assets/scenes/escape-cover-v1.webp", "title": "奶娃浴场：下水道", "seconds": 8 },
     { "type": "image", "src": "/assets/scenes/haunted-corridor-v1.webp", "title": "长廊深处", "seconds": 8 },
     { "type": "image", "src": "/assets/scenes/haunted-machine-v1.webp", "title": "旧机房", "seconds": 8 }
   ]

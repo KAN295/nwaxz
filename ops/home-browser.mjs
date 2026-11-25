@@ -32,11 +32,12 @@ try {
       const hub=document.querySelector('.game-hub').getBoundingClientRect();
       return {cards,hub:{x:hub.x,y:hub.y,width:hub.width,height:hub.height},overflow:document.documentElement.scrollWidth>innerWidth||document.documentElement.scrollHeight>innerHeight+1,globalContinue:!!document.querySelector('#continue'),text:document.querySelector('.game-hub').innerText};
     });
-    assert.equal(layout.cards.length,3); assert.equal(layout.globalContinue,false); assert.equal(layout.overflow,false);
-    for(const r of layout.cards) {assert.ok(r.x>=0&&r.y>=0&&r.x+r.w<=width+1&&r.y+r.h<=height+1);assert.ok(r.h>=120&&r.w>=150);}
+    assert.equal(layout.cards.length,4); assert.equal(layout.globalContinue,false); assert.equal(layout.overflow,false);
+    for(const r of layout.cards) {assert.ok(r.x>=0&&r.y>=0&&r.x+r.w<=width+1&&r.y+r.h<=height+1);assert.ok(r.h>=120&&r.w>=120);}
     assert.ok(Math.max(...layout.cards.map(r=>r.h))-Math.min(...layout.cards.map(r=>r.h))<1);
     assert.equal(layout.hub.x,0);assert.equal(layout.hub.y,0);assert.equal(layout.hub.width,width);assert.equal(layout.hub.height,height,'uses the entire viewport without a fixed-width cap');
-    for(const text of ['浴场模式','逃生模式','奶娃峡谷','3v3','阵容预演'])assert.ok(layout.text.includes(text));
+    for(const text of ['浴场模式','奶狗快跑','奶娃峡谷','3v3','阵容预演'])assert.ok(layout.text.includes(text));
+    assert.equal(await page.locator('#extreme strong').textContent(),'奶娃浴场：下水道');
     assert.equal(await page.locator('#pvp').isDisabled(),false);
     assert.equal(await page.locator('#bath .mode-art').getAttribute('src'),'/assets/scenes/bath-cover-v2.webp');
     await settleUI(); await page.screenshot({path:path.join(output,`${name}.png`)}); layouts.push({name,...layout});
@@ -78,7 +79,8 @@ try {
     await page.locator('#home').click();await page.locator('#hub-back').click();
   }
   await page.locator('#extreme').click();await page.locator('#escape-menu-solo').click();
-  assert.equal(await page.locator('.lv-brand small').innerText(),'逃生模式');
+  assert.equal(await page.locator('.lv-title').textContent(),'奶娃浴场：下水道');
+  assert.equal(await page.title(),'奶娃浴场：下水道');
   await page.locator('#escape-new').waitFor();
   assert.equal(await page.locator('#escape-new').isVisible(),true);
   assert.equal(await page.locator('#escape-panel').textContent().then(t=>t.includes('原18关')||t.includes('3D')),false);

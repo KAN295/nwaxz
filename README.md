@@ -1,6 +1,6 @@
 # 奶蛙爱洗澡（nwaxz）
 
-面向手机浏览器的 H5 游戏。浴场模式包含泡泡浴场12关、午夜浴场6关，以及万圣浴场和地狱浴场各3关限时引水；逃生模式为第一人称下水道逃生。奶娃峡谷提供3v3客户端、原创四术与本机阵容预演；战斗尚未开放。
+面向手机浏览器的 H5 游戏。浴场模式包含泡泡浴场12关、午夜浴场6关，以及万圣浴场和地狱浴场各3关限时引水；《奶娃浴场：下水道》是第一人称逃生游戏。奶娃峡谷提供3v3客户端、原创四术与本机阵容预演；战斗尚未开放。
 
 ## 当前功能
 
@@ -57,7 +57,7 @@
 - 0.11.0 已发布并公网核对；[精确发布证据](https://github.com/lingyunmo/nwaxz/pull/34#issuecomment-6343588123)，历史验证见 [发布验证记录](docs/VERIFICATION.md)。
 - 0.12.0 已发布：逃生篇升级为 Babylon.js 9.32 真3D，支持上下看、柜内真实几何和 idle/walk/run/laugh 四段骨骼动画；[发布证据及精确 main SHA `f6f4dee296eb280aa387dbfc440b33024b2287a0`](https://github.com/lingyunmo/nwaxz/pull/38#issuecomment-6349588315)。
 - 0.13.0 已发布并公网核对：角色改用极限恐怖原画二维直立图集，仅绕 Y 轴朝向玩家并受墙体遮挡；保留原图集站立和捧腹大笑，新加 4×2 八动作图集及约 120 ms 动作混合。HUD 收起常驻任务/教程，使用图标物品栏、紧凑状态、附近交互和探索小地图。无窗口 Chromium 桌面/手机视口、触控、暂停冻结、衣柜进出、大笑、下一夜、导入导出、离线冷重载均通过，脚本错误为0；本地更新后原画大笑显示正常，IndexedDB 进度字节未变。详见[候选验收记录](docs/VERIFICATION.md#0130-原画动作与探索-hud合并前候选验收2026-10-23)。真实手机帧率和扬声器听感尚未验收。
-- 极限恐怖“下水道逃生”包含七个区域、钥匙与电源目标链、巡逻/听声/追逐 AI、柜内藏身、三次机会、体力与手电、石子诱敌、纸条和逃生纪录。使用独立本地会话及备份，不覆盖原洗澡存档。[完整玩法](docs/ESCAPE_GAME.md)、[绘制素材与提示](docs/ART_ESCAPE.md)、[恐怖配乐](docs/AUDIO_ESCAPE.md)。
+- 《奶娃浴场：下水道》包含七个区域、钥匙与电源目标链、巡逻/听声/追逐 AI、柜内藏身、三次机会、体力与手电、石子诱敌、纸条和逃生纪录。使用独立本地会话及备份，不覆盖原洗澡存档。[完整玩法](docs/ESCAPE_GAME.md)、[绘制素材与提示](docs/ART_ESCAPE.md)、[恐怖配乐](docs/AUDIO_ESCAPE.md)。
 - 逃生家具模型 `public/assets/models/escape-props-v1.glb` 仍供场景使用；`public/assets/models/extreme-milk-frog-v1.glb` 保留为源资产，0.13.0 运行时与预缓存不再使用角色 GLB。可复现建模脚本为 `ops/build_escape_props.py` 和 `ops/build_escape_character.py`。浏览器候选验收脚本为 `ops/escape-browser.mjs`，使用独立 Playwright 安装或 `PLAYWRIGHT_MODULE`，可选配置 `CHROMIUM_PATH`；脚本始终以 headless 软件渲染和独立 profile 运行。
 - 基础清水源包含 208 滴的粒子水流求解器，采用固定 120 Hz 步进和空间分桶；挖掘网格单元为 CELL8，石块不可挖。
 - 第二章加入可交互风扇和限量喷水阀：打开风扇可改变局部水流，阀门按固定流速消耗有限水量。
