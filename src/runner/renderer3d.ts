@@ -4,6 +4,7 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera.js";
 import { Vector3, Color3, Color4 } from "@babylonjs/core/Maths/math.js";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder.js";
 import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
+import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData.js";
 import type { AbstractMesh } from "@babylonjs/core/Meshes/abstractMesh.js";
 import "@babylonjs/core/Meshes/instancedMesh.js";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
@@ -19,7 +20,7 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
-import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
+import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
@@ -90,10 +91,12 @@ const SCENE_DECOR: readonly (readonly [name: string, every: number, offset: numb
   [["aqueduct-wall", 1, 0], ["aqueduct-pier", 5, 0], ["lamp-post", 5, 3]],
   [["temple-ledge", 1, 0], ["temple-arch", 4, 2], ["lamp-post", 5, 3], ["temple-ferns", 3, 1, true]],
   [["mine-wall-a", 3, 0], ["mine-wall-b", 3, 1], ["mine-wall-c", 3, 2], ["mine-frame", 2, 0], ["mine-cart-parked", 11, 5]],
-  [["bamboo-fence", 1, 0], ["bamboo-clump-a", 2, 0, true], ["bamboo-clump-b", 2, 1, true], ["stone-lantern", 5, 3]],
-  [["canyon-kerb", 1, 0], ["canyon-hoodoos", 4, 1, true], ["canyon-boulders", 3, 0, true], ["cactus-patch", 3, 2, true], ["canyon-lamp", 5, 3]],
-  [["snow-bank", 1, 0], ["snow-pines-a", 2, 0, true], ["snow-pines-b", 2, 1, true], ["snow-lamp", 5, 3], ["snowman", 13, 6]],
+  [["bamboo-fence", 1, 0], ["bamboo-bank", 1, 0], ["bamboo-clump-a", 2, 0, true], ["bamboo-clump-b", 2, 1, true], ["stone-lantern", 5, 3]],
+  [["canyon-kerb", 1, 0], ["canyon-mesa", 1, 0], ["canyon-hoodoos", 4, 1, true], ["canyon-boulders", 3, 0, true], ["cactus-patch", 3, 2, true], ["canyon-lamp", 5, 3]],
+  [["snow-bank", 1, 0], ["snow-ridge", 1, 0], ["snow-pines-a", 2, 0, true], ["snow-pines-b", 2, 1, true], ["snow-lamp", 5, 3], ["snowman", 13, 6]],
 ];
+/** Scenery that holds the road up opens over pits in the road. Only the canal piers stay at forks: the others would fill the ravine under the broken bridge. */
+const SUPPORTS = new Set(["tpl-aqueduct-pier", "tpl-canyon-mesa", "tpl-snow-ridge", "tpl-bamboo-bank"]);
 /** Sky bands painted in code for the scenes without a picture: gradient, then ridges from far to near. */
 type Ridge = { color: string; night: string; base: number; height: number; waves: readonly [frequency: number, weight: number][]; flat?: number; snow?: string };
 const PAINTED_SKIES: Partial<Record<number, { top: string; horizon: string; nightTop: string; nightHorizon: string; mist: string; ridges: readonly Ridge[] }>> = {
@@ -485,6 +488,18 @@ export class RunnerRenderer3D {
     this.mat("shelf-fungus", "#c59a5d");
     this.mat("vine", "#3d7430").specularColor.setAll(.05);
     const leaf = this.mat("vine-leaf", "#5d9a3b"); leaf.backFaceCulling = false; leaf.specularColor.set(.12, .2, .1);
+    // Cliff faces under raised road are tens of metres across, so their rock repeats instead of stretching.
+    this.mat("mesa-rock", "#a95c37", stone, 7).specularColor.setAll(.02);
+    this.mat("cliff-rock", "#6b5d4f", rock, 6).specularColor.setAll(.02);
+    this.mat("bank-earth", "#55703f", rock, 5).specularColor.setAll(0);
+    this.mat("charcoal", "#2b2420").emissiveColor.set(.16, .04, 0);
+    this.glow("ember", "#ff8a2a", "#ff5410");
+    this.mat("bone", "#efe6d2").emissiveColor.set(.18, .17, .15);
+    this.glow("beacon", "#ff7a3a", "#ff4a14");
+    this.glow("reflector", "#ff4a3a", "#7a1208");
+    this.mat("bleached", "#b5a690", "/assets/runner/obstacle-cedar-bark-v1.webp").specularColor.setAll(.03);
+    const crystal = this.glow("crystal", "#c39bff", "#6a3ac8"); crystal.alpha = .9; crystal.specularColor.setAll(.8); crystal.specularPower = 64;
+    this.mat("moss", "#5c8a3a").specularColor.setAll(0);
     this.mat("flower-pink", "#f2a3c0").emissiveColor.set(.25, .12, .16);
     this.mat("flower-white", "#fbf5e8").emissiveColor.set(.25, .24, .22);
     const fin = this.mat("shark", "#3c4b57"); fin.specularColor.set(.45, .5, .55); fin.specularPower = 40;
@@ -685,14 +700,546 @@ export class RunnerRenderer3D {
     return m;
   }
 
-  private fallenLog(name: string, root: TransformNode, length: number, diameter: number, at: [number, number, number]) {
-    const trunk = this.cylinder(name, root, { height: length, diameterBottom: diameter, diameterTop: diameter * .78, tessellation: 24 }, at, "log-bark");
+  private fallenLog(name: string, root: TransformNode, length: number, diameter: number, at: [number, number, number], bark = "log-bark") {
+    const trunk = this.cylinder(name, root, { height: length, diameterBottom: diameter, diameterTop: diameter * .78, tessellation: 24 }, at, bark);
     for (const side of [-1, 1]) {
       const end = MeshBuilder.CreateDisc("exposed-growth-rings", { radius: diameter * (side === 1 ? .382 : .49), tessellation: 24, sideOrientation: Mesh.DOUBLESIDE }, this.scene);
       end.parent = trunk; end.position.y = side * (length / 2 + .007); end.rotation.x = Math.PI / 2;
-      end.material = this.mats["log-end"]; end.isPickable = false;
+      end.material = this.mats[bark === "log-bark" ? "log-end" : bark]; end.isPickable = false;
     }
     return trunk;
+  }
+
+  /** A boulder with a lumpy, faceted surface: an icosphere pushed in and out by a few smooth bumps. */
+  private roughRock(name: string, parent: TransformNode, radius: number, seed: number, material: string, at: [number, number, number], bumpiness = 1, smooth = false) {
+    const rock = MeshBuilder.CreateIcoSphere(name, { radius, subdivisions: smooth ? 4 : 3, flat: !smooth }, this.scene);
+    const random = seeded(seed);
+    const bumps = Array.from({ length: 9 }, () => ({ dir: new Vector3(random() * 2 - 1, random() * 2 - 1, random() * 2 - 1).normalize(), size: (random() - .35) * .34 * bumpiness }));
+    const positions = Array.from(rock.getVerticesData("position")!);
+    for (let i = 0; i < positions.length; i += 3) {
+      const dir = new Vector3(positions[i], positions[i + 1], positions[i + 2]).normalize();
+      let scale = 1;
+      for (const bump of bumps) scale += bump.size * Math.max(0, Vector3.Dot(dir, bump.dir)) ** 3;
+      // A little flatter underneath, so it sits on the ground.
+      if (dir.y < -.55) scale *= .9;
+      positions[i] = dir.x * radius * scale; positions[i + 1] = dir.y * radius * scale; positions[i + 2] = dir.z * radius * scale;
+    }
+    const normals: number[] = [];
+    VertexData.ComputeNormals(positions, rock.getIndices()!, normals);
+    rock.setVerticesData("position", positions); rock.setVerticesData("normal", normals); rock.refreshBoundingInfo();
+    rock.parent = parent; rock.position.set(...at); rock.material = this.mats[material]; rock.isPickable = false;
+    return rock;
+  }
+
+  /** A cone sticking out of a surface along `dir` from `centre`: crystals, horns, spikes. */
+  private spike(name: string, parent: TransformNode, centre: Vector3, dir: Vector3, length: number, diameter: number, material: string, tessellation = 6) {
+    const cone = this.cylinder(name, parent, { diameterTop: 0, diameterBottom: diameter, height: length, tessellation }, [0, 0, 0], material);
+    const d = dir.normalizeToNew();
+    cone.position.copyFrom(centre.add(d.scale(length / 2)));
+    cone.rotation.set(Math.acos(Math.max(-1, Math.min(1, d.y))), Math.atan2(d.x, d.z), 0);
+    return cone;
+  }
+
+  /** A sun-bleached steer skull, for the canyon. */
+  private skull(r: TransformNode, x: number, y: number, z: number) {
+    const head = MeshBuilder.CreateSphere("skull", { diameter: .32, segments: 10 }, this.scene);
+    head.parent = r; head.position.set(x, y, z); head.scaling.set(1, .72, 1.15); head.material = this.mats.bone;
+    this.box("skull-snout", r, [.15, .12, .2], [x, y - .04, z - .2], "bone");
+    for (const s of [-1, 1]) {
+      this.spike("skull-horn", r, new Vector3(x + s * .13, y + .05, z), new Vector3(s, .55, 0), .34, .08, "bone");
+      const eye = MeshBuilder.CreateSphere("skull-eye", { diameter: .07, segments: 6 }, this.scene);
+      eye.parent = r; eye.position.set(x + s * .07, y + .02, z - .17); eye.material = this.mats.coal;
+    }
+  }
+
+  /** One-lane barrier: slide under the bar at 1.25 m. Each scene builds it from what is to hand. */
+  private barrier(r: TransformNode, scene: number) {
+    const width = 2.1, px = width / 2 - .12, random = seeded(401 + scene);
+    const tie = (x: number, y: number, diameter = .2) => {
+      const ring = MeshBuilder.CreateTorus("barrier-tie", { diameter, thickness: .035, tessellation: 10 }, this.scene);
+      ring.parent = r; ring.position.set(x, y, 0); ring.rotation.z = Math.PI / 2; ring.material = this.mats.zipline;
+    };
+    switch (scene) {
+      case 1: { // Temple: carved stone stumps holding a creeper-wound pole.
+        for (const s of [-1, 1]) {
+          this.box("barrier-plinth", r, [.44, .16, .44], [s * px, .08, 0], "stone-dark");
+          this.cylinder("barrier-pillar", r, { diameter: .3, height: 1.34, tessellation: 8 }, [s * px, .82, 0], "moss-stone");
+          this.box("barrier-capital", r, [.4, .14, .4], [s * px, 1.52, 0], "stone-dark");
+        }
+        const pole = this.cylinder("barrier-pole", r, { diameter: .26, height: width + .15, tessellation: 12 }, [0, 1.25, 0], "log-bark");
+        pole.rotation.z = Math.PI / 2;
+        this.addVine(pole, width * .85, () => .13, 2.6, .5, random);
+        for (const x of [-.55, .15, .7]) this.box("barrier-moss", r, [.05, .2 + random() * .1, .05], [x, 1.03, -.06], "moss");
+        return;
+      }
+      case 2: { // Mine: timber posts, a striped hazard beam and a lantern.
+        for (const s of [-1, 1]) {
+          this.box("barrier-post", r, [.22, 1.6, .22], [s * px, .8, 0], "wood");
+          this.box("barrier-foot", r, [.5, .1, .5], [s * px, .05, 0], "stone-dark");
+          this.box("barrier-bracket", r, [.3, .36, .26], [s * px, 1.25, 0], "metal");
+        }
+        for (let i = 0; i < 6; i++) {
+          const stripe = this.box("barrier-stripe", r, [.32, .28, .2], [-.75 + i * .3, 1.25, 0], i % 2 ? "pit" : "warning");
+          stripe.rotation.z = .5;
+        }
+        this.box("barrier-top", r, [width + .1, .05, .22], [0, 1.41, 0], "wood");
+        this.box("lantern-arm", r, [.36, .06, .06], [-px + .17, 1.66, 0], "metal");
+        this.cylinder("lantern", r, { diameterTop: .2, diameterBottom: .16, height: .24, tessellation: 6 }, [-px + .32, 1.5, 0], "lamp");
+        this.cylinder("lantern-roof", r, { diameterTop: .03, diameterBottom: .26, height: .1, tessellation: 6 }, [-px + .32, 1.66, 0], "lamp-iron");
+        return;
+      }
+      case 3: { // Bamboo grove: crossed bamboo legs, two poles lashed with rope, paper charms.
+        for (const s of [-1, 1]) for (const lean of [-.32, .32]) {
+          const leg = this.cylinder("barrier-leg", r, { diameter: .1, height: 1.7, tessellation: 8 }, [s * px, .8, 0], "bamboo");
+          leg.rotation.x = lean;
+        }
+        for (const y of [1.32, 1.18]) {
+          const pole = this.cylinder("barrier-pole", r, { diameter: .11, height: width + .3, tessellation: 8 }, [0, y, 0], "bamboo");
+          pole.rotation.z = Math.PI / 2;
+        }
+        for (const x of [-.62, 0, .62]) { const node = this.cylinder("barrier-node", r, { diameter: .13, height: .04, tessellation: 8 }, [x, 1.32, 0], "bamboo-node"); node.rotation.z = Math.PI / 2; }
+        for (const s of [-1, 1]) tie(s * px, 1.25, .28);
+        for (const [x, tilt] of [[-.42, .08], [.18, -.06], [.62, .1]] as const) {
+          const charm = MeshBuilder.CreatePlane("barrier-charm", { width: .15, height: .32 }, this.scene);
+          charm.parent = r; charm.position.set(x, .98, -.07); charm.rotation.z = tilt; charm.material = this.mats["fork-flag"];
+        }
+        return;
+      }
+      case 4: { // Canyon: a weathered hitching rail with a steer skull.
+        for (const s of [-1, 1]) {
+          const post = this.box("barrier-post", r, [.2, 1.62, .2], [s * px, .78, 0], "bleached"); post.rotation.z = s * .04;
+          this.roughRock("barrier-stone", r, .22, 60 + s, "sandstone", [s * px + .14, .06, .16]);
+          tie(s * px, 1.25, .3);
+        }
+        this.box("barrier-rail", r, [width + .2, .24, .13], [0, 1.28, 0], "bleached");
+        this.box("barrier-rail-low", r, [width, .12, .1], [0, 1.07, .03], "bleached");
+        this.skull(r, 0, 1.52, -.02);
+        return;
+      }
+      case 5: { // Snowfield: a red and white ski barrier, snow on top and icicles below.
+        for (const s of [-1, 1]) {
+          this.box("barrier-post", r, [.18, 1.56, .18], [s * px, .78, 0], "pine-trunk");
+          this.box("barrier-post-snow", r, [.25, .1, .25], [s * px, 1.6, 0], "snow");
+          const drift = MeshBuilder.CreateSphere("barrier-drift", { diameter: .8, segments: 8 }, this.scene);
+          drift.parent = r; drift.position.set(s * px, .02, 0); drift.scaling.set(1, .45, 1); drift.material = this.mats.snow;
+        }
+        for (let i = 0; i < 6; i++) this.box("barrier-band", r, [width / 6 + .005, .3, .2], [-width / 2 + width / 12 + i * width / 6, 1.25, 0], i % 2 ? "snow" : "scarf");
+        this.box("barrier-snowcap", r, [width - .06, .09, .26], [0, 1.44, 0], "snow");
+        for (let i = 0; i < 7; i++) {
+          const length = .14 + random() * .22;
+          this.cylinder("icicle", r, { diameterTop: .06, diameterBottom: 0, height: length, tessellation: 5 }, [-.85 + i * .28 + (random() - .5) * .08, 1.1 - length / 2, (random() - .5) * .1], "ice");
+        }
+        return;
+      }
+      default: { // Canal: a steel road barrier with hazard stripes, reflectors and a beacon.
+        for (const s of [-1, 1]) {
+          this.box("barrier-foot", r, [.46, .12, .5], [s * px, .06, 0], "stone-dark");
+          this.cylinder("barrier-post", r, { diameter: .13, height: 1.5, tessellation: 10 }, [s * px, .8, 0], "lamp-iron");
+          this.box("barrier-reflector", r, [.13, .13, .03], [s * (width / 2 - .1), 1.25, -.13], "reflector");
+        }
+        this.box("barrier-bar", r, [width, .32, .22], [0, 1.25, 0], "warning");
+        for (let x = -.72; x <= .73; x += .36) { const stripe = this.box("barrier-stripe", r, [.12, .3, .235], [x, 1.25, 0], "pit"); stripe.rotation.z = .55; }
+        this.cylinder("beacon-base", r, { diameter: .16, height: .08, tessellation: 10 }, [0, 1.45, 0], "lamp-iron");
+        const beacon = MeshBuilder.CreateSphere("beacon", { diameter: .16, segments: 8, slice: .5 }, this.scene);
+        beacon.parent = r; beacon.position.set(0, 1.49, 0); beacon.material = this.mats.beacon;
+      }
+    }
+  }
+
+  /** Whole-road gate: slide under the beam at 1.3 m. */
+  private gate(r: TransformNode, scene: number) {
+    const px = ROAD_HALF + .1, span = ROAD_HALF * 2 + 1.2, random = seeded(431 + scene);
+    const hangingLeaves = (x: number, top: number, count: number) => {
+      for (let k = 0; k < count; k++) {
+        const leaf = MeshBuilder.CreateSphere("gate-leaf", { diameter: .2, segments: 4 }, this.scene);
+        leaf.parent = r; leaf.position.set(x + (random() - .5) * .1, top - k * .07, -.3); leaf.scaling.set(.9, .5, .25); leaf.material = this.mats["vine-leaf"];
+      }
+    };
+    switch (scene) {
+      case 1: { // Temple: a carved lintel on round pillars, hung with creepers.
+        for (const s of [-1, 1]) {
+          this.cylinder("gate-pillar", r, { diameter: .7, height: 2.7, tessellation: 10 }, [s * px, 1, 0], "moss-stone");
+          this.box("gate-base", r, [.9, .3, .9], [s * px, -.2, 0], "stone-dark");
+        }
+        this.box("gate-lintel", r, [span + .4, .55, .62], [0, 1.32, 0], "moss-stone");
+        for (let x = -3; x <= 3.01; x += 1.5) this.box("gate-carving", r, [.5, .3, .04], [x, 1.32, -.32], "stone-dark");
+        this.box("gate-moss", r, [span * .7, .08, .5], [-.4, 1.63, 0], "moss");
+        for (const x of [-2.6, -1.1, .3, 1.9, 3.1]) hangingLeaves(x, 1.05, 3);
+        return;
+      }
+      case 2: { // Mine: a timber gate with braces, hazard stripes and a hanging lantern.
+        for (const s of [-1, 1]) {
+          this.box("gate-post", r, [.42, 2.7, .42], [s * px, 1, 0], "wood");
+          const brace = this.cylinder("gate-brace", r, { diameter: .16, height: 1.2, tessellation: 6 }, [s * (px - .45), 1.95, 0], "wood");
+          brace.rotation.z = s * .7;
+        }
+        this.box("gate-beam", r, [span, .5, .42], [0, 1.3, 0], "wood");
+        for (let i = 0; i < 12; i++) { const stripe = this.box("gate-stripe", r, [.34, .44, .02], [-3.3 + i * .6, 1.3, -.22], i % 2 ? "pit" : "warning"); stripe.rotation.z = .5; }
+        this.cylinder("gate-chain", r, { diameter: .03, height: .14, tessellation: 4 }, [0, 1, 0], "metal");
+        this.cylinder("gate-lantern", r, { diameterTop: .24, diameterBottom: .18, height: .26, tessellation: 6 }, [0, .82, 0], "lamp");
+        this.cylinder("gate-lantern-roof", r, { diameterTop: .03, diameterBottom: .3, height: .1, tessellation: 6 }, [0, .98, 0], "lamp-iron");
+        return;
+      }
+      case 3: { // Bamboo grove: thick canes lashed into a frame, with charms and bells.
+        for (const s of [-1, 1]) {
+          this.cylinder("gate-cane", r, { diameter: .24, height: 2.8, tessellation: 10 }, [s * px, 1.05, 0], "bamboo");
+          for (const y of [.4, 1, 1.6, 2.2]) this.cylinder("gate-node", r, { diameter: .27, height: .05, tessellation: 10 }, [s * px, y, 0], "bamboo-node");
+        }
+        for (const y of [1.45, 1.2]) { const pole = this.cylinder("gate-pole", r, { diameter: .17, height: span + .4, tessellation: 10 }, [0, y, 0], "bamboo"); pole.rotation.z = Math.PI / 2; }
+        for (const s of [-1, 1]) { const tie = MeshBuilder.CreateTorus("gate-tie", { diameter: .42, thickness: .05, tessellation: 12 }, this.scene); tie.parent = r; tie.position.set(s * px, 1.32, 0); tie.rotation.z = Math.PI / 2; tie.material = this.mats.zipline; }
+        for (const x of [-2.7, -.9, .9, 2.7]) {
+          const charm = MeshBuilder.CreatePlane("gate-charm", { width: .2, height: .4 }, this.scene);
+          charm.parent = r; charm.position.set(x, .9, -.1); charm.material = this.mats["fork-flag"];
+        }
+        for (const x of [-1.8, 0, 1.8]) { const bell = MeshBuilder.CreateSphere("gate-bell", { diameter: .16, segments: 8, slice: .6 }, this.scene); bell.parent = r; bell.position.set(x, .98, 0); bell.material = this.mats.gold; }
+        return;
+      }
+      case 4: { // Canyon: a ranch gate of bleached timber, with a skull on top.
+        for (const s of [-1, 1]) {
+          this.box("gate-post", r, [.34, 2.8, .34], [s * px, 1.05, 0], "bleached");
+          for (let k = 0; k < 3; k++) this.roughRock("gate-rock", r, .22 + k * .05, 70 + k + s, "sandstone", [s * (px + .3 - k * .25), .02, (k - 1) * .3]);
+        }
+        this.box("gate-beam", r, [span, .3, .2], [0, 1.45, 0], "bleached");
+        this.box("gate-beam", r, [span, .22, .18], [0, 1.16, .02], "bleached");
+        const brace = this.box("gate-brace", r, [span * .55, .14, .1], [-1.3, 1.3, -.08], "bleached"); brace.rotation.z = .06;
+        this.skull(r, 0, 1.72, -.02);
+        return;
+      }
+      case 5: { // Snowfield: a striped pole on snow-capped posts, fringed with icicles.
+        for (const s of [-1, 1]) {
+          this.box("gate-post", r, [.36, 2.7, .36], [s * px, 1, 0], "pine-trunk");
+          this.box("gate-post-snow", r, [.46, .16, .46], [s * px, 2.42, 0], "snow");
+          const drift = MeshBuilder.CreateSphere("gate-drift", { diameter: 1.3, segments: 8 }, this.scene);
+          drift.parent = r; drift.position.set(s * px, -.05, 0); drift.scaling.set(1, .4, 1); drift.material = this.mats.snow;
+        }
+        for (let i = 0; i < 10; i++) this.box("gate-band", r, [span / 10 + .005, .46, .4], [-span / 2 + span / 20 + i * span / 10, 1.3, 0], i % 2 ? "snow" : "scarf");
+        this.box("gate-snowcap", r, [span - .1, .12, .46], [0, 1.58, 0], "snow");
+        for (let i = 0; i < 16; i++) {
+          const length = .16 + random() * .26;
+          this.cylinder("icicle", r, { diameterTop: .07, diameterBottom: 0, height: length, tessellation: 5 }, [-span / 2 + .3 + i * (span - .6) / 15, 1.07 - length / 2, (random() - .5) * .2], "ice");
+        }
+        return;
+      }
+      default: { // Canal: stone posts, an iron-bound beam with a hazard plate, and hanging chains.
+        for (const s of [-1, 1]) {
+          this.box("gate-post", r, [.6, 2.6, .6], [s * px, 1.1, 0], "stone-dark");
+          this.box("gate-cap", r, [.76, .18, .76], [s * px, 2.46, 0], "stone");
+        }
+        this.box("gate-beam", r, [span, .5, .45], [0, 1.3, 0], "wood");
+        for (let x = -3; x <= 3.01; x += 1.5) this.box("gate-band", r, [.07, .54, .49], [x, 1.3, 0], "lamp-iron");
+        this.box("gate-plate", r, [1.3, .3, .03], [0, 1.3, -.24], "warning");
+        for (let i = 0; i < 4; i++) { const stripe = this.box("gate-plate-stripe", r, [.1, .3, .035], [-.45 + i * .3, 1.3, -.24], "pit"); stripe.rotation.z = .55; }
+        for (const x of [-3, -1.5, 1.5, 3]) for (let k = 0; k < 3; k++) {
+          const link = MeshBuilder.CreateTorus("gate-chain", { diameter: .13, thickness: .03, tessellation: 10 }, this.scene);
+          link.parent = r; link.position.set(x, .97 - k * .1, 0); link.rotation.set(Math.PI / 2, k % 2 ? Math.PI / 2 : 0, 0); link.material = this.mats.metal;
+        }
+      }
+    }
+  }
+
+  /** Single-lane boulder, about 2 m high. */
+  private boulder(r: TransformNode, scene: number) {
+    const random = seeded(451 + scene), centre = new Vector3(0, 1.03, 0);
+    const onSurface = (up: number, around: number, out = 1) => new Vector3(Math.cos(around) * Math.sin(up), Math.cos(up), Math.sin(around) * Math.sin(up)).scale(out);
+    const pebbles = (material: string, count: number) => {
+      for (let k = 0; k < count; k++) this.roughRock("boulder-pebble", r, .1 + random() * .14, 500 + k, material, [(random() - .5) * 2.4, .04, (random() - .5) * 2.2]);
+    };
+    const moss = (y: number, size: number) => {
+      const cap = MeshBuilder.CreateSphere("boulder-moss", { diameter: size, segments: 10 }, this.scene);
+      cap.parent = r; cap.position.set((random() - .5) * .3, y, (random() - .5) * .3); cap.scaling.y = .22; cap.material = this.mats.moss;
+    };
+    switch (scene) {
+      case 1: { // Temple: a carved stone ball with banded grooves and moss on top.
+        const ball = MeshBuilder.CreateSphere("stone-ball", { diameter: 2.05, segments: 20 }, this.scene);
+        ball.parent = r; ball.position.copyFrom(centre); ball.material = this.mats["moss-stone"];
+        for (const [tilt, roll] of [[.2, 0], [.2 + Math.PI / 2, .35]] as const) {
+          const band = MeshBuilder.CreateTorus("stone-ball-band", { diameter: 2.05, thickness: .09, tessellation: 36 }, this.scene);
+          band.parent = r; band.position.copyFrom(centre); band.rotation.set(tilt, 0, roll); band.material = this.mats["stone-dark"];
+        }
+        moss(2, 1.1);
+        pebbles("moss-stone", 3);
+        return;
+      }
+      case 2: { // Mine: a rock split open on a seam of glowing crystals.
+        this.roughRock("boulder", r, 1.03, 812, "obstacle-rock", [0, 1.03, 0]);
+        for (let k = 0; k < 7; k++) this.spike("boulder-crystal", r, centre.add(onSurface(.3 + random() * 1.2, random() * 6.3, .8)), onSurface(.3 + random() * .9, random() * 6.3), .65 + random() * .45, .26 + random() * .12, "crystal");
+        for (let k = 0; k < 5; k++) {
+          const fleck = MeshBuilder.CreatePolyhedron("boulder-ore", { type: 1, size: .07 + random() * .05 }, this.scene);
+          fleck.parent = r; fleck.position.copyFrom(centre.add(onSurface(.6 + random() * 1.2, random() * 6.3, 1.02))); fleck.material = this.mats.gold;
+        }
+        pebbles("obstacle-rock", 4);
+        return;
+      }
+      case 3: { // Bamboo grove: a mossy boulder with ferns growing from the top.
+        this.roughRock("boulder", r, 1.03, 813, "moss-stone", [0, 1.03, 0]);
+        moss(1.92, 1.3);
+        for (let c = 0; c < 2; c++) {
+          const fern = MeshBuilder.CreatePlane("boulder-fern", { size: 1.1 }, this.scene);
+          fern.parent = r; fern.position.set(.15, 2.25, 0); fern.rotation.y = c * Math.PI / 2 + .4; fern.material = this.mats["fern-leaves"];
+        }
+        this.addMushroom(r, -.75, .05, -.7, .8, true, random);
+        this.addMushroom(r, -.55, .03, -.85, .55, false, random);
+        return;
+      }
+      case 4: { // Canyon: banded red sandstone with a smaller stone balanced on it.
+        this.roughRock("boulder", r, 1.03, 814, "sandstone", [0, 1.03, 0]);
+        for (const [y, size] of [[.75, 2.02], [1.35, 1.9]] as const) {
+          const band = MeshBuilder.CreateTorus("boulder-band", { diameter: size, thickness: .1, tessellation: 28 }, this.scene);
+          band.parent = r; band.position.y = y; band.scaling.set(1, .6, 1); band.material = this.mats["sandstone-light"];
+        }
+        this.roughRock("boulder-cap", r, .42, 815, "sandstone-light", [.1, 2.1, .05]);
+        pebbles("sandstone", 5);
+        return;
+      }
+      case 5: { // Snowfield: a giant snowball, studded with twigs and pebbles, with the track it rolled down.
+        this.roughRock("snowball", r, 1.05, 816, "snow", [0, 1.05, 0], .35, true);
+        for (let k = 0; k < 5; k++) this.spike("snowball-twig", r, centre.add(onSurface(.4 + random() * 1.6, random() * 6.3, .9)), onSurface(.4 + random() * 1.5, random() * 6.3), .4 + random() * .3, .05, "pine-trunk", 4);
+        for (let k = 0; k < 7; k++) {
+          const stone = MeshBuilder.CreateSphere("snowball-stone", { diameter: .1 + random() * .08, segments: 5 }, this.scene);
+          stone.parent = r; stone.position.copyFrom(centre.add(onSurface(.3 + random() * 1.9, random() * 6.3, 1.03))); stone.material = this.mats.coal;
+        }
+        const track = MeshBuilder.CreateSphere("snowball-track", { diameter: 1, segments: 10 }, this.scene);
+        track.parent = r; track.position.set(0, .02, 2.4); track.scaling.set(1.5, .18, 3.2); track.material = this.mats.snow;
+        for (let k = 0; k < 5; k++) {
+          const clump = MeshBuilder.CreateSphere("snowball-clump", { diameter: .3 + random() * .25, segments: 6 }, this.scene);
+          clump.parent = r; clump.position.set((random() - .5) * 2.4, .05, (random() - .5) * 2); clump.scaling.y = .6; clump.material = this.mats.snow;
+        }
+        return;
+      }
+      default: { // Canal: a wet, mossy boulder.
+        this.roughRock("boulder", r, 1.03, 811, "obstacle-rock", [0, 1.03, 0]);
+        moss(1.95, .9); moss(1.7, .7);
+        pebbles("obstacle-rock", 5);
+      }
+    }
+  }
+
+  /** Two-lane debris to jump over. */
+  private debris(r: TransformNode, scene: number) {
+    const width = 4.5, random = seeded(461 + scene);
+    const along = (i: number, n: number) => (i / (n - 1) - .5) * (width - .45);
+    switch (scene) {
+      case 1: { // Temple: fallen carved blocks, a column drum and roots.
+        for (let i = 0; i < 7; i++) {
+          const size = .28 + random() * .26;
+          const block = this.box("rubble-block", r, [size * 1.3, size, size], [along(i, 7), size * .42, (random() - .5) * .8], i % 3 ? "moss-stone" : "stone-dark");
+          block.rotation.set(random() * .5, random() * 3, random() * .4);
+        }
+        for (const x of [-1.1, 1.3]) { const drum = this.cylinder("column-drum", r, { diameter: .55, height: .4, tessellation: 12 }, [x, .27, .45], "moss-stone"); drum.rotation.set(Math.PI / 2, .4, 0); }
+        for (let i = 0; i < 3; i++) { const root = this.cylinder("rubble-root", r, { diameterTop: .03, diameterBottom: .09, height: 1.2, tessellation: 6 }, [along(i, 3) * .8, .1, -.4], "log-bark"); root.rotation.set(.1, i * .9, Math.PI / 2 - .1); }
+        return;
+      }
+      case 2: { // Mine: ore rubble, crystal shards and broken sleepers.
+        for (let i = 0; i < 9; i++) this.roughRock("ore-rubble", r, .22 + random() * .18, 900 + i, "obstacle-rock", [along(i, 9), .2, (random() - .5) * .9]);
+        for (let i = 0; i < 4; i++) this.spike("rubble-crystal", r, new Vector3(along(i, 4) + .3, .05, (random() - .5) * .6), new Vector3((random() - .5) * .8, 1, (random() - .5) * .8), .45 + random() * .25, .16, "crystal");
+        for (const x of [-1.2, .9]) { const sleeper = this.box("broken-sleeper", r, [1.3, .12, .26], [x, .14, -.35], "wood"); sleeper.rotation.set(0, .4, .2); }
+        const rail = this.box("broken-rail", r, [1.6, .1, .1], [.2, .2, .4], "rail"); rail.rotation.set(0, -.3, .25);
+        return;
+      }
+      case 3: { // Bamboo grove: a row of sharpened stakes leaning at the runner.
+        for (let i = 0; i < 9; i++) {
+          const stake = this.cylinder("bamboo-stake", r, { diameterTop: 0, diameterBottom: .11, height: .8 + random() * .15, tessellation: 7 }, [along(i, 9), .38, .08], "bamboo");
+          stake.rotation.set(-.42 + (random() - .5) * .1, 0, (random() - .5) * .15);
+        }
+        const rail = this.cylinder("stake-rail", r, { diameter: .09, height: width, tessellation: 8 }, [0, .22, .2], "bamboo"); rail.rotation.z = Math.PI / 2;
+        for (let i = 0; i < 9; i += 2) { const tie = MeshBuilder.CreateTorus("stake-tie", { diameter: .16, thickness: .03, tessellation: 8 }, this.scene); tie.parent = r; tie.position.set(along(i, 9), .22, .2); tie.rotation.z = Math.PI / 2; tie.material = this.mats.zipline; }
+        return;
+      }
+      case 4: { // Canyon: a clump of cacti among rocks.
+        for (let i = 0; i < 4; i++) {
+          const x = along(i, 4) + (random() - .5) * .3, z = (random() - .5) * .7, h = .5 + random() * .3;
+          this.cylinder("small-cactus", r, { diameter: .26, height: h, tessellation: 10 }, [x, h / 2, z], "cactus");
+          const top = MeshBuilder.CreateSphere("small-cactus-top", { diameter: .26, segments: 6 }, this.scene); top.parent = r; top.position.set(x, h, z); top.material = this.mats.cactus;
+          const arm = this.cylinder("small-cactus-arm", r, { diameter: .14, height: .24, tessellation: 8 }, [x + .15, h * .6, z], "cactus"); arm.rotation.z = -.9;
+          const bloom = MeshBuilder.CreateSphere("small-cactus-flower", { diameter: .08, segments: 5 }, this.scene); bloom.parent = r; bloom.position.set(x, h + .12, z); bloom.material = this.mats["cactus-flower"];
+        }
+        for (let i = 0; i < 3; i++) { const barrel = MeshBuilder.CreateSphere("barrel-cactus", { diameter: .36, segments: 8 }, this.scene); barrel.parent = r; barrel.position.set(along(i, 3) * .7, .13, .4); barrel.scaling.y = .75; barrel.material = this.mats.cactus; }
+        for (let i = 0; i < 4; i++) this.roughRock("canyon-rubble", r, .16 + random() * .14, 920 + i, "sandstone", [along(i, 4) - .2, .1, -.45]);
+        return;
+      }
+      case 5: { // Snowfield: a crop of ice spikes in drifted snow.
+        for (let i = 0; i < 10; i++) {
+          this.spike("ice-spike", r, new Vector3(along(i, 10), 0, (random() - .5) * .8), new Vector3((random() - .5) * .5, 1, (random() - .5) * .5), .45 + random() * .35, .22 + random() * .14, "ice");
+        }
+        for (let i = 0; i < 4; i++) { const drift = MeshBuilder.CreateSphere("ice-drift", { diameter: .9, segments: 8 }, this.scene); drift.parent = r; drift.position.set(along(i, 4), 0, (random() - .5) * .6); drift.scaling.set(1, .3, .8); drift.material = this.mats.snow; }
+        return;
+      }
+      default: { // Canal: loose rocks and fallen twigs.
+        for (let i = 0; i < 11; i++) {
+          const size = .2 + (i % 4) * .07;
+          this.roughRock("loose-rock", r, size, 940 + i, "obstacle-rock", [along(i, 11), size * .5, Math.sin(i * 2.3) * .48]);
+        }
+        for (let i = 0; i < 6; i++) {
+          const branch = this.cylinder("fallen-twig", r, { diameterTop: .035, diameterBottom: .12, height: .95 + (i % 3) * .18, tessellation: 6 }, [(i / 5 - .5) * (width - .6), .18, i % 2 ? -.38 : .4], "log-bark");
+          branch.rotation.z = Math.PI / 2 + (i % 2 ? -.34 : .25); branch.rotation.y = i * .71;
+        }
+      }
+    }
+  }
+
+  /** Two-lane fire: tongues of flame over burning logs and embers, inside whatever ring the place offers. */
+  private campfire(r: TransformNode, scene: number, flameMaterial: StandardMaterial) {
+    const random = seeded(471 + scene);
+    for (const [i, [x, z, height, width]] of FLAMES.entries()) {
+      const flame = flameMesh(this.scene, i % 2 === 0);
+      flame.parent = r; flame.position.set(x, -.015, z); flame.scaling.set(width, height, .94); flame.rotation.y = i * .64;
+      flame.material = flameMaterial;
+    }
+    for (const [x, turn] of [[-1.35, .5], [-.45, -.4], [.45, .35], [1.35, -.5]] as const) {
+      const log = this.cylinder("fire-log", r, { diameter: .24, height: 1.25, tessellation: 8 }, [x, .12, (random() - .5) * .3], scene === 3 ? "bamboo" : "charcoal");
+      log.rotation.set(0, turn, Math.PI / 2);
+    }
+    for (let k = 0; k < 18; k++) {
+      const ember = MeshBuilder.CreateIcoSphere("fire-ember", { radius: .045 + random() * .05, subdivisions: 1 }, this.scene);
+      ember.parent = r; ember.position.set((random() - .5) * 4.1, .03, (random() - .5) * 1.1); ember.material = this.mats.ember;
+    }
+    // A ring round the fire, made of what the place has.
+    const ring = ["stone-dark", "moss-stone", "coal", "stone-dark", "sandstone", "rock"][scene];
+    for (let k = 0; k < 16; k++) {
+      const angle = k / 16 * Math.PI * 2;
+      this.roughRock("fire-stone", r, .16 + random() * .08, 960 + k, ring, [Math.cos(angle) * 2.45, .08, Math.sin(angle) * .9]);
+    }
+    if (scene === 1) {
+      // A toppled bronze brazier.
+      const bowl = this.cylinder("fire-brazier", r, { diameterTop: 1, diameterBottom: .5, height: .4, tessellation: 14 }, [2.05, .35, .7], "metal");
+      bowl.rotation.z = -1.15;
+    } else if (scene === 2) {
+      for (let k = 0; k < 14; k++) this.roughRock("fire-coal", r, .1 + random() * .08, 980 + k, "coal", [(random() - .5) * 3.8, .06, (random() - .5) * 1.2]);
+      const plank = this.box("fire-crate", r, [.9, .08, .26], [-2, .2, .65], "wood"); plank.rotation.set(.3, .5, .4);
+    } else if (scene === 3) {
+      for (let k = 0; k < 5; k++) { const cane = this.cylinder("fire-cane", r, { diameter: .1, height: .6, tessellation: 8 }, [(random() - .5) * 3.6, .06, (random() - .5) * 1], "charcoal"); cane.rotation.set(0, random() * 3, Math.PI / 2); }
+    } else if (scene === 4) {
+      for (let k = 0; k < 6; k++) { const twig = this.cylinder("fire-brush", r, { diameterTop: .02, diameterBottom: .06, height: .7, tessellation: 5 }, [(k < 3 ? -1 : 1) * (2.1 + random() * .3), .2, (random() - .5) * .8], "bleached"); twig.rotation.set(random() - .5, random() * 3, .8); }
+    } else if (scene === 5) {
+      // The fire has melted a dark patch in the snow, with drifts round it.
+      const melt = MeshBuilder.CreateDisc("fire-melt", { radius: 1, tessellation: 24 }, this.scene);
+      melt.parent = r; melt.position.y = .015; melt.rotation.x = Math.PI / 2; melt.scaling.set(2.6, 1.1, 1); melt.material = this.mats.charcoal;
+      for (let k = 0; k < 8; k++) {
+        const angle = k / 8 * Math.PI * 2, drift = MeshBuilder.CreateSphere("fire-drift", { diameter: .8, segments: 8 }, this.scene);
+        drift.parent = r; drift.position.set(Math.cos(angle) * 2.9, 0, Math.sin(angle) * 1.15); drift.scaling.set(1, .35, .8); drift.material = this.mats.snow;
+      }
+    }
+  }
+
+  /** Two-lane trapdoor over a shaft. Planks are named "trap-plank" and swing open; their trim rides on them. */
+  private trapdoor(r: TransformNode, scene: number) {
+    const halfDepth = obstacleHalfDepth("trap", 0), width = 2 * LANE_WIDTH, random = seeded(481 + scene);
+    const plankMaterial = ["wood", "wood", "wood", "bamboo", "bleached", "ice"][scene];
+    for (let i = 0; i < 8; i++) {
+      const plank = this.box("trap-plank", r, [.57, .13, halfDepth * 2], [(i - 3.5) * .6, .02, 0], plankMaterial);
+      if (scene === 3) for (const dx of [-.19, 0, .19]) this.box("trap-slat", plank, [.025, .02, halfDepth * 2], [dx, .075, 0], "bamboo-node");
+      else if (scene === 5) {
+        for (let k = 0; k < 2; k++) this.box("trap-frost", plank, [.3 + random() * .2, .02, .5 + random() * .6], [(random() - .5) * .2, .075, (random() - .5) * 2.6], "snow");
+        const crack = this.box("trap-crack", plank, [.02, .015, 1.1], [(random() - .5) * .3, .072, (random() - .5) * 1.5], "pit"); crack.rotation.y = (random() - .5) * 1.2;
+      } else {
+        for (const z of [-1.15, 1.15]) this.box("trap-strap", plank, [.59, .025, .09], [0, .075, z], scene === 2 ? "rail" : "lamp-iron");
+        if (scene === 1 && i % 3 === 0) this.box("trap-moss", plank, [.34, .02, .7], [(random() - .5) * .1, .075, (random() - .5) * 1.8], "moss");
+        if (scene === 4 && i % 2 === 0) this.box("trap-sand", plank, [.4, .02, .9], [0, .074, (random() - .5) * 1.6], "sandstone-light");
+      }
+      if (i === 3 && scene !== 5) {
+        const ring = MeshBuilder.CreateTorus("trap-handle", { diameter: .2, thickness: .035, tessellation: 12 }, this.scene);
+        ring.parent = plank; ring.position.set(.12, .08, 0); ring.material = this.mats.metal;
+      }
+    }
+    for (const side of [-1, 1]) {
+      this.box("trap-shaft-wall", r, [.25, 6.4, halfDepth * 2], [side * (width / 2 + .13), -3.2, 0], "rock");
+      this.box("trap-shaft-end", r, [width, 6.4, .24], [0, -3.2, side * (halfDepth + .12)], "stone-dark");
+      this.box("trap-rim", r, [width, .13, .15], [0, .04, side * (halfDepth + .085)], "warning");
+      this.box("trap-frame", r, [.14, .14, halfDepth * 2 + .3], [side * (width / 2 + .07), .03, 0], scene === 5 ? "snow" : "wood");
+      const hinge = this.cylinder("trap-hinge", r, { diameter: .08, height: halfDepth * 2 - .3, tessellation: 8 }, [side * (width / 2 - .03), .07, 0], "lamp-iron");
+      hinge.rotation.x = Math.PI / 2;
+    }
+    this.pitSurface(r, width + .05, halfDepth * 2 + .04, "trap");
+  }
+
+  /** A crack across the road (one lane, or all three). Parts on each bank keep that bank's side of z, so long pits can stretch them apart. */
+  private fissure(r: TransformNode, scene: number, name: string, width: number) {
+    const wall = ["rock", "moss-stone", "rock", "rock", "sandstone", "rock"][scene], random = seeded(491 + scene * 3 + Math.round(width));
+    for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, FISSURE_HALF * 2], [side * (width / 2 + .13), -3.2, 0], wall);
+    this.pitSurface(r, width + .05, FISSURE_HALF * 2 + .04, name === "long-gap-wide" ? "long-gap" : "gap");
+    for (const side of [-1, 1]) {
+      const bank = side * (FISSURE_HALF + .12);
+      this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, bank], scene === 4 ? "sandstone" : "stone-dark");
+      this.box("lip", r, [width, .2, .25], [0, -.09, bank], "stone-dark");
+      this.box("edge", r, [width - .16, .04, .14], [0, .02, side * (FISSURE_HALF + .14)], "warning");
+      if (name === "long-gap-wide") for (const x of [-1, 1]) {
+        const edge = this.box("long-gap-marker", r, [.34, .58, .26], [x * (width / 2 - .22), .32, side * (FISSURE_HALF + .33)], "warning");
+        edge.rotation.z = x * .1;
+      }
+      // Broken edge: chunks hanging just under the lip.
+      const inside = side * (FISSURE_HALF - .08);
+      for (let k = 0, n = Math.round(width * 1.3); k < n; k++) {
+        this.roughRock("fissure-chunk", r, .12 + random() * .12, 1000 + k * 2 + side, wall, [(k / Math.max(1, n - 1) - .5) * (width - .3), -.3 - random() * .5, inside - side * random() * .15]);
+      }
+      if (scene === 1 || scene === 3) for (let k = 0; k < 3; k++) {
+        // Roots dangle from the lip into the dark.
+        const length = .8 + random() * .7;
+        const root = this.cylinder("fissure-root", r, { diameterTop: .07, diameterBottom: .02, height: length, tessellation: 5 }, [(random() - .5) * (width - .4), -.15 - length / 2, inside], "log-bark");
+        root.rotation.set(side * .15, 0, (random() - .5) * .3);
+      } else if (scene === 2) {
+        const sleeper = this.box("fissure-sleeper", r, [Math.min(1.6, width - .2), .1, .24], [(random() - .5) * .3, -.4, inside - side * .3], "wood");
+        sleeper.rotation.x = side * .9;
+      } else if (scene === 5) {
+        this.box("fissure-snow", r, [width + .1, .12, .3], [0, .05, side * (FISSURE_HALF + .2)], "snow");
+        for (let k = 0, n = Math.round(width * 2); k < n; k++) {
+          const length = .2 + random() * .35;
+          this.cylinder("fissure-icicle", r, { diameterTop: .08, diameterBottom: 0, height: length, tessellation: 5 }, [(k / Math.max(1, n - 1) - .5) * (width - .2), -.2 - length / 2, inside], "ice");
+        }
+      } else if (scene === 4) {
+        for (let k = 0; k < 3; k++) {
+          const plate = this.box("fissure-plate", r, [.6 + random() * .4, .08, .4], [(random() - .5) * (width - .6), -.12, inside + side * .05], "sandstone-light");
+          plate.rotation.set(side * (.3 + random() * .3), random() * .5, 0);
+        }
+      }
+    }
+  }
+
+  /** Log piles for the scenes without mushrooms or creepers. */
+  private logPile(r: TransformNode, scene: number, wide: boolean) {
+    const random = seeded(501 + scene + (wide ? 50 : 0)), length = wide ? ROAD_HALF * 2 + .6 : 4.6;
+    switch (scene) {
+      case 2: { // Mine: stacked square timbers bound with iron, ore spilling out.
+        for (const [y, z, scale] of [[.2, -.2, 1], [.2, .2, .96], [.56, 0, .9]] as const) {
+          const timber = this.box("pile-timber", r, [length * scale, .36, .36], [(random() - .5) * .2, y, z], "wood");
+          timber.rotation.y = (random() - .5) * .06;
+        }
+        for (const x of [-.3, .3]) this.box("pile-band", r, [.06, .8, .8], [x * length, .38, 0], "metal");
+        for (let k = 0; k < 5; k++) this.roughRock("pile-ore", r, .1 + random() * .08, 1100 + k, k % 2 ? "gold" : "obstacle-rock", [(random() - .5) * length * .8, .08, -.45 - random() * .2]);
+        return;
+      }
+      case 3: { // Bamboo grove: a bundle of cut canes, tied with rope, leaves still on one end.
+        for (const [row, count] of [[0, 4], [1, 3], [2, 2]] as const) for (let i = 0; i < count; i++) {
+          const cane = this.cylinder("pile-cane", r, { diameter: .2, height: length * (.94 + random() * .1), tessellation: 10 }, [(random() - .5) * .2, .1 + row * .17, (i - (count - 1) / 2) * .21], "bamboo");
+          cane.rotation.z = Math.PI / 2;
+        }
+        for (const x of [-.3, .3]) { const tie = MeshBuilder.CreateTorus("pile-tie", { diameter: .95, thickness: .05, tessellation: 18 }, this.scene); tie.parent = r; tie.position.set(x * length, .3, 0); tie.rotation.z = Math.PI / 2; tie.scaling.set(1, 1, .62); tie.material = this.mats.zipline; }
+        for (let c = 0; c < 2; c++) { const leaves = MeshBuilder.CreatePlane("pile-leaves", { size: 1.3 }, this.scene); leaves.parent = r; leaves.position.set(length / 2 + .2, .55, 0); leaves.rotation.y = c * Math.PI / 2 + .3; leaves.material = this.mats["bamboo-leaves"]; }
+        return;
+      }
+      case 4: { // Canyon: a sun-bleached dead trunk with bare branches.
+        const trunk = this.fallenLog("dead-trunk", r, length, wide ? .9 : .8, [0, wide ? .45 : .4, 0], "bleached");
+        trunk.rotation.z = Math.PI / 2 + .03;
+        for (let k = 0; k < 4; k++) {
+          const branch = this.cylinder("dead-branch", r, { diameterTop: .03, diameterBottom: .12, height: .7 + random() * .4, tessellation: 6 }, [(k / 3 - .5) * length * .8, .85, (random() - .5) * .3], "bleached");
+          branch.rotation.set((random() - .5) * .6, 0, (random() - .5) * 1.2);
+        }
+        for (let k = 0; k < 3; k++) this.roughRock("dead-trunk-rock", r, .2 + random() * .15, 1120 + k, "sandstone", [(random() - .5) * length, .1, (random() < .5 ? -1 : 1) * .55]);
+        return;
+      }
+      default: { // Snowfield: logs under a blanket of snow, icicles along the edge.
+        const logs = wide ? [[0, .5, 1.05], [-.55, .25, .5]] as const : [[0, .42, .86]] as const;
+        for (const [z, y, thick] of logs) {
+          const log = this.fallenLog("snowy-log", r, length, thick, [0, y, z]);
+          log.rotation.z = Math.PI / 2 + .02;
+          const blanket = MeshBuilder.CreateSphere("snow-blanket", { diameter: 1, segments: 12 }, this.scene);
+          blanket.parent = r; blanket.position.set(0, y + thick * .42, z); blanket.scaling.set(length * .98, thick * .32, thick * .82); blanket.material = this.mats.snow;
+          for (let k = 0; k < 8; k++) {
+            const icicle = .12 + random() * .2;
+            this.cylinder("log-icicle", r, { diameterTop: .05, diameterBottom: 0, height: icicle, tessellation: 5 }, [(k / 7 - .5) * length * .85, y - icicle / 2 + .05, z - thick * .45], "ice");
+          }
+        }
+      }
+    }
   }
 
   private pitSurface(parent: TransformNode, width: number, length: number, kind: RunItem["kind"]) {
@@ -957,6 +1504,21 @@ export class RunnerRenderer3D {
       }
     }, true);
     make("cactus-patch", r => this.cactusPatch(r, seeded(97)), true);
+    // Raised stretches stand on a mesa, a snowy ridge or a bank of earth, wide enough to hold the
+    // scenery beside the road, instead of floating over the plain. At ground level they sit just
+    // below it and do not show.
+    make("canyon-mesa", r => {
+      this.box("mesa-body", r, [42, 30, D], [0, -15.45, 0], "mesa-rock");
+      this.box("mesa-band", r, [42.2, .9, D], [0, -1.4, 0], "sandstone-light");
+      this.box("mesa-band", r, [42.1, .6, D], [0, -4.8, 0], "sandstone-light");
+    }, true);
+    make("snow-ridge", r => {
+      this.box("ridge-body", r, [34, 30, D], [0, -15.45, 0], "cliff-rock");
+      this.box("ridge-snow", r, [34.4, 1.6, D], [0, -1.25, 0], "snow");
+    }, true);
+    make("bamboo-bank", r => {
+      this.box("bank-body", r, [24, 30, D], [0, -15.42, 0], "bank-earth");
+    }, true);
     make("snow-bank", r => {
       const random = seeded(103);
       for (const s of [-1, 1]) {
@@ -1098,18 +1660,17 @@ export class RunnerRenderer3D {
       water.parent = chasm; water.position.set(0, BRIDGE_WATER_Y, middle); water.material = this.mats["pit-water-long"]; water.isPickable = false;
     });
 
-    // Obstacles. "-double" covers two lanes and "-wide" spans the road.
-    // Two-lane log piles: some grow mushrooms, and in the temple ruins they are wound with creepers.
+    // Obstacles. "-double" covers two lanes and "-wide" spans the road. Every scene dresses the same
+    // hazards in its own materials: "@scene" templates (snowballs on the snowfield, sharpened stakes in
+    // the bamboo grove...); the canal's keep the plain names.
+    // Canal and temple log piles: some grow mushrooms, and in the temple ruins they are wound with creepers.
     for (const vine of [false, true]) for (const mushrooms of [false, true]) make(`block-double${vine ? "-vine" : ""}${mushrooms ? "-mushroom" : ""}`, r => {
       const random = seeded(vine ? 211 : 223);
       const trunk = this.fallenLog("joined-log", r, 4.72, .86, [0, .42, -.04]);
       trunk.rotation.set(0, -.08, Math.PI / 2 + .035);
       const limb = this.cylinder("broken-limb", r, { diameterTop: .12, diameterBottom: .35, height: 1.9, tessellation: 11 }, [.5, .55, .13], "log-bark");
       limb.rotation.set(.16, .54, Math.PI / 2 - .23);
-      for (const [x, z] of [[-1.8, -.43], [1.62, .33]] as const) {
-        const stone = MeshBuilder.CreatePolyhedron("nesting-rock", { type: 2, size: .42 }, this.scene);
-        stone.parent = r; stone.position.set(x, .13, z); stone.material = this.mats["obstacle-rock"];
-      }
+      for (const [x, z] of [[-1.8, -.43], [1.62, .33]] as const) this.roughRock("nesting-rock", r, .34, 1200 + x, "obstacle-rock", [x, .13, z]);
       if (vine) {
         const radius = (y: number) => .43 - (y / 4.72 + .5) * .095;
         this.addVine(trunk, 4.3, radius, 2.4, .4, random);
@@ -1141,76 +1702,7 @@ export class RunnerRenderer3D {
         const branch = this.cylinder("broken-branch", r, { diameterTop: .055, diameterBottom: .23, height: length, tessellation: 10 }, [x, .94, z], "log-bark");
         branch.rotation.set(.28, 0, tilt);
       }
-      for (const x of [-3.2, 3.1]) { const rock = MeshBuilder.CreatePolyhedron("log-end-rock", { type: 2, size: .45 }, this.scene); rock.parent = r; rock.position.set(x, .15, .55); rock.material = this.mats["obstacle-rock"]; }
-    }, true);
-    make("beam", r => {
-      const width = 2.1;
-      for (const s of [-1, 1]) this.box("post", r, [.16, 1.5, .16], [s * (width / 2 - .1), .75, 0], "metal");
-      this.box("bar", r, [width, .38, .3], [0, 1.25, 0], "warning");
-      for (let x = -width / 2 + .45; x < width / 2 - .2; x += .6) this.box("stripe", r, [.22, .4, .32], [x, 1.25, 0], "pit");
-    });
-    make("beam-wide", r => {
-      for (const s of [-1, 1]) this.box("gate-post", r, [.6, 2.6, .6], [s * (ROAD_HALF + .1), 1.1, 0], "stone-dark");
-      this.box("gate-bar", r, [W + 1.2, .55, .5], [0, 1.3, 0], "wood");
-      for (let x = -3; x <= 3; x += 1.5) this.box("hanging", r, [.08, .5, .08], [x, .85, 0], "metal");
-    });
-    for (const [name, width] of [["gap", L], ["gap-wide", W], ["long-gap-wide", W]] as const) make(name, r => {
-      for (const side of [-1, 1]) this.box("fissure-wall", r, [.25, 6.4, FISSURE_HALF * 2], [side * (width / 2 + .13), -3.2, 0], "rock");
-      this.pitSurface(r, width + .05, FISSURE_HALF * 2 + .04, name === "long-gap-wide" ? "long-gap" : "gap");
-      for (const side of [-1, 1]) {
-        const bank = side * (FISSURE_HALF + .12);
-        this.box("fissure-end", r, [width + .5, 6.4, .24], [0, -3.2, bank], "stone-dark");
-        this.box("lip", r, [width, .2, .25], [0, -.09, bank], "stone-dark");
-        this.box("edge", r, [width - .16, .04, .14], [0, .02, side * (FISSURE_HALF + .14)], "warning");
-        if (name === "long-gap-wide") for (const x of [-1, 1]) {
-          const edge = this.box("long-gap-marker", r, [.34, .58, .26], [x * (width / 2 - .22), .32, side * (FISSURE_HALF + .33)], "warning");
-          edge.rotation.z = x * .1;
-        }
-      }
-    });
-    make("trap-double", r => {
-      const halfDepth = obstacleHalfDepth("trap", 0);
-      const width = 2 * L;
-      for (let i = 0; i < 8; i++) this.box("trap-plank", r, [.57, .13, halfDepth * 2], [(i - 3.5) * .6, .02, 0], "wood");
-      for (const side of [-1, 1]) {
-        this.box("trap-shaft-wall", r, [.25, 6.4, halfDepth * 2], [side * (width / 2 + .13), -3.2, 0], "rock");
-        this.box("trap-shaft-end", r, [width, 6.4, .24], [0, -3.2, side * (halfDepth + .12)], "stone-dark");
-        this.box("trap-rim", r, [width, .13, .15], [0, .04, side * (halfDepth + .085)], "warning");
-      }
-      this.pitSurface(r, width + .05, halfDepth * 2 + .04, "trap");
-    });
-    make("spikes-double", r => {
-      const width = 4.5, count = 11;
-      for (let i = 0; i < count; i++) {
-        const x = (i / (count - 1) - .5) * (width - .25), z = Math.sin(i * 2.3) * .48;
-        const size = .27 + (i % 4) * .09;
-        const rock = MeshBuilder.CreatePolyhedron("loose-rock", { type: i % 2 ? 1 : 2, size }, this.scene);
-        rock.parent = r; rock.position.set(x, size * .36, z); rock.rotation.set(i * .11, i * 1.7, i * .23);
-        rock.material = this.mats["obstacle-rock"];
-      }
-      for (let i = 0; i < 6; i++) {
-        const x = (i / 5 - .5) * (width - .6), z = i % 2 ? -.38 : .4;
-        const branch = this.cylinder("fallen-twig", r, { diameterTop: .035, diameterBottom: .12, height: .95 + (i % 3) * .18, tessellation: 6 }, [x, .18, z], "log-bark");
-        branch.rotation.z = Math.PI / 2 + (i % 2 ? -.34 : .25); branch.rotation.y = i * .71;
-      }
-    });
-    make("boulder", r => {
-      const rock = MeshBuilder.CreatePolyhedron("boulder", { type: 2, size: 1 }, this.scene);
-      rock.parent = r; rock.position.y = 1.05; rock.scaling.set(1.05, 1.1, 1); rock.material = this.mats["obstacle-rock"];
-    });
-    make("cart-block-double", r => {
-      for (let i = 0; i < 6; i++) {
-        const stone = MeshBuilder.CreatePolyhedron("mine-rockfall", { type: i % 2 ? 2 : 1, size: .57 + i % 3 * .17 }, this.scene);
-        stone.parent = r; stone.position.set((i - 2.5) * .74, .44 + i % 3 * .14, Math.sin(i * 2) * .43);
-        stone.rotation.set(i, .4 + i * 1.3, .2); stone.material = this.mats["obstacle-rock"];
-      }
-      this.box("rockfall-crossbar", r, [4.35, .23, .27], [0, .9, -.72], "wood");
-      for (const x of [-1.92, 1.92]) this.box("rockfall-marker", r, [.23, .24, .15], [x, .93, -.895], "warning");
-    });
-    make("bridge-branch-wide", r => {
-      const branch = this.fallenLog("bridge-cross-branch", r, 1.93, .63, [0, .30, 0]);
-      branch.rotation.set(.10, -.14, 1.40);
-      this.addVine(branch, 1.7, y => .315 - (y / 1.93 + .5) * .07, 1.3, .8, seeded(233));
+      for (const x of [-3.2, 3.1]) this.roughRock("log-end-rock", r, .36, 1210 + x, "obstacle-rock", [x, .15, .55]);
     }, true);
     const flameMaterial = new StandardMaterial("runner-fire-volume", this.scene);
     flameMaterial.diffuseTexture = this.texture("/assets/runner/flame-v2.png");
@@ -1219,16 +1711,28 @@ export class RunnerRenderer3D {
     flameMaterial.emissiveColor = Color3.White(); flameMaterial.backFaceCulling = false;
     flameMaterial.transparencyMode = StandardMaterial.MATERIAL_ALPHATESTANDBLEND;
     flameMaterial.alphaCutOff = .08;
-    make("fire-double", r => {
-      for (const [i, [x, z, height, width]] of FLAMES.entries()) {
-        const flame = flameMesh(this.scene, i % 2 === 0);
-        flame.parent = r;
-        flame.position.set(x, -.015, z);
-        flame.scaling.set(width, height, .94);
-        flame.rotation.y = i * .64;
-        flame.material = flameMaterial;
-      }
-    });
+    for (const [scene, { id }] of RUN_SCENES.entries()) {
+      const at = scene === 0 ? "" : `@${id}`;
+      make(`beam${at}`, r => this.barrier(r, scene), true);
+      make(`beam-wide${at}`, r => this.gate(r, scene), true);
+      make(`boulder${at}`, r => this.boulder(r, scene), true);
+      make(`spikes-double${at}`, r => this.debris(r, scene), true);
+      // Flames flicker, trapdoor planks swing open and long pits stretch their banks apart, so these keep their parts.
+      make(`fire-double${at}`, r => this.campfire(r, scene, flameMaterial));
+      make(`trap-double${at}`, r => this.trapdoor(r, scene));
+      for (const [name, width] of [["gap", L], ["gap-wide", W], ["long-gap-wide", W]] as const) make(`${name}${at}`, r => this.fissure(r, scene, name, width));
+      if (scene >= 2) for (const wide of [false, true]) make(`block-${wide ? "wide" : "double"}${at}`, r => this.logPile(r, scene, wide), true);
+    }
+    make("cart-block-double", r => {
+      for (let i = 0; i < 6; i++) this.roughRock("mine-rockfall", r, .45 + i % 3 * .14, 1220 + i, "obstacle-rock", [(i - 2.5) * .74, .44 + i % 3 * .14, Math.sin(i * 2) * .43]);
+      this.box("rockfall-crossbar", r, [4.35, .23, .27], [0, .9, -.72], "wood");
+      for (const x of [-1.92, 1.92]) this.box("rockfall-marker", r, [.23, .24, .15], [x, .93, -.895], "warning");
+    }, true);
+    make("bridge-branch-wide", r => {
+      const branch = this.fallenLog("bridge-cross-branch", r, 1.93, .63, [0, .30, 0]);
+      branch.rotation.set(.10, -.14, 1.40);
+      this.addVine(branch, 1.7, y => .315 - (y / 1.93 + .5) * .07, 1.3, .8, seeded(233));
+    }, true);
     for (const tier of ["silver", "gold"] as const) make(`coin-${tier}`, r => {
       const coin = this.cylinder("coin", r, { diameter: .62, height: .1, tessellation: 18 }, [0, 0, 0], "gold");
       coin.rotation.x = Math.PI / 2; coin.material = this.coinMats[tier];
@@ -1516,7 +2020,7 @@ export class RunnerRenderer3D {
         ore.setEnabled(false);
         return ore;
       });
-      this.slots.push({ n: -1, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false, forkCut: false });
+      this.slots.push({ n: Number.NaN, root, themes, lanes, trees, ores, decor, theme: -1, holes: [undefined, undefined, undefined], pierCut: false, crossingGap: false, forkCut: false });
     }
   }
 
@@ -1636,7 +2140,7 @@ export class RunnerRenderer3D {
   private fallSurface(world: RunnerWorld, obstacle: RunItem) {
     const wrong = world.wrongTurn;
     switch (obstacle.feature) {
-      case "rope": return -7;
+      case "rope": return sceneAt(obstacle.z) === 0 ? -7 : GORGE_Y;
       case "bridge": return SEA_Y;
       case "fork":
         if (wrong?.wrong === "straight") return elevationAt(wrong.z) - SHAFT.water;
@@ -1797,7 +2301,9 @@ export class RunnerRenderer3D {
     for (const corner of this.corners.values()) corner.dispose();
     for (const crossing of this.crossings.values()) crossing.dispose();
     this.props.clear(); this.corners.clear(); this.crossings.clear();
-    for (const slot of this.slots) { slot.n = -1; slot.theme = -1; }
+    // NaN never equals a tile number: -1 is a real tile just behind the start, and a slot marked -1 would
+    // skip being placed and keep the last run's holes.
+    for (const slot of this.slots) { slot.n = Number.NaN; slot.theme = -1; slot.holes.fill(undefined); }
     this.routeVersion = -1;
     this.lastWorld = world;
     this.lastTime = 0;
@@ -1859,6 +2365,11 @@ export class RunnerRenderer3D {
     const bridge = this.bridgeNear(world);
     this.sea.setEnabled(!!bridge);
     if (bridge) this.cutSea(world, bridge);
+    for (let index = sectionIndexAt(world.distance - BEHIND); index <= sectionIndexAt(world.distance + 170); index++) {
+      const rope = featureOf(index);
+      if (!rope || !isDownhillRope(rope) || rope.end < world.distance - BEHIND - 10 || rope.start > world.distance + 170) continue;
+      this.cutGround(this.place((rope.start + rope.end) / 2), GORGE_HALF_WIDTH, (rope.end - rope.start) / 2 + 2);
+    }
     if (world.sceneIndex !== 0) {
       for (const turn of world.turns) {
         if (!turn.fork || turn.bridge || turn.z < world.distance - 30 || turn.z > world.distance + 170 || sceneAt(turn.z) === 0) continue;
@@ -1877,7 +2388,7 @@ export class RunnerRenderer3D {
       }
     }
     this.groundCuts.length = Math.min(this.groundCuts.length, MAX_GROUND_OPENINGS);
-    if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = -1; }
+    if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = Number.NaN; }
     for (let n = first; n < first + SLOTS; n++) {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
       const recycled = slot.n !== n;
@@ -1916,9 +2427,9 @@ export class RunnerRenderer3D {
       if (recycled || pierCut !== slot.pierCut || !!crossing !== slot.crossingGap || forkCut !== slot.forkCut) {
         slot.pierCut = pierCut; slot.crossingGap = !!crossing; slot.forkCut = forkCut;
         for (const d of slot.decor) {
-          const pier = d.node.name === "tpl-aqueduct-pier";
+          const support = SUPPORTS.has(d.node.name), pier = d.node.name === "tpl-aqueduct-pier";
           // A fork opens both sides of the bend, so walls, hedges and lamps there would block the other road.
-          d.node.setEnabled(!crossing && !(pierCut && pier) && !(forkCut && !pier) && ((n % d.every) + d.every) % d.every === d.offset);
+          d.node.setEnabled(!crossing && !(pierCut && support) && !(forkCut && !pier) && ((n % d.every) + d.every) % d.every === d.offset);
         }
       }
       for (let lane = 0; lane < 3; lane++) {
@@ -2129,6 +2640,27 @@ export class RunnerRenderer3D {
       anchor.rotation.y = point.heading;
       anchor.scaling.y = (ropeHeightAt(at, ride) - point.y) / 3.12;
     }
+    if (isDownhillRope(ride)) {
+      // Below a downhill zipline: a gorge with a river, cut into the ground between the two ledges.
+      const snow = sceneAt(ride.start) === 5, length = ride.end - ride.start + 4, middle = this.place((ride.start + ride.end) / 2);
+      const gorge = new TransformNode("zipline-gorge", this.scene); gorge.parent = root;
+      gorge.position.set(middle.x, 0, middle.z); gorge.rotation.y = middle.heading;
+      const wall = snow ? "rock" : "sandstone", depth = -.35 - GORGE_Y;
+      for (const s of [-1, 1]) {
+        this.box("gorge-side", gorge, [1, depth + .4, length], [s * (GORGE_HALF_WIDTH + .5), GORGE_Y + depth / 2 - .2, 0], wall);
+        this.box("gorge-end", gorge, [GORGE_HALF_WIDTH * 2 + 2, depth + .4, 1], [0, GORGE_Y + depth / 2 - .2, s * (length / 2 + .5)], wall);
+        if (snow) this.box("gorge-snow-rim", gorge, [1.3, .3, length], [s * (GORGE_HALF_WIDTH + .45), -.3, 0], "snow");
+      }
+      const river = MeshBuilder.CreateGround("gorge-river", { width: GORGE_HALF_WIDTH * 2, height: length }, this.scene);
+      river.parent = gorge; river.position.y = GORGE_Y; river.material = this.mats["pit-water-long"]; river.isPickable = false;
+      const random = seeded(Math.round(ride.start));
+      for (let k = 0; k < 16; k++) {
+        const rock = MeshBuilder.CreateIcoSphere("gorge-rock", { radius: .6 + random() * 1.4, subdivisions: 1, flat: true }, this.scene);
+        rock.parent = gorge; rock.material = this.mats[snow ? (k % 3 ? "rock" : "snow") : k % 2 ? "sandstone" : "sandstone-light"];
+        rock.position.set((random() < .5 ? -1 : 1) * (GORGE_HALF_WIDTH - random() * 4), GORGE_Y + .1, (random() - .5) * length * .9);
+        rock.scaling.y = .6; rock.rotation.set(random(), random() * 3, 0);
+      }
+    }
     return root;
   }
 
@@ -2246,10 +2778,13 @@ export class RunnerRenderer3D {
   /** Template for an item: logs in the temple ruins are wound with creepers, and about half the two-lane log piles grow mushrooms. */
   private propName(item: RunItem) {
     if (item.kind === "coin") return `coin-${item.tier ?? "silver"}`;
-    const vine = item.kind === "block" && sceneAt(item.z) === 1 ? "-vine" : "";
-    if (item.span === 3) return `${item.kind}-wide${vine}`;
-    if (item.span === 2) return `${item.kind}-double${vine}${item.kind === "block" && hash01(item.id, 5) < .5 ? "-mushroom" : ""}`;
-    return item.kind;
+    const scene = sceneAt(item.z), size = item.span === 3 ? "-wide" : item.span === 2 ? "-double" : "";
+    if (item.kind === "block" && scene <= 1) {
+      // Canal and temple logs: creepers in the temple, mushrooms on about half the two-lane piles.
+      return `block${size}${scene === 1 ? "-vine" : ""}${item.span === 2 && hash01(item.id, 5) < .5 ? "-mushroom" : ""}`;
+    }
+    const themed = `${item.kind}${size}@${RUN_SCENES[scene].id}`;
+    return this.templates.has(themed) ? themed : `${item.kind}${size}`;
   }
 
   private drawProps(world: RunnerWorld, t: number, dt: number) {
@@ -2287,7 +2822,7 @@ export class RunnerRenderer3D {
       else if (isRunPower(item.kind)) { prop.position.y += Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
-        for (const [index, mesh] of prop.getChildMeshes().entries()) {
+        for (const [index, mesh] of prop.getChildMeshes().filter(mesh => mesh.name === "flame-volume").entries()) {
           const beat = item.id * .29 + index * 2.3;
           const [, , height, width] = FLAMES[index];
           mesh.scaling.x = width * (1 + Math.sin(phase * 11 + beat) * .1);

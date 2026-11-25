@@ -4,7 +4,7 @@
  * Coordinates: `distance` runs along the (possibly turning) route, lanes are 0/1/2,
  * `altitude` is metres above the road.
  */
-import { BRIDGE_TURNS, RIDE_LEAD, featureOf, nextBridgeTurn, riderHeightAt, sceneAt, sectionFeature, sectionStart, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
+import { BRIDGE_TURNS, RIDE_LEAD, featureOf, isDownhillRope, nextBridgeTurn, riderHeightAt, sceneAt, sectionFeature, sectionStart, type CourseFeature, type FeatureKind, type RideSection } from "./course.ts";
 
 export { sceneAt } from "./course.ts";
 
@@ -413,7 +413,7 @@ export class RunnerWorld {
     const ride = sectionFeature(this.distance);
     if (!ride || ride.kind === "bridge" || previousDistance >= ride.start || this.distance < ride.start) return true;
     if (ride.kind === "rope" && this.altitude < .25 && !this.invincible) {
-      this.fallFromCourse("rope", ride.start, "没抓住绳索", "靠近桥沿时跳起来，抓住滑索越过水面。");
+      this.fallFromCourse("rope", ride.start, "没抓住绳索", isDownhillRope(ride) ? "跑到崖边时跳起来，抓住滑索滑下去。" : "靠近桥沿时跳起来，抓住滑索越过水面。");
       return false;
     }
     this.mountedRide = ride;
@@ -553,8 +553,9 @@ export class RunnerWorld {
       return;
     }
     if (ride.kind === "rope") {
+      const step = (ride.end - ride.start - 16) / 11;
       for (let i = 0; i < 12; i++) {
-        const z = ride.start + 8 + i * 3.4;
+        const z = ride.start + 8 + i * step;
         this.addCoin(z, [1, 0, 2, 1][Math.floor(i / 3)], { y: riderHeightAt(z, ride) + .82, feature: "rope" });
       }
       return;

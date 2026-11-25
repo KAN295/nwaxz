@@ -13,6 +13,12 @@ export const BRIDGE_LENGTH = 290;
 /** Corners along the log bridge, in metres from its start. */
 export const BRIDGE_TURNS = [80, 170, 255] as const;
 export const CART_LENGTH = 210;
+/** The canal zipline runs gently over the water; in the canyon and on the snowfield it drops from a high ledge across a gorge. */
+export const ROPE_LENGTH = 54;
+export const DOWNHILL_ROPE_LENGTH = 70;
+/** Water at the bottom of those gorges. */
+export const GORGE_Y = -6;
+export const GORGE_HALF_WIDTH = 16;
 export type RideKind = "rope" | "cart";
 export type FeatureKind = RideKind | "bridge";
 type Section<K extends FeatureKind> = { kind: K; start: number; end: number };
@@ -43,11 +49,14 @@ export const sceneAt = (distance: number) => sectionScene(sectionIndexAt(distanc
 /** The special stretch of a section, if its scene has one. Entry and exit use the same distances for the route, input and obstacles. */
 export function featureOf(index: number): CourseFeature | undefined {
   const scene = sectionScene(index), start = sectionStart(index);
-  if (scene === 0) return { kind: "rope", start: start + RIDE_START, end: start + RIDE_START + 54 };
+  if (scene === 0) return { kind: "rope", start: start + RIDE_START, end: start + RIDE_START + ROPE_LENGTH };
   if (scene === 1) return { kind: "bridge", start: start + BRIDGE_START, end: start + BRIDGE_START + BRIDGE_LENGTH };
   if (scene === 2) return { kind: "cart", start: start + RIDE_START, end: start + RIDE_START + CART_LENGTH };
+  if (scene === 4 || scene === 5) return { kind: "rope", start: start + RIDE_START, end: start + RIDE_START + DOWNHILL_ROPE_LENGTH };
   return undefined;
 }
+/** A zipline that drops from a high ledge across a gorge, rather than crossing the canal. */
+export const isDownhillRope = (ride: { kind: string; start: number }) => ride.kind === "rope" && sceneAt(ride.start) !== 0;
 export const sectionFeature = (distance: number) => featureOf(sectionIndexAt(distance));
 
 /** First log-bridge corner strictly after `z`. */
@@ -72,8 +81,8 @@ const HILLS: readonly (readonly [up: number, upLength: number, down: number, dow
   [18, 36, 60, 44, 2.4, 3.2], // temple: a knoll, then the sea crossing runs level
   [45, 75, 157, 113, 0, 0], // mine: level, so the track runs on the cavern floor between the walls
   [40, 70, 150, 110, 5.2, 6.6], // bamboo
-  [55, 80, 170, 110, 6, 7.6], // canyon
-  [45, 85, 165, 120, 5, 6.4], // snow
+  [40, 80, 140, 70, 10, 12], // canyon: up onto a mesa, then the zipline drops all the way down
+  [45, 75, 140, 70, 8.5, 10], // snow: up a ridge, then the zipline drops into the valley
 ];
 
 export function elevationAt(distance: number) {

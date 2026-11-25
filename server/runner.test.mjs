@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { RunnerRoute3D } from '../src/runner/route3d.ts';
-import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
+import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
@@ -582,6 +582,30 @@ test('the longer minecart ride has seven rockfalls and corners stay beyond the e
   assert.ok(w.coins >= 24);
   // A corner that would fall during the ride waits until past the exit.
   assert.equal(w.turnOutsideFeature(cart.start + 20, cart.start - 200), cart.end + 34);
+});
+
+test('canyon and snowfield ziplines drop from a high ledge to the valley floor and can be ridden', () => {
+  const ropes = [];
+  for (let d = 0; d < 6000 && ropes.length < 3; d += 50) { const f = sectionFeature(d); if (f?.kind === 'rope' && sceneAt(f.start) !== 0 && !ropes.some(r => r.start === f.start)) ropes.push(f); }
+  assert.deepEqual(ropes.map(r => sceneAt(r.start)).slice(0, 2), [5, 4]);
+  for (const rope of ropes) {
+    assert.equal(rope.end - rope.start, DOWNHILL_ROPE_LENGTH);
+    assert.ok(elevationAt(rope.start) > 8 && elevationAt(rope.end) < .5, 'from a high ledge down to the floor');
+    // From the moment the dog has hold of the handle (after the grab, it is lifted to the cable).
+    let previous = Infinity;
+    for (let z = rope.start; z <= rope.end; z += 1) {
+      assert.ok(riderHeightAt(z, rope) >= 0);
+      if (z < rope.start + 6) continue;
+      const height = riderHeightAt(z, rope) + elevationAt(z);
+      assert.ok(height <= previous + .2, `the dog keeps going down at ${z - rope.start} m`); previous = height;
+    }
+    const w = skipTo(new RunnerWorld(11, 'endless'), rope.start - 30); w.start(); w.lane = w.position = 1;
+    while (w.distance < rope.end + 5 && w.phase === 'running') { drive(w); w.advance(1 / 120); }
+    // The bot hangs straight on, so it collects the middle line of coins: all six of them sit at reach.
+    assert.equal(w.phase, 'running', w.reason); assert.equal(w.ride, undefined); assert.equal(w.coins, 6);
+    const missed = skipTo(new RunnerWorld(11, 'endless'), rope.start - 4); missed.start(); run(missed, .5);
+    assert.equal(missed.reason, '没抓住绳索'); assert.match(missed.deathHint, /崖边/);
+  }
 });
 
 test('rope preserves the initial jump height and releases onto the deck with a descending arc', () => {
