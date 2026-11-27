@@ -9,7 +9,7 @@ import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevati
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { completeMission, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText } from '../src/runner/missions.ts';
-import { buyUpgrade, checkIn, durationAt, levelOf, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
+import { addRun, buyUpgrade, checkIn, durationAt, levelOf, readCareer, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
@@ -1018,4 +1018,20 @@ test('generated scenery and props retain their native PNG bytes', () => {
     assert.equal(bytes.length, asset.bytes); assert.equal(bytes[25], asset.pngColorType);
     assert.equal(createHash('sha256').update(bytes).digest('hex'), asset.sha256);
   }
+});
+
+test('career: lifetime totals add up run by run; a revived run that ends again counts once', () => {
+  const empty = readCareer(null);
+  assert.equal(empty.runs, 0); assert.equal(empty.metres, 0);
+  assert.deepEqual(readCareer('{"version":1,"runs":3,"metres":-5,"gold":1.5,"silver":"9","longest":800}'), { ...empty, runs: 3, longest: 800 });
+  assert.deepEqual(readCareer('not json'), empty);
+  const run = { metres: 512.7, silver: 40, gold: 2, diamond: 0, nearMisses: 3, doubleJumps: 4, chests: 1, revives: 0, score: 9000, combo: 3 };
+  const one = addRun(empty, run);
+  assert.equal(one.runs, 1); assert.equal(one.metres, 512); assert.equal(one.silver, 40); assert.equal(one.longest, 512); assert.equal(one.bestScore, 9000); assert.equal(one.bestCombo, 3);
+  // Revived and ran on: only what came after counts, and it is still one run.
+  const longer = { ...run, metres: 900, silver: 70, revives: 1, score: 15000, combo: 4 };
+  const again = addRun(one, longer, run);
+  assert.equal(again.runs, 1); assert.equal(again.metres, 900); assert.equal(again.silver, 70); assert.equal(again.revives, 1); assert.equal(again.longest, 900); assert.equal(again.bestScore, 15000);
+  const two = addRun(again, { ...run, metres: 100, score: 500, combo: 1 });
+  assert.equal(two.runs, 2); assert.equal(two.metres, 1000); assert.equal(two.longest, 900); assert.equal(two.bestScore, 15000); assert.equal(two.bestCombo, 4);
 });

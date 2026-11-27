@@ -84,3 +84,43 @@ export function checkIn(login: Login | undefined, today: Date): { login: Login; 
   const day = login && login.last === dayKey(yesterday) && login.streak < 7 ? login.streak + 1 : 1;
   return { login: { version: 1, last: key, streak: day }, day, reward: LOGIN_REWARDS[day - 1] };
 }
+
+export const CAREER_KEY = "nwaxz-runner-career-v1";
+/** Lifetime totals over every run on this device, for the career page. */
+export type Career = {
+  version: 1; runs: number; metres: number; silver: number; gold: number; diamond: number;
+  nearMisses: number; doubleJumps: number; chests: number; revives: number; longest: number; bestScore: number; bestCombo: number;
+};
+/** What one run adds to the career. */
+export type RunSummary = { metres: number; silver: number; gold: number; diamond: number; nearMisses: number; doubleJumps: number; chests: number; revives: number; score: number; combo: number };
+const CAREER_FIELDS = ["runs", "metres", "silver", "gold", "diamond", "nearMisses", "doubleJumps", "chests", "revives", "longest", "bestScore", "bestCombo"] as const;
+
+export function readCareer(raw: string | null): Career {
+  const career: Career = { version: 1, runs: 0, metres: 0, silver: 0, gold: 0, diamond: 0, nearMisses: 0, doubleJumps: 0, chests: 0, revives: 0, longest: 0, bestScore: 0, bestCombo: 0 };
+  try {
+    const value = JSON.parse(raw ?? "null");
+    if (value?.version === 1) for (const key of CAREER_FIELDS) {
+      const n = value[key];
+      if (Number.isSafeInteger(n) && n >= 0) career[key] = n;
+    }
+  } catch { /* A broken record starts again from nothing. */ }
+  return career;
+}
+
+/**
+ * Adds a finished run. A run that was revived and ended again passes what it had already added as
+ * `before`, so only the difference counts and it is still one run.
+ */
+export function addRun(career: Career, run: RunSummary, before?: RunSummary): Career {
+  const gain = (key: "silver" | "gold" | "diamond" | "nearMisses" | "doubleJumps" | "chests" | "revives") => Math.max(0, run[key] - (before?.[key] ?? 0));
+  const metres = Math.floor(run.metres);
+  return {
+    version: 1,
+    runs: career.runs + (before ? 0 : 1),
+    metres: career.metres + Math.max(0, metres - Math.floor(before?.metres ?? 0)),
+    silver: career.silver + gain("silver"), gold: career.gold + gain("gold"), diamond: career.diamond + gain("diamond"),
+    nearMisses: career.nearMisses + gain("nearMisses"), doubleJumps: career.doubleJumps + gain("doubleJumps"),
+    chests: career.chests + gain("chests"), revives: career.revives + gain("revives"),
+    longest: Math.max(career.longest, metres), bestScore: Math.max(career.bestScore, run.score), bestCombo: Math.max(career.bestCombo, run.combo),
+  };
+}

@@ -9,6 +9,7 @@ import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWar
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { completeMission, MISSIONS_KEY, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText, type Mission, type RunStats } from "./missions.ts";
+import { addRun, CAREER_KEY, readCareer, type Career, type RunSummary } from "./progression.ts";
 import { buyUpgrade, checkIn, durationAt, levelOf, LOGIN_KEY, MAX_LEVEL, nextCost, readLogin, readUpgrades, UPGRADABLE, UPGRADES_KEY, upgradedDurations, dayKey } from "./progression.ts";
 import {
   RunnerWorld, RUN_SCENES, RUN_POWERS, CHASE_SECONDS, CHASE_START_GAP, LONG_GAP_START, GOLD_START, DIAMOND_START, NEAR_SCORE, ROLL_START, TURN_HINT_END, RECORD_KEYS, RUSH_SECONDS, CLOCK_SECONDS, DARK_MAX_GAP, LANTERN_GAP, BALLOON_START, REVIVE_GRACE,
@@ -86,6 +87,10 @@ export class RunnerGame {
   private credited: CurrencyPurse = { silver: 0, gold: 0, diamond: 0 };
   private shopOpen = false;
   private upgradesOpen = false;
+  private careerOpen = false;
+  /** Lifetime totals on this device; `counted` is what the current run has already added. */
+  private career: Career = (() => { try { return readCareer(localStorage.getItem(CAREER_KEY)); } catch { return readCareer(null); } })();
+  private counted?: { world: RunnerWorld; summary: RunSummary };
   private upgrades = readUpgrades(null);
   /** The day's check-in reward, shown once on the start screen. */
   private loginGift = "";
@@ -303,6 +308,8 @@ export class RunnerGame {
       case "shop-back": this.closeShop(); return;
       case "upgrades": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.upgradesOpen = true; this.showPanel(); } return;
       case "upgrades-back": this.upgradesOpen = false; this.showPanel(); return;
+      case "career": this.careerOpen = true; this.showPanel(); return;
+      case "career-back": this.careerOpen = false; this.showPanel(); return;
       case "revive": this.revive(); return;
       case "offer-skip": this.endOffer(); return;
       case "help-back": this.showPanel(); return;
@@ -721,6 +728,7 @@ export class RunnerGame {
       // Like an arcade "continue?": a few seconds to buy another go before the results.
       if (w.phase === "lost" && w.canRevive && this.wardrobe.gold >= w.reviveCost) this.offerUntil = performance.now() + OFFER_MS;
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); this.holdScreenOn(false); }
+      if (w.phase === "lost" || w.phase === "won") this.countCareer();
       if (w.phase === "won") { this.audio.effect("win"); this.flash("apple"); this.vibrate([40, 60, 40, 60, 120]); }
       if (w.chase?.escaped && w.phase === "lost") this.audio.haunt({ allowNormalMode: true });
       if (w.phase === "caught" && this.shownPhase === "running") { this.vibrate(180); if (!w.trapFall) { this.audio.effect("crash"); if (!this.settings.reducedMotion) this.flash("crash"); } }
@@ -978,6 +986,8 @@ export class RunnerGame {
           const label = active ? "使用中" : owned ? "装备" : "解锁";
           return `<div class="runner-shop-item" data-skin-id="${look.id}"><span class="runner-shop-preview" style="--skin:${look.color}" data-sprite="${look.sprite}"><img src="${look.logo}" alt="" loading="lazy"></span><div><strong>${look.name}</strong><small>QS #${look.rank} · ${cost}</small></div><button data-run="${owned ? `equip-${look.id}` : `buy-${look.id}`}" ${disabled ? "disabled" : ""}>${label}</button></div>`;
         }).join("")}</div>${status ? `<p class="runner-note" role="status">${status}</p>` : ""}${btn("shop-back", "返回", "ghost")}${note}`;
+    } else if (this.careerOpen) {
+      html = this.careerHtml(btn);
     } else if (this.upgradesOpen) {
       html = this.upgradesHtml(btn, note);
     } else if (w.phase === "ready") {
@@ -1006,7 +1016,7 @@ export class RunnerGame {
           <div class="runner-modes" role="group" aria-label="选择模式">${cards}</div>
           <p class="runner-mode-note">${info.note}</p>
           ${btn("start", info.start, "primary runner-play")}
-          <div class="runner-lobby-tools">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
+          <div class="runner-lobby-tools">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
           ${gyroNote}${note}
         </footer>`;
     } else if (this.offering) {
@@ -1085,6 +1095,26 @@ export class RunnerGame {
       ${btn("restart", again, revive ? "ghost" : "primary")}
       <div class="runner-row">${this.mode !== "endless" ? btn("play-endless", "无限奔跑", "ghost") : ""}${btn("upgrades", "道具升级", "ghost")}${btn("shop", "皮肤商城", "ghost")}${btn("exit", "主菜单", "ghost")}</div>
       <p class="runner-keyhint">按回车${again}</p>${note}`;
+  }
+
+  /** Adds the finished run to the lifetime totals (only what is new, if it was revived and ended again). */
+  private countCareer() {
+    const w = this.world;
+    const summary: RunSummary = { metres: w.runDistance, silver: w.silver, gold: w.gold, diamond: w.diamond, nearMisses: w.nearMisses, doubleJumps: w.doubleJumps, chests: w.chests, revives: w.revives, score: w.score, combo: w.bestMultiplier };
+    this.career = addRun(this.career, summary, this.counted?.world === w ? this.counted.summary : undefined);
+    this.counted = { world: w, summary };
+    try { localStorage.setItem(CAREER_KEY, JSON.stringify(this.career)); } catch { this.recordError = true; }
+  }
+
+  private careerHtml(btn: (action: string, text: string, kind?: string, extra?: string) => string) {
+    const c = this.career, km = c.metres >= 10000 ? `${(c.metres / 1000).toFixed(1)} 公里` : `${c.metres} 米`;
+    const tile = (value: string | number, label: string) => `<span><b>${value}</b>${label}</span>`;
+    return `<h2>生涯数据</h2><p>所有模式累计，只记在这台设备的这个浏览器里。</p>
+      <div class="runner-career">${[
+        tile(c.runs, "局数"), tile(km, "总路程"), tile(`${c.longest} 米`, "最远一局"), tile(c.bestScore, "最高分"),
+        tile(c.silver, "累计银币"), tile(c.gold, "累计金币"), tile(c.diamond, "累计钻石"), tile(`×${c.bestCombo}`, "最高连击"),
+        tile(c.nearMisses, "惊险闪避"), tile(c.doubleJumps, "二段跳"), tile(c.chests, "打开宝箱"), tile(c.revives, "续命"),
+      ].join("")}</div>${btn("career-back", "返回", "ghost")}`;
   }
 
   /** The wallet, on the start screen and the upgrades page. */
