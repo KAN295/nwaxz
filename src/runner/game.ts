@@ -66,6 +66,8 @@ const ICONS = {
   more: '<circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/>',
 } as const;
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+/** The look the lobby showed last time, so the next visit shows another. */
+const SHOWCASE_KEY = "nwaxz-runner-showcase-v1";
 /** How long the "one more go?" offer waits before the results come up, in milliseconds. */
 const OFFER_MS = 4500;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
@@ -141,6 +143,7 @@ export class RunnerGame {
   private seenApple = -1;
   private seenLanded = 0;
   private seenSplashes = 0;
+  private lastStride = 0;
   private tip = TIPS[Math.floor(Math.random() * TIPS.length)];
   /** When the next heartbeat is due while the frog is close (performance.now milliseconds). */
   private nextBeat = 0;
@@ -273,6 +276,7 @@ export class RunnerGame {
       if (this.destroyed) { this.renderer.dispose(); return; }
       this.el.main.dataset.engine = "babylon";
       this.ready = true; this.shownPhase = "ready"; this.showPanel();
+      void this.pickShowcase();
     } catch {
       if (this.destroyed) return;
       this.renderer?.dispose(); this.renderer = undefined;
@@ -426,9 +430,11 @@ export class RunnerGame {
     const jumps = w.jumpCount, slides = w.slides, lane = w.lane, turns = w.turnCount;
     w.action(action);
     // Each move has its own sound, and only when it actually happened.
-    if (w.jumpCount > jumps) this.audio.effect(w.jumpCount === 2 ? "jump2" : "jump");
-    else if (w.slides > slides) this.audio.effect("slide");
-    else if (w.lane !== lane || w.turnCount !== turns) this.audio.effect("swish");
+    // Heard from the side of the road the dog is on.
+    const pan = (w.lane - 1) * .35;
+    if (w.jumpCount > jumps) this.audio.effect(w.jumpCount === 2 ? "jump2" : "jump", pan);
+    else if (w.slides > slides) this.audio.effect("slide", pan);
+    else if (w.lane !== lane || w.turnCount !== turns) this.audio.effect("swish", pan);
   }
 
   // ---------- tilt ----------
@@ -567,6 +573,44 @@ export class RunnerGame {
     this.showPanel();
   }
 
+  /**
+   * Each time 奶狗快跑 opens, the lobby shows a different look: the default dog or any school look,
+   * owned or not. It is only for show: the run always uses the look the player has on.
+   */
+  private showcase?: { id: string; owned: boolean };
+  private async pickShowcase() {
+    const pool = [ORIGINAL_LOOK.id, ...DOG_LOOKS.map(look => look.id)];
+    let last = "";
+    try { last = localStorage.getItem(SHOWCASE_KEY) ?? ""; } catch { /* No memory of the last one: any will do. */ }
+    let id = pool[Math.floor(Math.random() * pool.length)];
+    if (id === last) id = pool[(pool.indexOf(id) + 1 + Math.floor(Math.random() * (pool.length - 1))) % pool.length];
+    try { localStorage.setItem(SHOWCASE_KEY, id); } catch { /* Fine: it may repeat next time. */ }
+    if (id === this.wardrobe.equipped) return;
+    const look = getDogLook(id);
+    let image: HTMLImageElement | undefined;
+    if ("sprite" in look) {
+      try { image = await loadImage(look.sprite, 15000); } catch { return; }
+    }
+    // Only while the lobby is still up and nothing else has been put on meanwhile.
+    if (this.destroyed || this.world.phase !== "ready" || this.shopOpen || this.pendingSkin) return;
+    this.showcase = { id, owned: this.wardrobe.owned.includes(id) };
+    this.renderer?.setDogLook(id, image);
+    this.showPanel();
+  }
+  private showcaseTag(btn: (action: string, text: string, kind?: string, extra?: string) => string) {
+    if (!this.showcase) return "";
+    const look = getDogLook(this.showcase.id), name = look.id === ORIGINAL_LOOK.id ? "默认奶狗" : look.name;
+    return `<div class="runner-lobby-skin" style="--skin:${look.color}">${btn("shop", `<span class="runner-look-name">${name}</span><small>${this.showcase.owned ? "已拥有 · 去换上" : "皮肤商城解锁"}</small>`, "runner-showcase-tag")}</div>`;
+  }
+
+  /** Back to the look the player has on (before a run, or once they change it). */
+  private endShowcase() {
+    if (!this.showcase) return;
+    this.showcase = undefined;
+    const equipped = this.wardrobe.equipped;
+    this.renderer?.setDogLook(equipped, equipped === ORIGINAL_LOOK.id ? undefined : this.skinPortrait);
+  }
+
   /** The lobby's mode switcher: the previous or next mode, round in a loop. */
   private switchMode(step: number) {
     const at = MODES.findIndex(m => m.id === this.mode);
@@ -576,6 +620,7 @@ export class RunnerGame {
 
   private begin() {
     this.missionsOpen = this.moreOpen = this.careerOpen = this.graphicsOpen = false;
+    this.endShowcase();
     this.tilt.calibrate(); this.world.start(); this.last = 0;
     this.audio.setMode("normal"); this.audio.setPlaying(true);
     this.holdScreenOn(true);
@@ -612,7 +657,7 @@ export class RunnerGame {
       const coins = this.world.coins;
       if (!document.hidden) this.world.advance(this.last ? (time - this.last) / 1000 : 0);
       this.last = time;
-      if (this.world.coins > coins) this.audio.chime((Math.max(1, this.world.streak) - 1) % 11);
+      if (this.world.coins > coins) this.audio.chime((Math.max(1, this.world.streak) - 1) % 11, (this.world.position - 1) * .35);
       this.sync();
       if (this.ready) this.renderer?.draw(this.world);
       this.drawPortraits(time / 1000);
@@ -761,6 +806,17 @@ export class RunnerGame {
     // The pulley whirs along a zipline (higher on the steep downhill ones); wind hums under the balloons.
     const ride = w.ride, rope = w.phase === "running" && ride?.kind === "rope" && ropeReleaseProgress(w.distance, ride) < .25;
     this.audio.hum(rope ? 1 : w.phase === "running" && w.flying ? .55 : 0, rope ? .8 + w.speed / 40 : .5);
+    // Rain on the road while it rains above ground; wind rushing past on a dash or at top speed.
+    const running = w.phase === "running";
+    this.audio.loop("rain", running && w.weather === "rain" && w.sceneIndex !== 2 ? 1 : 0);
+    this.audio.loop("wind", running && !rope ? (w.boost > 0 ? 1 : Math.max(0, Math.min(1, (w.speed - 23) / 7))) : 0, .8 + w.speed / 60);
+    // Paws on the ground, two to a stride: a click on stone, a knock on the log bridge, a crunch in snow, a scuff on gravel.
+    const stride = Math.floor(w.gait * 2);
+    if (stride !== this.lastStride) {
+      this.lastStride = stride;
+      const onFoot = running && !w.airborne && !w.ride && !w.cycling && !w.flying && w.slide === 0;
+      if (onFoot) this.audio.effect(w.bridge ? "step-wood" : w.sceneIndex === 5 ? "step-snow" : w.sceneIndex === 2 || w.sceneIndex === 4 ? "step-gravel" : "step-stone", (w.position - 1) * .3);
+    }
     if (w.landedAt !== this.seenLanded) { this.seenLanded = w.landedAt; if (w.phase === "running" && w.elapsed - w.landedAt < .1) this.audio.effect("land"); }
     const splashes = this.renderer?.splashes ?? 0;
     if (splashes !== this.seenSplashes) { this.seenSplashes = splashes; if (w.phase === "caught") this.audio.effect("splash"); }
@@ -947,6 +1003,7 @@ export class RunnerGame {
       if (this.destroyed || this.pendingSkin !== pending) return;
       if (!this.persistWardrobe(next)) { this.shopError = "皮肤未能保存，请重试。"; return; }
       this.wardrobe = next;
+      this.showcase = undefined;
       this.applyDogLook(id, image);
     } catch {
       if (this.pendingSkin === pending) this.shopError = "皮肤加载失败，请重试。";
@@ -1063,7 +1120,7 @@ export class RunnerGame {
         </header>
         ${this.loginGift ? `<p class="runner-gift" role="status">${this.loginGift}</p>` : ""}
         <footer class="runner-lobby-dock">
-          ${switcher ? `<div class="runner-lobby-skin" style="--skin:${look.color}">${btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`)}<span class="runner-look-name">${lookName}</span>${btn("skin-next", "›", "runner-skin-arrow", `aria-label="下一款皮肤"`)}</div>` : ""}
+          ${this.showcaseTag(btn)}${!this.showcase && switcher ? `<div class="runner-lobby-skin" style="--skin:${look.color}">${btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`)}<span class="runner-look-name">${lookName}</span>${btn("skin-next", "›", "runner-skin-arrow", `aria-label="下一款皮肤"`)}</div>` : ""}
           <div class="runner-mode-picker" role="group" aria-label="选择模式">
             ${btn("mode-prev", "‹", "runner-mode-arrow", `aria-label="上一个模式"`)}
             <div class="runner-mode-current"><small>${current.tag}</small><strong>${current.name}</strong><span class="runner-mode-dots" aria-hidden="true">${MODES.map(m => `<i class="${m.id === this.mode ? "on" : ""}"></i>`).join("")}</span></div>
@@ -1304,6 +1361,6 @@ export class RunnerGame {
     this.destroyed = true;
     this.shopObserver?.disconnect();
     cancelAnimationFrame(this.frame); this.abort.abort(); this.resize.disconnect();
-    this.audio.setPlaying(false); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); clearTimeout(this.bannerTimer); clearTimeout(this.popTimer); this.renderer?.dispose();
+    this.audio.setPlaying(false); this.audio.hum(0); this.audio.loop("rain", 0); this.audio.loop("wind", 0); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); clearTimeout(this.bannerTimer); clearTimeout(this.popTimer); this.renderer?.dispose();
   }
 }
