@@ -260,8 +260,9 @@ export class RunnerGame {
       this.art = { dog, frog, laugh, hauntedLaugh };
       this.renderer?.dispose();
       this.renderer = new module.RunnerRenderer3D(this.el.canvas, this.settings);
-      await this.renderer.load();
+      // Effects first, so the warm-up in load() compiles their shaders too (not mid-run).
       this.renderer.setGraphics(this.graphics);
+      await this.renderer.load();
       const look = getDogLook(this.wardrobe.equipped);
       if ("sprite" in look) {
         try {

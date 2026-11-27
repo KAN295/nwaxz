@@ -224,6 +224,9 @@ export class RunnerRenderer3D {
   private ripples!: Mesh;
   private rippleState: { x: number; y: number; z: number; age: number; life: number }[] = [];
   private rippleMatrix = new Matrix();
+  private rippleScale = new Vector3();
+  private rippleAt = new Vector3();
+  private rippleTurn = Quaternion.Identity();
   private rippleColours = new Float32Array(RIPPLES * 4);
   /** Slowly turning rays of light fanning out behind the dog on the menu. */
   private heroRays!: Mesh;
@@ -314,6 +317,8 @@ export class RunnerRenderer3D {
   private frameAverage = 1 / 60;
   private slowTime = 0;
   private fastTime = 0;
+  /** The last run held a steady 57+ frames a second for 20 seconds: the next one may try a sharper picture. */
+  private spare = false;
 
   constructor(private canvas: HTMLCanvasElement, private settings: Settings) {
     this.engine = new Engine(canvas, true, { stencil: false, powerPreference: "high-performance", preserveDrawingBuffer: false }, false);
@@ -915,20 +920,30 @@ export class RunnerRenderer3D {
     const warm = new TransformNode("runner-warm-up", this.scene);
     warm.position.set(0, 0, 12);
     for (const name of this.templates.keys()) this.instance(name, warm);
-    const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0], this.sea];
+    // The shadow map covers the warm-up props, so their shadow shaders (and the shadowed road's) compile now.
+    const dir = this.sun.direction;
+    this.sun.position.set(-dir.x * 70, -dir.y * 70, 12 - dir.z * 70);
+    this.shadows?.getShadowMap()?.resetRefreshCounter();
+    const effects = [this.bubble, this.magnetRing, this.boostGlow, this.rain[0], this.snow[0], this.streaks[0], this.sea, this.ripples, this.pickupRing, this.ripple, this.heroDisc, this.heroRing, this.heroRays, ...this.heroGlow];
     this.shark.root.setEnabled(true); this.shark.root.position.set(0, 0, 14);
     effects.forEach(mesh => { mesh.setEnabled(true); mesh.position.set(0, 1, 10); });
     this.mats["lamp-halo"].alpha = .9;
     const at = new Vector3(0, 1, 10);
-    for (const system of [this.sparks, this.magic, this.dust, this.rollDust, this.cartSparks, this.nearStreaks]) this.burst(system, at, 4);
+    for (const system of [this.sparks, this.silverSparks, this.diamondSparks, this.magic, this.dust, this.rollDust, this.cartSparks, this.nearStreaks, this.splash, this.heroSparkles, this.appleSparkles, this.fireEmbers, this.fireSmoke]) this.burst(system, at, 4);
+    for (const plane of this.heroGlow) (plane.material as StandardMaterial).opacityTexture = this.dog.material.diffuseTexture;
     this.ambience.warm(true, at);
     this.camera.position.set(0, 4, -8); this.camera.setTarget(new Vector3(0, 1, 8));
+    // Each scene has its own ground under the road: draw each once so none compiles when its scene arrives.
+    const ground = this.groundPlane.material;
+    for (const look of this.themes) { this.groundPlane.material = look.ground; this.scene.render(); }
+    this.groundPlane.material = ground;
     this.scene.render();
     warm.dispose();
     // Templates only feed instances from here on, and instances keep drawing when their source is
     // switched off; this keeps some 1,600 template meshes out of the per-frame walk.
     this.templates.values().next().value?.parent?.setEnabled(false);
     [...effects, ...this.rain, ...this.snow, ...this.streaks].forEach(mesh => mesh.setEnabled(false));
+    this.shadowCell = "";
     this.shark.root.setEnabled(false);
     this.ambience.warm(false, at);
   }
@@ -1010,8 +1025,9 @@ export class RunnerRenderer3D {
     const fps = 1 / this.frameAverage;
     this.slowTime = fps < 47 ? this.slowTime + dt : 0;
     this.fastTime = fps > 57 ? this.fastTime + dt : 0;
-    if (this.slowTime > 1.5 && this.renderScale > .55) { this.renderScale = Math.max(.55, this.renderScale - .12); this.slowTime = 0; this.resize(); }
-    else if (this.fastTime > 8 && this.renderScale < 1) { this.renderScale = Math.min(1, this.renderScale + .12); this.fastTime = 0; this.resize(); }
+    if (this.slowTime > 1.5 && this.shadows && !this.shadowsResting) { this.shadowsResting = true; this.slowTime = 0; this.fastTime = 0; this.spare = false; }
+    else if (this.slowTime > 1.5 && this.renderScale > .55) { this.renderScale = Math.max(.55, this.renderScale - .12); this.slowTime = 0; this.fastTime = 0; this.spare = false; this.resize(); }
+    if (this.fastTime > 20) this.spare = true;
   }
 
   resize() {
@@ -3161,6 +3177,9 @@ export class RunnerRenderer3D {
     this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0; this.frogBack = 8; this.frogSide = -1;
     this.sway = this.swayVelocity = this.lastLateral = 0; this.rippleAge = 9; this.nextSpectator = world.distance + 160;
     this.pickupRingAge = 9; this.seenChests = world.chests;
+    if (this.spare && this.renderScale < 1) { this.renderScale = Math.min(1, this.renderScale + .12); this.resize(); }
+    else if (this.spare) this.shadowsResting = false;
+    this.spare = false; this.slowTime = this.fastTime = 0;
     for (const spectator of this.spectators) { spectator.on = false; spectator.sprite.root.setEnabled(false); }
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
@@ -3244,10 +3263,18 @@ export class RunnerRenderer3D {
     }
     this.groundCuts.length = Math.min(this.groundCuts.length, MAX_GROUND_OPENINGS);
     if (this.route.version !== this.routeVersion) { this.routeVersion = this.route.version; for (const slot of this.slots) slot.n = Number.NaN; }
+    // Dressing a slot for another scene is the costliest step of a frame. After a restart every slot needs
+    // it at once, which stalled the first frame of the run; now the far ones (deep in the fog) wait a frame or two.
+    let dressBudget = 6;
     for (let n = first; n < first + SLOTS; n++) {
       const slot = this.slots[((n % SLOTS) + SLOTS) % SLOTS];
       const recycled = slot.n !== n;
       const at = n * TILE + TILE / 2;
+      if (recycled && slot.theme !== sceneAt(at)) {
+        if (dressBudget <= 0 && n - first > 10) { slot.root.setEnabled(false); continue; }
+        dressBudget--;
+      }
+      if (recycled) slot.root.setEnabled(true);
       // Placing a slot (or opening a hole in it) briefly thaws its frozen world matrices.
       let thawed = recycled;
       if (recycled) {
@@ -3688,8 +3715,26 @@ export class RunnerRenderer3D {
     if (roller) roller.rotation.x = -travelled / ROLLER_RADIUS;
   }
 
+  private visibleProps = new Set<number>();
+  // Reused every frame instead of made anew (fewer pauses to collect garbage).
+  private effectAt = new Vector3();
+  private coinAt = new Vector3();
+  private feetAt = new Vector3();
+  private propParts = new WeakMap<TransformNode, Map<string, (TransformNode | AbstractMesh)[]>>();
+  /** A prop's parts by name (or the model's direct children when no name is given), found once and kept. */
+  private partsOf(prop: TransformNode, name = ""): (TransformNode | AbstractMesh)[] {
+    let parts = this.propParts.get(prop);
+    if (!parts) { parts = new Map(); this.propParts.set(prop, parts); }
+    let found = parts.get(name);
+    if (!found) {
+      found = name ? prop.getChildMeshes(false).filter(mesh => mesh.name === name) : (prop.getChildren()[0]?.getChildren() ?? []) as (TransformNode | AbstractMesh)[];
+      parts.set(name, found);
+    }
+    return found;
+  }
   private drawProps(world: RunnerWorld, t: number, dt: number) {
-    const visible = new Set<number>();
+    const visible = this.visibleProps;
+    visible.clear();
     for (const item of world.items) {
       const depth = item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0;
       if (item.z + depth <= world.distance - 8 || item.z - depth >= world.distance + 155) continue;
@@ -3731,7 +3776,7 @@ export class RunnerRenderer3D {
       else if (isRunPower(item.kind) || item.kind === "chest" || item.kind === "clock" || item.kind === "lantern") {
         // Bob the model (its ring and shadow stay on the road), and turn it round so its shape reads.
         const bob = Math.sin(t * 3 + item.id) * .15;
-        const parts = prop.getChildren()[0]?.getChildren() ?? [];
+        const parts = this.partsOf(prop);
         const model = parts.find(child => child.name === "model") as TransformNode | undefined;
         if (model) { model.position.y = 1.15 + bob; model.rotation.y = this.settings.reducedMotion ? .6 : t * 1.8 + item.id; model.rotation.x = item.kind === "lantern" || item.kind === "balloon" ? 0 : Math.sin(t * 1.3 + item.id) * .12; }
         const shadow = parts.find(child => child.name === "contact-shadow") as Mesh | undefined;
@@ -3739,7 +3784,7 @@ export class RunnerRenderer3D {
       }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
-        for (const [index, mesh] of prop.getChildMeshes().filter(mesh => mesh.name === "flame-volume").entries()) {
+        for (const [index, mesh] of this.partsOf(prop, "flame-volume").entries()) {
           const beat = item.id * .29 + index * 2.3;
           const [, , height, width] = FLAMES[index];
           mesh.scaling.x = width * (1 + Math.sin(phase * 11 + beat) * .1);
@@ -3749,7 +3794,7 @@ export class RunnerRenderer3D {
       }
       else if (item.kind === "trap" && world.fallObstacle === item) {
         // The two leaves swing down around their outer rails, clearing the middle of the shaft.
-        const planks = prop.getChildMeshes().filter(mesh => mesh.name === "trap-plank");
+        const planks = this.partsOf(prop, "trap-plank");
         for (const [index, plank] of planks.entries()) {
           const closedX = (index - 3.5) * (LANE_WIDTH / 4);
           const side = Math.sign(closedX);
@@ -3795,8 +3840,8 @@ export class RunnerRenderer3D {
   }
 
   private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean, lift: number) {
-    const at = new Vector3(player.x, player.y + .9 + world.jumpHeight + lift, player.z);
-    const coinAt = at.add(new Vector3(0, .3, 0));
+    const at = this.effectAt.set(player.x, player.y + .9 + world.jumpHeight + lift, player.z);
+    const coinAt = this.coinAt.set(at.x, at.y + .3, at.z);
     for (const [tier, system] of [["silver", this.silverSparks], ["gold", this.sparks], ["diamond", this.diamondSparks]] as const) {
       if (world[tier] > this.seen[tier]) this.burst(system, coinAt, Math.min(30, (world[tier] - this.seen[tier]) * 8));
       this.seen[tier] = world[tier];
@@ -3833,7 +3878,7 @@ export class RunnerRenderer3D {
     // Rain splashes instead of raising dust, except underground.
     const rainy = world.weather === "rain" && world.sceneIndex !== 2;
     const colours = rainy ? SPLASH : DUST[world.sceneIndex];
-    const feet = new Vector3(player.x, player.y + .06 + world.jumpHeight, player.z);
+    const feet = this.feetAt.set(player.x, player.y + .06 + world.jumpHeight, player.z);
     const onFoot = !capture && !world.ride && !world.cycling;
     if (world.landedAt > this.seen.landed) { if (onFoot) this.burst(this.dust, feet, 12, colours); this.seen.landed = world.landedAt; }
     if (world.slides > this.seen.slides) { if (onFoot && !world.airborne) this.burst(this.dust, feet, 10, colours); this.seen.slides = world.slides; }
@@ -4007,7 +4052,7 @@ export class RunnerRenderer3D {
     const live = raining && w > .2 && !this.settings.reducedMotion && dt > 0;
     this.ripples.setEnabled(live);
     if (!live) return;
-    const scale = new Vector3(), at = new Vector3(), still = Quaternion.Identity();
+    const scale = this.rippleScale, at = this.rippleAt, still = this.rippleTurn;
     for (let i = 0; i < RIPPLES; i++) {
       const drop = this.rippleState[i];
       drop.age += dt;
@@ -4095,7 +4140,7 @@ export class RunnerRenderer3D {
       return !!source?.metadata?.caster && mesh.isEnabled() && mesh.isVisible;
     };
     this.sun.autoUpdateExtends = false; this.sun.autoCalcShadowZBounds = false;
-    this.sun.orthoLeft = -22; this.sun.orthoRight = 22; this.sun.orthoBottom = -22; this.sun.orthoTop = 22;
+    this.sun.orthoLeft = -27; this.sun.orthoRight = 27; this.sun.orthoBottom = -27; this.sun.orthoTop = 27;
     this.sun.shadowMinZ = 1; this.sun.shadowMaxZ = 140;
     this.shadows = generator;
     this.setShadowReceivers(true);
@@ -4108,12 +4153,16 @@ export class RunnerRenderer3D {
     this.groundPlane.receiveShadows = on;
   }
   private shadowCell = "";
+  private shadowSunny = true;
+  /** Set when the device could not keep up: shadows rest (the setting stays on) until a run goes smoothly again. */
+  private shadowsResting = false;
   /** Keeps the shadowed box over the road round the dog, and the shadows off at night and underground. */
   private placeShadows(world: RunnerWorld, player: Vector3, heading: number, sunny: boolean) {
     if (!this.shadows) return;
-    if (this.sun.shadowEnabled !== sunny) { this.sun.shadowEnabled = sunny; this.shadowCell = ""; }
+    sunny &&= !this.shadowsResting;
+    if (sunny !== this.shadowSunny) { this.shadowSunny = sunny; this.shadows.setDarkness(sunny ? .1 : 1); this.shadowCell = ""; }
     if (!sunny) return;
-    const ahead = 9, cx = Math.round((player.x + Math.sin(heading) * ahead) / 4) * 4, cz = Math.round((player.z + Math.cos(heading) * ahead) / 4) * 4, cy = Math.round(player.y / 2) * 2;
+    const ahead = 10, cx = Math.round((player.x + Math.sin(heading) * ahead) / 8) * 8, cz = Math.round((player.z + Math.cos(heading) * ahead) / 8) * 8, cy = Math.round(player.y / 2) * 2;
     const cell = `${cx},${cy},${cz}`;
     const moving = world.items.some(item => (item.roll && Math.abs(item.z - world.distance) < 40) || (item.thrownAt !== undefined && world.elapsed - item.thrownAt < .7));
     if (cell === this.shadowCell && !moving) return;

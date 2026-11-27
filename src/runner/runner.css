@@ -96,7 +96,7 @@
 
 /* Touch pad: only on touch screens. */
 .runner-pad{position:absolute;z-index:3;left:0;right:0;bottom:max(14px,env(safe-area-inset-bottom));display:none;justify-content:space-between;padding:0 14px;pointer-events:none;touch-action:manipulation}
-.runner-pad button{pointer-events:auto;width:56px;height:56px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(10,24,24,.45);color:rgba(255,246,220,.9);font-size:20px;cursor:pointer;backdrop-filter:blur(4px)}
+.runner-pad button{pointer-events:auto;width:56px;height:56px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(10,24,24,.58);color:rgba(255,246,220,.9);font-size:20px;cursor:pointer}
 .runner-pad button:active{background:rgba(246,211,107,.6)}
 @media (pointer:coarse){.runner-pad{display:flex}.runner-pad button:nth-child(2){margin-left:auto;margin-right:10px}}
 .runner-screen:not([data-phase=running]) .runner-pad{display:none}
