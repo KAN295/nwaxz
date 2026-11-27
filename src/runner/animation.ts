@@ -39,6 +39,8 @@ export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = fa
     return { sheet: "actions", frame: entering || (release > .16 && release < .62) ? 1 : 2 };
   }
   if (world.ride?.kind === "cart") return { sheet: "actions", frame: 0 };
+  // Hanging under the balloons, legs out.
+  if (world.flying) return { sheet: "actions", frame: 1 };
   if (world.slide > 0 && world.jumpHeight === 0) return { sheet: "actions", frame: 3 };
   if (world.jumpHeight > 0 || world.jump > 0) return { sheet: "actions", frame: world.jump > .2 ? 1 : 2 };
   if (world.elapsed - world.ropeLandedAt < .13) return { sheet: "actions", frame: 2 };

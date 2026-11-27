@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, CHASE_START, CHASE_SECONDS, CHASE_START_GAP, CHASE_CATCH, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, NEAR_SCORE, ROLL_START, ROLL_TRAVEL, ROLL_SPEED, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
+import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, CHASE_START, CHASE_SECONDS, CHASE_START_GAP, CHASE_CATCH, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, NEAR_SCORE, ROLL_START, ROLL_TRAVEL, ROLL_SPEED, FLY_HEIGHT, REVIVE_COST, RUSH_SECONDS, CLOCK_SECONDS, DARK_START_GAP, LANTERN_GAP, dailySeed, isLongRun, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
-import { RunnerRoute3D } from '../src/runner/route3d.ts';
+import { BEND_LENGTH, BEND_SLACK, CORNER_RADIUS, RunnerRoute3D } from '../src/runner/route3d.ts';
 import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { completeMission, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText } from '../src/runner/missions.ts';
+import { buyUpgrade, checkIn, durationAt, levelOf, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
@@ -563,6 +564,119 @@ test('run tallies count second jumps and slides for missions', () => {
   run(w, 1); w.action('slide'); assert.equal(w.slides, 2);
 });
 
+test('balloons lift the dog over everything, take corners, lay coins in the air and set it down gently', () => {
+  const w = new RunnerWorld(6); w.start(); w.nextRow = w.nextTurn = Infinity; w.turns = [];
+  w.items = [{ id: 1, kind: 'balloon', lane: 1, z: 3, done: false }];
+  run(w, .3);
+  assert.equal(w.flying, true); assert.equal(w.balloon > 6, true);
+  const air = w.items.filter(i => i.kind === 'coin' && i.y > FLY_HEIGHT);
+  assert.ok(air.length >= 15, `${air.length} coins in the air`);
+  run(w, 1.2); assert.ok(w.jumpHeight > FLY_HEIGHT - .3, `up at ${w.jumpHeight}`);
+  // Nothing on the road touches it: a gate, a log pile and a pit in its lane, and a corner it takes itself.
+  const at = w.distance;
+  w.items.push({ id: 2, kind: 'beam', lane: 1, z: at + 20, span: 3, done: false }, { id: 3, kind: 'block', lane: 1, z: at + 30, span: 2, done: false }, { id: 4, kind: 'gap', lane: 1, z: at + 40, span: 3, done: false });
+  w.turns = [{ z: at + 50, direction: 'left', taken: false, fork: true }];
+  w.action('jump'); w.action('slide'); assert.equal(w.jumpCount, 0, 'no jumping among the balloons');
+  const silver = w.silver; run(w, 3.5);
+  assert.equal(w.phase, 'running'); assert.equal(w.turns[0].taken, true); assert.equal(w.turns[0].wrong, undefined); assert.equal(w.stumbles, 0);
+  assert.ok(w.silver + w.gold > silver, 'collects the coins in the air');
+  run(w, 3); assert.equal(w.flying, false); assert.equal(w.jumpHeight, 0, 'back on the ground');
+  // No balloons in the chase; and the flight comes down early before a ride.
+  const chase = new RunnerWorld(2, 'chase'); for (let t = 0; t < 120 * 60 && chase.phase === 'running'; t++) { chase.start(); chase.advance(1 / 120); }
+  assert.ok(!chase.items.some(i => i.kind === 'balloon'));
+});
+
+test('spring shoes jump high enough to clear a boulder in one go; chests pay out once', () => {
+  const plain = place('coin'); plain.action('jump'); let top = 0; for (let i = 0; i < 120; i++) { plain.advance(1 / 120); top = Math.max(top, plain.jumpHeight); }
+  const sprung = place('coin'); sprung.spring = 10; sprung.action('jump'); let high = 0; for (let i = 0; i < 120; i++) { sprung.advance(1 / 120); high = Math.max(high, sprung.jumpHeight); }
+  assert.ok(top < 1.3 && high > 2, `jump ${top.toFixed(2)} m, with springs ${high.toFixed(2)} m`);
+  const w = place('boulder', { z: 12 }); w.spring = 10;
+  while (w.items[0].z - w.distance > 4.5) w.advance(1 / 120);
+  w.action('jump'); run(w, 1.2); assert.equal(w.phase, 'running', 'one sprung jump clears a boulder');
+  const chest = place('chest', { z: 4 }); run(chest, .6);
+  assert.equal(chest.chests, 1); assert.ok(chest.items[0].done);
+  const reward = chest.lastChest, paid = (reward.silver ?? 0) + (reward.gold ?? 0) + (reward.diamond ?? 0);
+  assert.ok(paid > 0 || reward.power, 'a chest holds something');
+  if (reward.silver) assert.equal(chest.silver, reward.silver); if (reward.gold) assert.equal(chest.gold, reward.gold);
+  if (reward.power) assert.ok(chest[reward.power] > 0);
+  // The same chest always holds the same thing.
+  const again = place('chest', { z: 4 }); run(again, .6); assert.deepEqual(again.lastChest, reward);
+});
+
+test('revive: back on its feet past the hazard, road ahead cleared, protected; costs double; not on a clock', () => {
+  const w = place('gap', { z: 6, span: 3 }); run(w, 3);
+  assert.equal(w.phase, 'lost'); assert.equal(w.canRevive, true); assert.equal(w.reviveCost, REVIVE_COST);
+  w.items.push({ id: 9, kind: 'block', lane: 1, z: w.distance + 12, span: 3, done: false });
+  assert.equal(w.revive(), true);
+  assert.equal(w.phase, 'running'); assert.equal(w.trapFall, false); assert.equal(w.revives, 1); assert.equal(w.reviveCost, REVIVE_COST * 2);
+  assert.ok(w.distance > 6 + obstacleHalfDepth('gap', 6), 'past the pit'); assert.ok(!w.items.some(i => i.kind === 'block'), 'the road ahead is clear');
+  run(w, 1); assert.equal(w.phase, 'running');
+  // A missed corner counts as taken; the run carries on along the real road.
+  const corner = new RunnerWorld(5); corner.start(); corner.items = []; corner.nextRow = Infinity; corner.turns = [{ z: corner.distance + 8, direction: 'left', taken: false }]; corner.nextTurn = Infinity;
+  run(corner, 4); assert.equal(corner.reason, '冲出了弯道');
+  corner.revive(); assert.equal(corner.turns[0].taken, true); run(corner, 2); assert.equal(corner.phase, 'running');
+  for (const mode of ['chase', 'rush']) { const timed = new RunnerWorld(3, mode); timed.start(); timed.phase = 'lost'; assert.equal(timed.canRevive, false); assert.equal(timed.revive(), false); }
+});
+
+test('coin rush: a minute on the clock, clocks add time, gold from the start, then it ends well', () => {
+  const w = new RunnerWorld(8, 'rush'); w.start();
+  assert.equal(w.rush.timeLeft, RUSH_SECONDS); assert.equal(w.night, false);
+  for (let t = 0; t < 120 * 20 && w.phase === 'running'; t++) { drive(w); w.advance(1 / 120); }
+  assert.ok(w.gold > 0, 'gold coins from the start'); assert.ok(w.items.some(i => i.kind === 'clock') || w.clocks > 0, 'clocks to pick up');
+  const left = w.rush.timeLeft; w.items.push({ id: 999, kind: 'clock', lane: w.lane, z: w.distance + 2, done: false }); run(w, .3);
+  assert.ok(w.rush.timeLeft > left + CLOCK_SECONDS - .5, 'a clock adds five seconds');
+  w.rush.timeLeft = .05; w.items = []; run(w, .2);
+  assert.equal(w.phase, 'won'); assert.equal(w.reason, '时间到');
+});
+
+test('dark run: the frog creeps up, lanterns drive it back, knocks bring it on, and it catches the dog at nothing', () => {
+  const w = new RunnerWorld(4, 'dark'); w.start(); w.items = []; w.turns = []; w.nextRow = w.nextTurn = Infinity;
+  assert.equal(w.night, true); assert.equal(w.turnHints, false); assert.equal(w.hunt.gap, DARK_START_GAP);
+  // Six seconds keep the dog short of the canal zipline at 140 m.
+  run(w, 6); assert.ok(w.hunt.gap < DARK_START_GAP - 1.5, `closed to ${w.hunt.gap}`);
+  const before = w.hunt.gap; w.items = [{ id: 1, kind: 'lantern', lane: w.lane, z: w.distance + 2, done: false }]; run(w, .3);
+  assert.ok(w.hunt.gap > before + LANTERN_GAP - .5); assert.equal(w.lanterns, 1);
+  const knock = w.hunt.gap; w.items = [{ id: 2, kind: 'block', lane: w.lane, z: w.distance + 3, done: false }]; run(w, .5);
+  assert.ok(w.hunt.gap < knock - 5, 'a knock lets the frog catch up'); assert.equal(w.phase, 'running');
+  w.hunt.gap = .2; run(w, 1); assert.equal(w.phase, 'caught'); assert.equal(w.reason, '在黑暗里被恐怖奶蛙抓住了');
+  // Lanterns are laid along the course in the dark run, and only there.
+  const course = new RunnerWorld(4, 'dark'); course.start(); for (let t = 0; t < 120 * 20 && course.phase === 'running'; t++) { drive(course); course.advance(1 / 120); }
+  assert.ok(course.lanterns > 0 || course.items.some(i => i.kind === 'lantern'));
+  const day = new RunnerWorld(4, 'endless'); day.start(); for (let t = 0; t < 120 * 20 && day.phase === 'running'; t++) { drive(day); day.advance(1 / 120); }
+  assert.ok(!day.items.some(i => i.kind === 'lantern' || i.kind === 'clock'));
+});
+
+test('the daily course is the same all day and changes the next', () => {
+  const a = dailySeed(new Date(2026, 10, 27, 8)), b = dailySeed(new Date(2026, 10, 27, 23)), c = dailySeed(new Date(2026, 10, 28, 8));
+  assert.equal(a, b); assert.notEqual(a, c);
+  const one = new RunnerWorld(a, 'daily'), two = new RunnerWorld(b, 'daily');
+  assert.deepEqual(one.items.map(i => [i.kind, i.z, i.lane]), two.items.map(i => [i.kind, i.z, i.lane]));
+  assert.equal(isLongRun('daily'), true); assert.equal(isLongRun('rush'), false);
+});
+
+test('upgrades lengthen power-ups for coins; the daily reward builds over a week of days in a row', () => {
+  const none = readUpgrades(null);
+  assert.equal(levelOf(none, 'magnet'), 0); assert.equal(durationAt('magnet', 0), 10); assert.equal(durationAt('magnet', 5), 20);
+  assert.deepEqual(readUpgrades('{"version":1,"levels":{"magnet":9,"shield":2,"fruit":3,"nope":1}}'), { version: 1, levels: { shield: 2 } });
+  const wallet = { silver: 100, gold: 0, diamond: 0 };
+  const bought = buyUpgrade(wallet, none, 'magnet');
+  assert.equal(bought.wallet.silver, 40); assert.equal(levelOf(bought.upgrades, 'magnet'), 1);
+  assert.equal(buyUpgrade(bought.wallet, bought.upgrades, 'magnet'), undefined, 'cannot afford the next level');
+  assert.equal(buyUpgrade({ silver: 999, gold: 999, diamond: 0 }, { version: 1, levels: { magnet: 5 } }, 'magnet'), undefined, 'nothing past the top level');
+  const w = new RunnerWorld(3, 'endless', { durations: upgradedDurations({ version: 1, levels: { magnet: 2 } }) });
+  assert.equal(w.durations.magnet, 14); assert.equal(w.durations.shield, 20);
+  const first = checkIn(undefined, new Date(2026, 10, 27));
+  assert.equal(first.day, 1); assert.deepEqual(first.reward, { silver: 30 });
+  assert.equal(checkIn(first.login, new Date(2026, 10, 27, 22)), undefined, 'once a day');
+  const second = checkIn(first.login, new Date(2026, 10, 28));
+  assert.equal(second.day, 2);
+  assert.equal(checkIn(second.login, new Date(2026, 10, 30)).day, 1, 'a missed day starts over');
+  let login = undefined, day;
+  for (let d = 1; d <= 8; d++) { const visit = checkIn(login, new Date(2026, 11, d)); login = visit.login; day = visit.day; if (d === 7) assert.deepEqual(visit.reward, { diamond: 1 }); }
+  assert.equal(day, 1, 'after a week the streak starts again');
+  assert.equal(readLogin('{"version":1,"last":"2026-11-27","streak":3}').streak, 3); assert.equal(readLogin('{"version":1,"last":"x","streak":3}'), undefined);
+});
+
 test('capture pauses independently and settles after the animation or a skip', () => {
   const w = place('spikes'); run(w, .6); w.pause(); const snapshot = JSON.stringify(w); run(w, 10); assert.equal(JSON.stringify(w), snapshot);
   w.resume(); assert.equal(w.phase, 'caught'); run(w, 3); assert.equal(w.phase, 'lost');
@@ -665,9 +779,29 @@ test('the broken side of a fork mirrors the bend and runs straight out the other
   for (const at of [169, 175, 180, 186, 191]) { const a = route.branch(at - .001, 180, 'left'), b = route.branch(at + .001, 180, 'left'); assert.ok(Math.hypot(a.x - b.x, a.z - b.z) < .01); }
   const out = route.branch(200, 180, 'left');
   assert.ok(Math.abs(out.heading + Math.PI / 2) < 1e-9);
-  assert.ok(Math.abs(out.x - (corner.x - 20)) < 1e-9 && Math.abs(out.z - corner.z) < 1e-9);
+  assert.ok(Math.abs(out.x - (corner.x - 20 - BEND_SLACK)) < 1e-9 && Math.abs(out.z - corner.z) < 1e-9);
   const safe = route.sample(200);
-  assert.ok(Math.abs(safe.x - (corner.x + 20)) < 1e-9, 'the safe side goes the opposite way');
+  assert.ok(Math.abs(safe.x - (corner.x + 20 + BEND_SLACK)) < 1e-9, 'the safe side goes the opposite way');
+  // Straight on past the corner falls short of the corner point by the same slack.
+  const ahead = route.straight(190, 180);
+  assert.ok(Math.abs(ahead.z - (corner.z + 10 - BEND_SLACK)) < 1e-9 && Math.abs(ahead.x - corner.x) < 1e-9);
+});
+
+test('bends keep the pace and turn in and out smoothly', () => {
+  const route = new RunnerRoute3D(); route.sync([{ z: 180, direction: 'right' }, { z: 360, direction: 'left' }], 0);
+  // Every metre of distance is a metre of ground, through the bends as on the straights.
+  for (let d = 150; d < 390; d += .25) {
+    const a = route.sample(d), b = route.sample(d + .25);
+    assert.ok(Math.abs(Math.hypot(b.x - a.x, b.z - a.z) - .25) < .004, `pace at ${d}: ${Math.hypot(b.x - a.x, b.z - a.z)}`);
+  }
+  // The turn rate rises from nothing and falls back to nothing, peaking mid-bend.
+  const half = BEND_LENGTH / 2;
+  assert.equal(route.turnRate(180 - half - .01), 0); assert.ok(route.turnRate(180 - half + .05) < .01);
+  assert.ok(Math.abs(route.turnRate(180) - Math.PI / 2 * 1.5 / BEND_LENGTH) < 1e-9);
+  assert.ok(route.turnRate(360) < 0, 'left turns turn the other way');
+  // The bend still leaves each straight CORNER_RADIUS from the corner point.
+  const corner = route.corner(180), end = route.sample(180 + half);
+  assert.ok(Math.abs(end.x - (corner.x + CORNER_RADIUS)) < 1e-6 && Math.abs(end.z - corner.z) < 1e-6);
 });
 
 test('terrain rises and falls continuously and stays level across scene boundaries', () => {

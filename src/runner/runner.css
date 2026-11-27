@@ -227,6 +227,67 @@
 @keyframes runner-pop{0%{opacity:0;transform:translateX(-50%) scale(.5)}15%{opacity:1;transform:translateX(-50%) scale(1.15)}30%{transform:translateX(-50%) scale(1)}70%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-26px)}}
 @media (prefers-reduced-motion:reduce){.runner-banner.show,.runner-pop.show{animation:none}}
 
+/* New power-ups in the HUD (and on the upgrades page): spring shoes and balloons, drawn in CSS. */
+.runner-effect-spring{color:#9ef08a}.runner-effect-balloon{color:#ff9cc8}
+.runner-effect-spring i,.runner-effect-spring .runner-upgrade-icon{background:repeating-linear-gradient(165deg,#c9f7bd 0 2px,#58d454 2px 4px,transparent 4px 6px) center 30%/54% 56% no-repeat,linear-gradient(#58d454,#58d454) center 88%/76% 14% no-repeat}
+.runner-effect-balloon i,.runner-effect-balloon .runner-upgrade-icon{background:radial-gradient(circle at 34% 34%,#ffb2d2 0 26%,#ff6aa6 27% 33%,transparent 34%),radial-gradient(circle at 66% 38%,#ffe98a 0 23%,#ffd640 24% 30%,transparent 31%),radial-gradient(circle at 50% 60%,#9fd6ff 0 22%,#52b4ff 23% 29%,transparent 30%)}
+.runner-toast[data-kind=chest]{border-color:#ffcf4a;background:linear-gradient(135deg,rgba(58,40,8,.92),rgba(20,32,32,.9))}.runner-toast[data-kind=chest] b{color:#ffe27a}
+.runner-toast[data-kind=spring]{border-color:#6fe05a}.runner-toast[data-kind=spring] b{color:#9ef08a}
+.runner-toast[data-kind=balloon]{border-color:#ff7eb6}.runner-toast[data-kind=balloon] b{color:#ff9cc8}
+
+/* Coin rush clock and the dark run's frog track, in the mode line under the score. */
+.runner-rush-clock{position:relative;flex:none;width:18px;height:18px;border-radius:50%;border:2px solid #6fe3ff;box-shadow:0 0 8px rgba(111,227,255,.5)}
+.runner-rush-clock::after{content:"";position:absolute;left:50%;top:2px;width:2px;height:6px;margin-left:-1px;background:#dff8ff;transform-origin:50% 100%;animation:runner-tick 1s steps(12) infinite}
+@keyframes runner-tick{to{transform:rotate(1turn)}}
+.runner-chase .runner-hunt-frog{right:auto;background:radial-gradient(circle at 35% 35%,#e3ffd8,#5a9a4a 45%,#24401c);box-shadow:0 0 10px rgba(255,60,40,.7),0 0 0 2px #2a1010;transition:left .3s linear}
+.runner-chase .runner-hunt-dog{left:auto;right:-4px}
+.runner-chase b.urgent{color:#ff8a6a;animation:runner-pulse-text .5s ease-in-out infinite alternate}
+
+/* Start screen: the wallet, the day's reward and the five modes. */
+.runner-card .runner-wallet{display:flex;justify-content:center;gap:16px;margin:-4px 0 8px;font:800 13px/1 ui-rounded,system-ui;color:var(--ink);font-variant-numeric:tabular-nums}
+.runner-wallet span{display:inline-flex;align-items:center;gap:5px}
+.runner-wallet i{width:14px;height:14px;border-radius:50%}
+.runner-wallet .silver i{background:radial-gradient(circle at 35% 35%,#fff,#b4c8cf 55%,#677b85)}
+.runner-wallet .gold i{background:radial-gradient(circle at 35% 35%,#fff3b5,#f2c443 45%,#b9851c)}
+.runner-wallet .diamond i{border-radius:3px;transform:rotate(45deg) scale(.82);background:linear-gradient(135deg,#eaffff,#6bd6ff)}
+.runner-card .runner-gift{margin:0 0 8px;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,rgba(255,214,90,.2),rgba(255,214,90,.05));border:1px solid rgba(255,214,90,.35);color:var(--ink);font-size:12px;animation:runner-gift .6s ease-out}
+@keyframes runner-gift{from{opacity:0;transform:translateY(-6px)}}
+.runner-modes{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:8px 0 6px}
+.runner-card .runner-mode-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;margin:0;min-height:54px;padding:6px 2px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);transition:background .2s,border-color .2s,transform .15s}
+.runner-card .runner-mode-card:active{transform:scale(.96)}
+.runner-mode-card span{font-size:10px;font-weight:600;letter-spacing:.12em;opacity:.8}
+.runner-mode-card strong{font-size:12px;color:var(--ink);white-space:nowrap}
+.runner-card .runner-mode-card.on{border-color:var(--gold);background:linear-gradient(180deg,rgba(246,211,107,.3),rgba(246,211,107,.08));box-shadow:inset 0 0 0 1px rgba(246,211,107,.4),0 6px 18px rgba(0,0,0,.25)}
+.runner-mode-card.on strong{color:var(--gold)}
+@media (max-width:420px){.runner-modes{grid-template-columns:repeat(3,1fr)}}
+
+/* Upgrades page. */
+.runner-upgrades{display:grid;gap:8px;margin:12px 0;max-height:52dvh;overflow:auto;text-align:left}
+.runner-upgrade{display:grid;grid-template-columns:40px 1fr 96px;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.04)}
+.runner-upgrade strong{display:block;font-size:14px;color:var(--ink)}
+.runner-upgrade small{display:block;color:var(--muted);font-size:11px}
+.runner-upgrade-icon{width:38px;height:38px;border-radius:10px;background-color:rgba(0,0,0,.3)!important}
+.runner-effect-magnet .runner-upgrade-icon{background:url('/assets/runner/powerups-v1.png') 0 0/200% 200%}
+.runner-effect-shield .runner-upgrade-icon{background:url('/assets/runner/powerups-v1.png') 100% 0/200% 200%}
+.runner-effect-boost .runner-upgrade-icon{background:url('/assets/runner/powerups-v1.png') 0 100%/200% 200%}
+.runner-effect-slow .runner-upgrade-icon{background:url('/assets/runner/pickup-hourglass-v1.webp') center/80% no-repeat}
+.runner-effect-double .runner-upgrade-icon{background:url('/assets/runner/pickup-double-score-v1.webp') center/80% no-repeat}
+.runner-effect-bike .runner-upgrade-icon{background:url('/assets/runner/pickup-bicycle-v1.webp') center/84% no-repeat}
+.runner-pips{display:flex;gap:3px;margin-top:5px}
+.runner-pips i{width:16px;height:5px;border-radius:3px;background:rgba(255,255,255,.14)}
+.runner-pips i.on{background:var(--gold);box-shadow:0 0 6px rgba(246,211,107,.6)}
+.runner-card .runner-upgrade button{margin:0;min-height:34px;font-size:12px;border:1px solid var(--line);background:rgba(246,211,107,.14);color:var(--ink)}
+.runner-card .runner-upgrade button:disabled{opacity:.45;cursor:default}
+
+/* Revive on the result screen. */
+.runner-revive{margin:10px 0 2px;text-align:center}
+.runner-card .runner-revive-button{margin:0;color:#0f2a18;background:linear-gradient(180deg,#a8f5c0,#3fbf6e);box-shadow:0 4px 0 #1f7a43;animation:runner-revive .9s ease-in-out infinite alternate}
+.runner-card .runner-revive-button b{color:#0f2a18}
+.runner-card .runner-revive-button:disabled{opacity:.5;filter:grayscale(.7);animation:none;cursor:default}
+.runner-revive small{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
+@keyframes runner-revive{to{transform:scale(1.03)}}
+@media (prefers-reduced-motion:reduce){.runner-card .runner-revive-button,.runner-rush-clock::after{animation:none}}
+
 /* Missions on the start and result screens. */
 .runner-missions{margin:10px 0 4px;padding:8px 10px;border-radius:12px;background:rgba(0,0,0,.22);text-align:left}
 .runner-card .runner-missions-title{display:flex;justify-content:space-between;align-items:baseline;margin:0 0 4px;font-size:12px;font-weight:800;letter-spacing:.2em;color:var(--gold)}

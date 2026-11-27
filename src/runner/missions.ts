@@ -4,7 +4,7 @@
  * The first missions are written out to teach the game; after them they repeat, a little harder each round.
  */
 import type { CurrencyPurse } from "./shop.ts";
-import type { RunMode } from "./world.ts";
+import { isLongRun, type RunMode } from "./world.ts";
 
 export const MISSIONS_KEY = "nwaxz-runner-missions-v1";
 export const MISSION_SLOTS = 3;
@@ -69,10 +69,10 @@ export function completeMission(book: MissionBook, slot: number): MissionBook {
   return { version: 1, next: book.next + 1, active, completed: book.completed + 1 };
 }
 
-/** How far a run has got with a mission, in the mission's own units. Distance missions are endless mode only; the chase ones are the chase only. */
+/** How far a run has got with a mission, in the mission's own units. Distance missions count in the long runs (endless, daily, dark); the chase ones only in the chase. */
 export function missionValue(mission: Mission, s: RunStats) {
   switch (mission.kind) {
-    case "distance": return s.mode === "endless" ? Math.floor(s.distance) : 0;
+    case "distance": return isLongRun(s.mode) ? Math.floor(s.distance) : 0;
     case "silver": return s.silver;
     case "gold": return s.gold;
     case "near": return s.nearMisses;
@@ -92,7 +92,7 @@ export const missionDone = (mission: Mission, s: RunStats) => missionValue(missi
 
 export function missionText({ kind, target }: Mission) {
   switch (kind) {
-    case "distance": return `无限模式跑满 ${target} 米`;
+    case "distance": return `一局跑满 ${target} 米`;
     case "silver": return `收集 ${target} 枚银币`;
     case "gold": return `收集 ${target} 枚金币`;
     case "near": return `惊险闪避 ${target} 次`;

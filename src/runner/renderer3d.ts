@@ -24,7 +24,7 @@ import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH
 import { flameMesh } from "./fire3d.ts";
 import { RunnerAmbience } from "./ambience3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
-import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
+import { BEND_SLACK, CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
 import { BRIDGE_FORK_BREAK, coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, SHAFT_EDGE, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
 
@@ -52,8 +52,12 @@ const GROUND_SIZE = 900, GROUND_SNAP = 70;
 const FORK_STUB_START = (ROAD_HALF * 2 + 2) / 2;
 const FORK_GAP_END = 11.5;
 const FORK_CHASM = { start: .25, end: FORK_GAP_END + .75, half: 4.2 };
-// Straight on at a mine junction, in metres past the corner: the floor opens into a flooded shaft.
-const SHAFT = { start: SHAFT_EDGE - 1.2, end: SHAFT_EDGE + 4.6, half: ROAD_HALF + .3, water: 9 };
+// Corner geometry is built out from the corner point, but the dog's distance past a corner counts
+// along its bend: round a bend it is BEND_SLACK further from the corner point, straight on that much
+// short of it. These put the broken bridge and the shaft where the dog actually reaches them.
+const FORK_DECK = FORK_BRIDGE_START + BEND_SLACK;
+// Straight on at a mine junction, in metres past the corner point: the floor opens into a flooded shaft.
+const SHAFT = { start: SHAFT_EDGE - BEND_SLACK - 1.2, end: SHAFT_EDGE - BEND_SLACK + 4.6, half: ROAD_HALF + .3, water: 9 };
 /** Inner face of the mine walls, from the track centre. */
 const MINE_WALL = ROAD_HALF + 4.4;
 /** Open water either side of each leg of the log bridge. */
@@ -67,14 +71,12 @@ const FLAMES = [
 ] as const;
 const POWER_COLORS: Record<RunPowerKind, [string, string]> = {
   magnet: ["#ff5a4a", "#ffb0a0"], shield: ["#5fe0ff", "#d6f8ff"], boost: ["#ffc73a", "#fff1b0"],
-  slow: ["#ba91ee", "#ecd6ff"], double: ["#e8a344", "#ffe8ab"],
-  bike: ["#44cbb2", "#acf9e8"], fruit: ["#ffb831", "#fff0a3"],
+  slow: ["#ba91ee", "#ecd6ff"], double: ["#e8a344", "#ffe8ab"], spring: ["#6fe05a", "#d8ffc8"],
+  bike: ["#44cbb2", "#acf9e8"], fruit: ["#ffb831", "#fff0a3"], balloon: ["#ff7eb6", "#ffe0f0"],
 };
-const POWER_ART = {
-  magnet: 0, shield: 1, boost: 2,
-  slow: "/assets/runner/pickup-hourglass-v1.webp", double: "/assets/runner/pickup-double-score-v1.webp",
-  bike: "/assets/runner/pickup-bicycle-v1.webp",
-} satisfies Record<Exclude<RunPowerKind, "fruit">, number | string>;
+const PICKUP_COLORS: Record<"chest" | "clock" | "lantern", [string, string]> = {
+  chest: ["#ffcf4a", "#fff3c0"], clock: ["#6fe3ff", "#dff8ff"], lantern: ["#ff9a4a", "#ffe1c4"],
+};
 const FRUIT_TREE = "runner-fruit-tree";
 const ORES = ["mine-amethyst", "mine-calcite", "mine-malachite"] as const;
 /** Radius of the rolling boulders and snowballs, for how far they turn as they roll. */
@@ -195,6 +197,10 @@ export class RunnerRenderer3D {
   private appleSparkles: ParticleSystem;
   /** Chase mode: the golden apple held over the fleeing frog's head, and the lane it is drifting into. */
   private chaseApple!: TransformNode;
+  /** Balloons over the flying dog, springs under its paws, and the glow of the lantern it carries in the dark. */
+  private balloonBunch!: TransformNode;
+  private springFeet!: TransformNode;
+  private dogLantern!: Mesh;
   private frogLane = 1;
   private fireEmbers: ParticleSystem;
   private fireSmoke: ParticleSystem;
@@ -212,9 +218,15 @@ export class RunnerRenderer3D {
   private placeOnRoute = (distance: number, lateral: number) => this.place(distance, lateral);
   /** How hard the ground shakes under a boulder or cart rolling close by, 0–1. */
   private rumble = 0;
+  /** The dog's lean into the bend it is running round, smoothed (radians). */
+  private turnLean = 0;
+  /** The camera's roll, smoothed (radians). */
+  private camBank = 0;
+  /** How far the camera follows the dog up, from a jump's little (0) to a balloon flight's all the way (1), smoothed. */
+  private camRise = 0;
   private coinMats: Record<"silver" | "gold" | "diamond", StandardMaterial>;
   private dogLook = "original";
-  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1, bumps: 0, landed: -Infinity, slides: 0, doubles: 0, near: 0 };
+  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1, bumps: 0, landed: -Infinity, slides: 0, doubles: 0, near: 0, revives: 0 };
   private flash = { shield: 0, power: 0 };
   private turnBlend = { x: 0, z: 0 };
   private camYaw = 0;
@@ -321,6 +333,12 @@ export class RunnerRenderer3D {
     this.cart.setEnabled(false); this.bicycle.setEnabled(false); this.ropeHandle.setEnabled(false);
     this.chaseApple = new TransformNode("runner-chase-apple", this.scene);
     this.instance("fruit", this.chaseApple); this.chaseApple.setEnabled(false);
+    this.balloonBunch = new TransformNode("runner-balloon-bunch", this.scene);
+    this.instance("balloon-bunch", this.balloonBunch); this.balloonBunch.setEnabled(false);
+    this.springFeet = new TransformNode("runner-spring-feet", this.scene);
+    this.instance("spring-feet", this.springFeet); this.springFeet.setEnabled(false);
+    this.dogLantern = MeshBuilder.CreatePlane("runner-dog-lantern", { size: 5.5 }, this.scene);
+    this.dogLantern.material = this.mats["lamp-halo"]; this.dogLantern.billboardMode = Mesh.BILLBOARDMODE_ALL; this.dogLantern.isPickable = false; this.dogLantern.setEnabled(false);
     this.buildShark();
     this.buildSlots();
     this.buildWeather();
@@ -579,10 +597,29 @@ export class RunnerRenderer3D {
     this.sharkShadowMaterial();
     this.leafMaterial("bamboo-leaves", ["#5f8f36", "#77a644", "#4b7a2e", "#89b552"], [26, 5], 70, 11);
     this.leafMaterial("fern-leaves", ["#4f8a39", "#6aa249", "#3f7430"], [18, 6], 44, 29);
-    for (const [kind, [color]] of Object.entries(POWER_COLORS)) {
+    for (const [kind, [color]] of [...Object.entries(POWER_COLORS), ...Object.entries(PICKUP_COLORS)]) {
       const ring = this.glow(`ring-${kind}`, color, color); ring.alpha = .8; ring.disableLighting = true;
       const beam = this.glow(`beam-${kind}`, color, color); beam.alpha = .18; beam.disableLighting = true; beam.backFaceCulling = false; beam.alphaMode = Engine.ALPHA_ADD;
     }
+    // Power-up models: glossy paint, polished metal, glass and paper.
+    const glossy = (name: string, color: string, emissive: string, specular = .6, power = 64) => {
+      const m = this.glow(name, color, emissive); m.specularColor.setAll(specular); m.specularPower = power;
+      return m;
+    };
+    glossy("magnet-red", "#d8312a", "#3c0906");
+    glossy("chrome", "#d9dde2", "#30353b", .95, 110);
+    glossy("shield-face", "#3fa2e2", "#0d3d60");
+    glossy("shoe-red", "#ec5236", "#3c0d06");
+    glossy("feather", "#ffffff", "#6a6a6a", .3, 24);
+    const glass = glossy("glass", "#d8f2ff", "#25485a", 1, 110); glass.alpha = .38; glass.backFaceCulling = false;
+    glossy("sand", "#f2c768", "#5c3c08", .1, 16);
+    glossy("spring-green", "#58d454", "#123c10", .7, 80);
+    for (const [name, color, emissive] of [["balloon-pink", "#ff6aa6", "#4c0a26"], ["balloon-yellow", "#ffd640", "#4c3a06"], ["balloon-blue", "#52b4ff", "#0a2c4c"], ["balloon-green", "#62e08a", "#0c3a1c"], ["balloon-purple", "#b27cff", "#2a1050"]] as const) glossy(name, color, emissive, .95, 90);
+    glossy("chest-wood", "#9c5c2c", "#200f04", .15, 20);
+    glossy("clock-red", "#e4463a", "#3c0a06");
+    glossy("clock-face", "#fff8ea", "#6a6660", .2, 20);
+    glossy("lantern-paper", "#ff5c36", "#d8401c", .2, 20);
+    glossy("string", "#f2f2f2", "#5a5a5a", 0, 1);
     for (const grove of GROVES) for (const { name } of grove.trees) {
       if (this.mats[`tree-${name}`]) continue;
       const tree = this.mat(`tree-${name}`, "#ffffff", `/assets/runner/trees/${name}-v1.webp`);
@@ -1694,7 +1731,7 @@ export class RunnerRenderer3D {
     });
     // Fork, broken side. Local +Z runs away from the corner; y = 0 is the road surface.
     make("fork-stub", r => {
-      const length = FORK_BRIDGE_START - FORK_STUB_START;
+      const length = FORK_DECK - FORK_STUB_START;
       this.box("fork-stub-base", r, [W, 24, length], [0, -12.5, length / 2], "stone-dark");
       for (const s of [-1, 1]) this.box("fork-stub-curb", r, [.4, .3, length], [s * (ROAD_HALF + .05), .1, length / 2], "stone");
     });
@@ -1859,25 +1896,151 @@ export class RunnerRenderer3D {
       const gem = MeshBuilder.CreatePolyhedron("diamond-gem", { type: 1, size: .38 }, this.scene);
       gem.parent = r; gem.material = this.coinMats.diamond;
     });
-    const powers = this.texture("/assets/runner/powerups-v1.png");
-    for (const kind of RUN_POWERS) {
-      if (kind === "fruit") continue;
-      const art = POWER_ART[kind];
-      const texture = typeof art === "number" ? powers.clone() : this.texture(art);
-      texture.hasAlpha = true;
-      if (typeof art === "number") {
-        texture.uScale = texture.vScale = .5; texture.uOffset = (art % 2) * .5; texture.vOffset = art < 2 ? .5 : 0;
+    // The double-score medal keeps its painted face.
+    const medalArt = this.texture("/assets/runner/pickup-double-score-v1.webp"); medalArt.hasAlpha = true;
+    const medal = new StandardMaterial("runner-medal-art", this.scene);
+    medal.diffuseTexture = medalArt; medal.useAlphaFromDiffuseTexture = true; medal.disableLighting = true; medal.backFaceCulling = false;
+    medal.emissiveColor = Color3.White(); medal.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; medal.alphaCutOff = .4;
+    this.mats["medal-art"] = medal;
+    // Power-ups and pickups are small models that turn over a ring of light, under a light pillar so they read from far away.
+    for (const kind of [...RUN_POWERS.filter(kind => kind !== "fruit"), "chest", "clock", "lantern"] as const) make(kind, r => {
+      const model = new TransformNode("model", this.scene); model.parent = r; model.position.y = 1.15;
+      this.pickupModel(kind, model);
+      this.mergeByMaterial(model);
+      const ring = MeshBuilder.CreateTorus("halo", { diameter: 1.42, thickness: .08, tessellation: 28 }, this.scene); ring.parent = r; ring.position.y = .06; ring.material = this.mats[`ring-${kind}`];
+      this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
+    });
+    // Carried while flying: a big bunch of balloons on strings gathered in the dog's paws.
+    make("balloon-bunch", r => this.balloons(r, 1.6, 5));
+    // Worn while the spring shoes last: a coil under each pair of paws.
+    make("spring-feet", r => {
+      for (const x of [-.26, .26]) this.coil(r, x, .07, .3, 3.5, .03);
+      this.mergeByMaterial(r);
+    });
+  }
+
+  /** A coil spring of `turns` turns, `height` tall, standing at (x, 0, 0). */
+  private coil(parent: TransformNode, x: number, radius: number, height: number, turns: number, wire: number) {
+    const path: Vector3[] = [];
+    for (let i = 0; i <= turns * 16; i++) { const a = i / 16 * Math.PI * 2; path.push(new Vector3(x + Math.cos(a) * radius, i / (turns * 16) * height, Math.sin(a) * radius)); }
+    const tube = MeshBuilder.CreateTube("spring-coil", { path, radius: wire, tessellation: 8 }, this.scene);
+    tube.parent = parent; tube.material = this.mats.chrome; tube.isPickable = false;
+    return tube;
+  }
+
+  /** `count` balloons in a cluster, their strings gathered at the parent's origin; `size` scales the lot. */
+  private balloons(parent: TransformNode, size: number, count: number) {
+    const colours = ["balloon-pink", "balloon-yellow", "balloon-blue", "balloon-green", "balloon-purple"];
+    const spots = [[0, 1.05, 0], [-.34, .86, .12], [.34, .9, -.1], [-.12, .78, -.3], [.16, .8, .3]] as const;
+    for (let i = 0; i < count; i++) {
+      const [x, y, z] = spots[i];
+      const balloon = MeshBuilder.CreateSphere("balloon", { diameter: .46, segments: 14 }, this.scene);
+      balloon.parent = parent; balloon.position.set(x * size, y * size, z * size); balloon.scaling.set(size, size * 1.18, size); balloon.material = this.mats[colours[i % colours.length]]; balloon.isPickable = false;
+      const knot = this.cylinder("balloon-knot", parent, { diameterTop: .08, diameterBottom: 0, height: .08, tessellation: 6 }, [x * size, y * size - .29 * size, z * size], colours[i % colours.length]);
+      knot.scaling.setAll(size);
+      // A string from the knot down to where the paws hold them.
+      const top = new Vector3(x * size, (y - .33) * size, z * size), length = top.length();
+      const line = this.cylinder("balloon-string", parent, { diameter: .012 * size, height: length, tessellation: 4 }, [top.x / 2, top.y / 2, top.z / 2], "string");
+      line.rotation.set(Math.acos(Math.max(-1, Math.min(1, top.y / length))), Math.atan2(top.x, top.z), 0);
+    }
+  }
+
+  /** The model for each power-up and pickup, built round the origin. */
+  private pickupModel(kind: RunPowerKind | "chest" | "clock" | "lantern", r: TransformNode) {
+    switch (kind) {
+      case "magnet": {
+        // A horseshoe magnet, poles down, with polished tips.
+        const path: Vector3[] = [new Vector3(-.3, -.34, 0), new Vector3(-.3, -.05, 0)];
+        for (let i = 0; i <= 16; i++) { const a = Math.PI - i / 16 * Math.PI; path.push(new Vector3(Math.cos(a) * .3, Math.sin(a) * .3, 0)); }
+        path.push(new Vector3(.3, -.05, 0), new Vector3(.3, -.34, 0));
+        const arch = MeshBuilder.CreateTube("magnet-arch", { path, radius: .12, tessellation: 14, cap: Mesh.CAP_ALL }, this.scene);
+        arch.parent = r; arch.material = this.mats["magnet-red"]; arch.isPickable = false;
+        for (const x of [-.3, .3]) this.cylinder("magnet-tip", r, { diameter: .25, height: .16, tessellation: 14 }, [x, -.42, 0], "chrome");
+        return;
       }
-      const m = new StandardMaterial(`runner-power-${kind}`, this.scene);
-      m.diffuseTexture = texture; m.useAlphaFromDiffuseTexture = true; m.disableLighting = true; m.backFaceCulling = false;
-      m.emissiveColor = Color3.White(); m.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; m.alphaCutOff = .4;
-      this.mats[`power-${kind}`] = m;
-      make(kind, r => {
-        const icon = MeshBuilder.CreatePlane("icon", { size: 1.25 }, this.scene); icon.parent = r; icon.position.y = 1.15; icon.material = m; icon.billboardMode = Mesh.BILLBOARDMODE_Y;
-        const ring = MeshBuilder.CreateTorus("halo", { diameter: 1.42, thickness: .08, tessellation: 28 }, this.scene); ring.parent = r; ring.position.y = .06; ring.material = this.mats[`ring-${kind}`];
-        // A light pillar so power-ups read from far away.
-        this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
-      });
+      case "shield": {
+        const face = this.cylinder("shield-face", r, { diameter: .95, height: .09, tessellation: 28 }, [0, 0, 0], "shield-face"); face.rotation.x = Math.PI / 2;
+        const rim = MeshBuilder.CreateTorus("shield-rim", { diameter: .95, thickness: .08, tessellation: 32 }, this.scene); rim.parent = r; rim.rotation.x = Math.PI / 2; rim.material = this.mats.chrome;
+        for (const side of [-1, 1]) {
+          const boss = MeshBuilder.CreateSphere("shield-boss", { diameter: .26, segments: 10 }, this.scene); boss.parent = r; boss.position.z = side * .05; boss.scaling.z = .5; boss.material = this.mats.gold;
+          this.box("shield-bar", r, [.62, .07, .04], [0, 0, side * .055], "gold"); this.box("shield-bar", r, [.07, .62, .04], [0, 0, side * .055], "gold");
+        }
+        return;
+      }
+      case "boost": {
+        // A winged running shoe.
+        this.box("shoe-sole", r, [.34, .08, .66], [0, -.2, 0], "lamp-iron");
+        this.box("shoe-upper", r, [.32, .26, .44], [0, -.04, -.08], "shoe-red");
+        const toe = MeshBuilder.CreateSphere("shoe-toe", { diameter: .34, segments: 10 }, this.scene); toe.parent = r; toe.position.set(0, -.1, .17); toe.scaling.set(1, .62, 1.1); toe.material = this.mats["shoe-red"];
+        this.box("shoe-stripe", r, [.33, .05, .3], [0, .04, -.06], "gold");
+        for (const side of [-1, 1]) for (let k = 0; k < 3; k++) {
+          const feather = MeshBuilder.CreateSphere("shoe-feather", { diameter: .4 - k * .07, segments: 8 }, this.scene);
+          feather.parent = r; feather.position.set(side * (.2 + k * .02), .08 + k * .1, -.2 - k * .05); feather.scaling.set(.12, .35, 1); feather.rotation.set(-.6 - k * .25, side * .25, side * .35); feather.material = this.mats.feather;
+        }
+        return;
+      }
+      case "slow": {
+        // An hourglass: glass bulbs, running sand, a wooden frame.
+        this.cylinder("hourglass-glass", r, { diameterTop: .5, diameterBottom: .07, height: .4, tessellation: 18 }, [0, .2, 0], "glass");
+        this.cylinder("hourglass-glass", r, { diameterTop: .07, diameterBottom: .5, height: .4, tessellation: 18 }, [0, -.2, 0], "glass");
+        this.cylinder("hourglass-sand", r, { diameterTop: .3, diameterBottom: .05, height: .16, tessellation: 14 }, [0, .1, 0], "sand");
+        this.cylinder("hourglass-sand", r, { diameterTop: .05, diameterBottom: .42, height: .17, tessellation: 14 }, [0, -.31, 0], "sand");
+        this.cylinder("hourglass-stream", r, { diameter: .025, height: .26, tessellation: 4 }, [0, -.13, 0], "sand");
+        for (const y of [-.43, .43]) this.cylinder("hourglass-cap", r, { diameter: .62, height: .07, tessellation: 18 }, [0, y, 0], "chest-wood");
+        for (let k = 0; k < 3; k++) { const a = k / 3 * Math.PI * 2; this.cylinder("hourglass-post", r, { diameter: .045, height: .84, tessellation: 6 }, [Math.cos(a) * .27, 0, Math.sin(a) * .27], "gold"); }
+        return;
+      }
+      case "double": {
+        const disc = this.cylinder("medal", r, { diameter: .95, height: .1, tessellation: 30 }, [0, 0, 0], "gold"); disc.rotation.x = Math.PI / 2;
+        const rim = MeshBuilder.CreateTorus("medal-rim", { diameter: .95, thickness: .07, tessellation: 32 }, this.scene); rim.parent = r; rim.rotation.x = Math.PI / 2; rim.material = this.mats.gold;
+        for (const side of [-1, 1]) {
+          const face = MeshBuilder.CreatePlane("medal-face", { size: .78 }, this.scene); face.parent = r; face.position.z = side * .056; face.rotation.y = side > 0 ? Math.PI : 0; face.material = this.mats["medal-art"]; face.isPickable = false;
+        }
+        return;
+      }
+      case "spring": {
+        this.box("spring-sole", r, [.36, .08, .62], [0, -.38, 0], "spring-green");
+        this.coil(r, 0, .17, .5, 4.5, .045).position.y = -.34;
+        this.box("spring-plate", r, [.4, .06, .4], [0, .2, 0], "spring-green");
+        return;
+      }
+      case "bike": {
+        const bike = this.templates.get("bicycle")!.instantiateHierarchy(r, { doNotInstantiate: true })!;
+        bike.position.set(0, -.7, 0); bike.scaling.setAll(.85); bike.rotation.y = Math.PI / 2;
+        return;
+      }
+      case "balloon": this.balloons(r, .9, 3); r.position.y -= .45; return;
+      case "chest": {
+        this.box("chest-body", r, [.8, .44, .54], [0, -.16, 0], "chest-wood");
+        const lid = this.cylinder("chest-lid", r, { diameter: .54, height: .8, tessellation: 18 }, [0, .06, 0], "chest-wood"); lid.rotation.z = Math.PI / 2; lid.scaling.y = 1; lid.scaling.z = .62;
+        for (const y of [-.32, .02]) this.box("chest-band", r, [.83, .06, .57], [0, y, 0], "gold");
+        for (const x of [-.3, .3]) { const band = this.cylinder("chest-lid-band", r, { diameter: .57, height: .06, tessellation: 18 }, [x, .06, 0], "gold"); band.rotation.z = Math.PI / 2; band.scaling.z = .65; }
+        this.box("chest-lock", r, [.13, .17, .05], [0, -.04, .29], "gold");
+        return;
+      }
+      case "clock": {
+        const body = this.cylinder("clock-body", r, { diameter: .72, height: .26, tessellation: 28 }, [0, 0, 0], "clock-red"); body.rotation.x = Math.PI / 2;
+        for (const side of [-1, 1]) {
+          const face = this.cylinder("clock-face", r, { diameter: .58, height: .02, tessellation: 28 }, [0, 0, side * .135], "clock-face"); face.rotation.x = Math.PI / 2;
+          this.box("clock-hand", r, [.04, .22, .02], [0, .08, side * .15], "lamp-iron");
+          const hand = this.box("clock-hand", r, [.035, .17, .02], [.06, -.03, side * .15], "lamp-iron"); hand.rotation.z = -1.1;
+        }
+        for (const side of [-1, 1]) {
+          const bell = MeshBuilder.CreateSphere("clock-bell", { diameter: .3, segments: 10 }, this.scene); bell.parent = r; bell.position.set(side * .22, .38, 0); bell.scaling.y = .7; bell.material = this.mats.chrome;
+          this.cylinder("clock-leg", r, { diameter: .06, height: .14, tessellation: 6 }, [side * .2, -.4, 0], "lamp-iron");
+        }
+        this.box("clock-hammer", r, [.06, .16, .06], [0, .42, 0], "chrome");
+        return;
+      }
+      case "lantern": {
+        const paper = MeshBuilder.CreateSphere("lantern-paper", { diameter: .62, segments: 16 }, this.scene); paper.parent = r; paper.scaling.y = .85; paper.material = this.mats["lantern-paper"];
+        for (const y of [-.28, .28]) this.cylinder("lantern-cap", r, { diameter: .3, height: .08, tessellation: 12 }, [0, y, 0], "lamp-iron");
+        for (const y of [-.12, .12]) { const rib = MeshBuilder.CreateTorus("lantern-rib", { diameter: .6, thickness: .02, tessellation: 24 }, this.scene); rib.parent = r; rib.position.y = y; rib.material = this.mats["lamp-iron"]; }
+        this.cylinder("lantern-tassel", r, { diameterTop: .04, diameterBottom: .12, height: .22, tessellation: 8 }, [0, -.42, 0], "lantern-paper");
+        const ring = MeshBuilder.CreateTorus("lantern-hook", { diameter: .12, thickness: .02, tessellation: 12 }, this.scene); ring.parent = r; ring.position.y = .36; ring.rotation.x = Math.PI / 2; ring.material = this.mats["lamp-iron"];
+        const halo = MeshBuilder.CreatePlane("halo", { size: 1.8 }, this.scene); halo.parent = r; halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+        return;
+      }
     }
   }
 
@@ -1946,6 +2109,13 @@ export class RunnerRenderer3D {
 
   /** Folds a template's static parts into one mesh per material; billboards (lamp halos) stay separate. */
   private mergeByMaterial(root: TransformNode) {
+    // MergeMeshes bakes each part's world transform into the merged mesh, which then hangs under
+    // `root` again; so `root` sits at the origin while merging (a turning pivot or a raised model
+    // would otherwise count twice) and goes back afterwards.
+    const parent = root.parent, place = { p: root.position.clone(), r: root.rotation.clone(), s: root.scaling.clone() };
+    root.parent = null; root.position.setAll(0); root.rotation.setAll(0); root.scaling.setAll(1);
+    root.computeWorldMatrix(true);
+    for (const node of root.getDescendants(false)) if (node instanceof TransformNode) node.computeWorldMatrix(true);
     const meshes = root.getChildMeshes(false).filter((mesh): mesh is Mesh => mesh instanceof Mesh && mesh.billboardMode === Mesh.BILLBOARDMODE_NONE);
     for (const mesh of meshes) mesh.setParent(root);
     const groups = new Map<unknown, Mesh[]>();
@@ -1958,6 +2128,7 @@ export class RunnerRenderer3D {
     }
     // Pivots used while building are empty now.
     for (const node of root.getDescendants(false)) if (node.getClassName() === "TransformNode" && (node as TransformNode).getChildMeshes(false).length === 0) node.dispose();
+    root.parent = parent; root.position.copyFrom(place.p); root.rotation.copyFrom(place.r); root.scaling.copyFrom(place.s);
   }
 
   /** A creeper wound round a log, with leaves, in the log's own frame (its axis along local Y). */
@@ -2317,17 +2488,17 @@ export class RunnerRenderer3D {
   private roadPitch(distance: number, half = .75) {
     return -Math.atan2(elevationAt(distance + half) - elevationAt(distance - half), half * 2);
   }
-  /** Road centre under the dog: straight on into the corner until the turn is actually taken. */
-  private dogCentre(world: RunnerWorld): RoutePoint {
+  /** Road centre under the dog (at `at`, its drawn distance): straight on into the corner until the turn is actually taken. */
+  private dogCentre(world: RunnerWorld, at = world.distance): RoutePoint {
     const wrong = world.wrongTurn;
     if (wrong) {
       // The trap side is level with the corner plaza.
-      const point = wrong.wrong === "straight" ? this.route.straight(world.distance, wrong.z) : this.route.branch(world.distance, wrong.z, wrong.direction === "left" ? "right" : "left");
-      if (point) return { ...point, y: elevationAt(Math.min(world.distance, wrong.z)) };
+      const point = wrong.wrong === "straight" ? this.route.straight(at, wrong.z) : this.route.branch(at, wrong.z, wrong.direction === "left" ? "right" : "left");
+      if (point) return { ...point, y: elevationAt(Math.min(at, wrong.z)) };
     }
     const turn = world.approachingTurn;
-    if (turn && !turn.taken && world.distance > turn.z - CORNER_RADIUS) return this.route.straight(world.distance, turn.z) ?? this.route.sample(world.distance);
-    return this.route.sample(world.distance);
+    if (turn && !turn.taken && at > turn.z - CORNER_RADIUS) return this.route.straight(at, turn.z) ?? this.route.sample(at);
+    return this.route.sample(at);
   }
 
   /** Height of the water the dog falls into. */
@@ -2351,6 +2522,11 @@ export class RunnerRenderer3D {
     const now = performance.now() / 1000, dt = this.lastTime ? Math.min(.1, now - this.lastTime) : 0;
     this.lastTime = now;
     if (this.lastWorld !== world) this.reset(world);
+    if (world.revives !== this.seen.revives) {
+      // Back on its feet: no splash pending, the camera back behind the dog, a burst of light round it.
+      this.seen.revives = world.revives; this.waterImpact = false; this.captureCamera = undefined; this.turnBlend = { x: 0, z: 0 };
+      this.flash.shield = 1;
+    }
     this.adaptResolution(world, dt);
     this.route.sync(world.turns, world.distance);
 
@@ -2360,7 +2536,7 @@ export class RunnerRenderer3D {
     const t = world.elapsed + (capture ? world.captureTime : 0);
     const running = world.phase === "running";
 
-    this.drawAtmosphere(theme, look, night, weather);
+    this.drawAtmosphere(theme, look, night, weather, world.mode === "dark");
     this.drawRoad(world);
     this.drawCorners(world);
     this.drawProps(world, t, dt);
@@ -2382,12 +2558,16 @@ export class RunnerRenderer3D {
       if (straight && bend) { this.turnBlend.x += straight.x - bend.x; this.turnBlend.z += straight.z - bend.z; }
     }
     const decay = Math.exp(-dt * 9); this.turnBlend.x *= decay; this.turnBlend.z *= decay;
-    const centre = this.dogCentre(world);
+    // Drawn where the dog is now, not where the last fixed step left it: up to one step further on.
+    const lag = world.lag, view = world.distance + lag * world.speed;
+    const centre = this.dogCentre(world, view);
     centre.x += this.turnBlend.x; centre.z += this.turnBlend.z;
     // A bump against the side of the road throws the dog at the edge and straight back.
     const sinceBump = world.elapsed - world.wallBumpAt;
     const lurch = sinceBump >= 0 && sinceBump < .28 && !this.settings.reducedMotion ? world.wallSide * .55 * Math.sin(Math.PI * sinceBump / .28) : 0;
-    const lateral = (world.position - 1) * LANE_WIDTH * rideLateralScale(world.distance, world.ride) + lurch;
+    // The lane glide (rate 16 a second in the simulation) carried on over the same lag.
+    const position = world.position + (world.lane - world.position) * Math.min(1, lag * 16);
+    const lateral = (position - 1) * LANE_WIDTH * rideLateralScale(world.distance, world.ride) + lurch;
     const rx = Math.cos(centre.heading), rz = -Math.sin(centre.heading), fx = Math.sin(centre.heading), fz = Math.cos(centre.heading);
     const player = new Vector3(centre.x + rx * lateral, centre.y, centre.z + rz * lateral);
     this.drawRides(world, player, centre, lateral);
@@ -2421,12 +2601,16 @@ export class RunnerRenderer3D {
     const land = animate ? Math.max(0, 1 - (world.elapsed - world.ropeLandedAt) / .16, 1 - (world.elapsed - world.landedAt) / .14) : 0;
     const takeoff = animate && world.airborne ? Math.max(0, 1 - (world.elapsed - world.jumpedAt) / .18) : 0;
     const squash = (pose.sheet === "actions" && pose.frame === 3 ? .1 : 0) + land * .08;
-    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop, player.z + fz * fall.forward);
-    const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
     const motion = !capture && !this.settings.reducedMotion;
+    // A gallop bounces once a stride.
+    const gallop = motion && pose.sheet === "run" && !this.schoolSheet ? Math.sin(Math.PI * world.gait) ** 2 * .07 : 0;
+    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop + gallop, player.z + fz * fall.forward);
+    const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
     const swing = rope ? -lateral * .11 * (1 - release) + Math.sin(Math.PI * release) * .17 : 0;
-    // Lean into lane changes: a little on foot, more on a ride or the bicycle.
-    const lean = motion ? (world.lane - world.position) * (world.ride || bike ? .13 : .07) + swing : 0;
+    // Lean into lane changes (a little on foot, more on a ride or the bicycle) and into bends.
+    const turning = this.route.turnRate(view) * world.speed;
+    this.turnLean += (Math.max(-.16, Math.min(.16, turning * .035)) - this.turnLean) * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
+    const lean = motion ? (world.lane - position) * (world.ride || bike ? .13 : .07) + swing + this.turnLean : 0;
     this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.set(1 + land * .06 - takeoff * .05, 1 - land * .10 + takeoff * .09, 1);
@@ -2443,6 +2627,27 @@ export class RunnerRenderer3D {
       }
     }
     this.dog.root.setEnabled(this.dog.material.alpha > 0);
+    // Balloons overhead while flying, swaying; spring coils under the paws while the shoes last.
+    const flying = world.flying && !capture;
+    this.balloonBunch.setEnabled(flying);
+    if (flying) {
+      this.balloonBunch.position.set(this.dog.root.position.x, this.dog.root.position.y + .45, this.dog.root.position.z);
+      this.balloonBunch.rotation.set(motion ? Math.sin(t * 1.1) * .06 : 0, centre.heading, motion ? Math.sin(t * 1.4) * .09 - lean * .5 : 0);
+    }
+    const springs = world.spring > 0 && !capture && !world.ride && !world.flying && !bike;
+    this.springFeet.setEnabled(springs);
+    if (springs) {
+      this.springFeet.position.set(player.x, player.y + world.jumpHeight - .02, player.z);
+      this.springFeet.rotation.y = centre.heading;
+      this.springFeet.scaling.set(1, 1 - land * .45 + takeoff * .5, 1);
+    }
+    // In the dark run the dog carries a lantern: a warm pool of light round it.
+    const lantern = world.mode === "dark" && !falling;
+    this.dogLantern.setEnabled(lantern);
+    if (lantern) {
+      this.dogLantern.position.set(player.x + fx * .6, player.y + 1.1 + world.jumpHeight, player.z + fz * .6);
+      this.dogLantern.scaling.setAll(1 + (motion ? Math.sin(t * 7) * .04 : 0));
+    }
     this.skinHalo.setEnabled((world.fruit > 0 || this.dogLook !== "original") && !capture && !world.ride);
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(world.fruit > 0 ? "#ffcf41" : getDogLook(this.dogLook).color);
@@ -2457,10 +2662,12 @@ export class RunnerRenderer3D {
 
     this.drawEffects(world, player, t, dt, capture, lift);
 
-    if (!falling) this.updateCamera(world, player, centre, grab, dt, t);
+    if (!falling) this.updateCamera(world, player, centre, grab, dt, t, view, turning);
     // Chaser: shown for the opening sprint and after a stumble.
     const frog = this.chaserSprite;
-    const close = capture ? 1 : world.phase === "ready" ? 0 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
+    // In the dark run the frog is always there, as far back as it actually is.
+    const close = capture || world.hunt ? 1 : world.phase === "ready" ? 0 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
+    const huntBack = world.hunt && world.phase !== "ready" ? Math.max(2.4, Math.min(18, world.hunt.gap)) : undefined;
     this.chaseApple.setEnabled(false);
     if (world.chase) {
       this.drawFrogAhead(world, t, dt);
@@ -2477,9 +2684,9 @@ export class RunnerRenderer3D {
       const onBridge = !!world.bridge;
       const base = onBridge ? centre : player;
       // Straight behind the dog it keeps further back so it does not hide the dog from the camera.
-      const side = onBridge ? 0 : world.position > 1.4 ? -1 : 1, back = onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7;
+      const side = onBridge ? 0 : world.position > 1.4 ? -1 : 1, back = huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
       frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, base.z - fz * back + rz * side * 1.45);
-      frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0));
+      frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0 || !!world.hunt));
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
 
@@ -2560,9 +2767,9 @@ export class RunnerRenderer3D {
     this.waterImpact = false;
     this.seen = {
       silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1, bumps: world.wallBumps,
-      landed: world.landedAt, slides: world.slides, doubles: world.doubleJumps, near: world.nearMisses,
+      landed: world.landedAt, slides: world.slides, doubles: world.doubleJumps, near: world.nearMisses, revives: world.revives,
     };
-    this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0;
+    this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0;
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -2572,13 +2779,15 @@ export class RunnerRenderer3D {
     this.cameraPos.set(0, 4.2, -8); this.cameraTarget.set(0, 1.2, 6);
   }
 
-  private drawAtmosphere(theme: number, look: Theme, night: boolean, weather: string) {
+  /** `dark`: the dark run, where night closes in to a few dozen metres round the dog's lantern. */
+  private drawAtmosphere(theme: number, look: Theme, night: boolean, weather: string, dark = false) {
     const dim = night ? .6 : weather === "sunny" ? 1 : .82;
     const sky = night ? look.nightSky : look.sky, fog = night ? look.nightFog : look.fog;
     const wet = weather === "rain" ? .85 : weather === "snow" ? 1.12 : 1;
     this.scene.clearColor = new Color4(sky.r * wet, sky.g * wet, sky.b * wet, 1);
     this.scene.fogColor = weather === "snow" && !night ? Color3.Lerp(fog, new Color3(.85, .88, .9), .5) : fog.scale(wet);
-    this.scene.fogEnd = weather === "sunny" ? 170 : 125; this.scene.fogStart = weather === "sunny" ? 55 : 28;
+    this.scene.fogEnd = dark ? 52 : weather === "sunny" ? 170 : 125; this.scene.fogStart = dark ? 7 : weather === "sunny" ? 55 : 28;
+    if (dark) { this.scene.fogColor = fog.scale(.55); this.scene.clearColor = new Color4(fog.r * .55, fog.g * .55, fog.b * .55, 1); }
     this.ambient.intensity = theme === 2 ? .7 : night ? .62 : .75 * dim;
     this.ambient.groundColor.set(.3 * dim, .27 * dim, .22 * dim);
     this.ambient.diffuse.set(night ? .7 : 1, night ? .76 : 1, night ? 1 : 1);
@@ -2599,7 +2808,8 @@ export class RunnerRenderer3D {
     const skies = this.skies[theme];
     if (skies) this.skyMat.diffuseTexture = night ? skies.night : skies.day;
     this.skyMat.emissiveColor.setAll(night ? .8 : weather === "sunny" ? 1 : .78);
-    this.sky.setEnabled(theme !== 2);
+    // In the dark run the night closes in completely: no distant skyline, just the fog.
+    this.sky.setEnabled(theme !== 2 && !dark);
     this.mats["lamp-halo"].alpha = night || theme === 2 ? .9 : 0;
     for (const sign of ["fork-sign", "shaft-sign"]) this.mats[sign].emissiveColor.setAll(night ? .62 : theme === 2 ? .78 : .95);
   }
@@ -2855,7 +3065,7 @@ export class RunnerRenderer3D {
     const side = turn.direction === "left" ? 1 : -1;
     const branch = new TransformNode(`fork-${turn.z}`, this.scene);
     branch.parent = corner; branch.rotation.y = side * Math.PI / 2;
-    const lane = `lane-${RUN_SCENES[theme].id}`, stub = FORK_BRIDGE_START - FORK_STUB_START;
+    const lane = `lane-${RUN_SCENES[theme].id}`, stub = FORK_DECK - FORK_STUB_START;
     for (let row = 0; row < 2; row++) for (let i = 0; i < 3; i++) {
       const tile = this.instance(lane, branch);
       tile.position.set((i - 1) * LANE_WIDTH, 0, FORK_STUB_START + stub * (row + .5) / 2);
@@ -2863,7 +3073,7 @@ export class RunnerRenderer3D {
     }
     this.instance("fork-stub", branch).position.z = FORK_STUB_START;
     const bridge = this.instance("fork-bridge", branch);
-    bridge.position.z = FORK_BRIDGE_START;
+    bridge.position.z = FORK_DECK;
     const chasm = bridge.getChildTransformNodes(true).find(node => node.name === "fork-chasm");
     // Over the canal the bridge spans open water; elsewhere a ravine is cut into the ground.
     if (chasm) { chasm.position.y = -elevationAt(turn.z); chasm.setEnabled(theme !== 0); }
@@ -2877,7 +3087,7 @@ export class RunnerRenderer3D {
     const corner = this.route.corner(turn.z);
     if (!corner) return undefined;
     const heading = corner.heading + (turn.direction === "left" ? 1 : -1) * Math.PI / 2;
-    const along = FORK_BRIDGE_START + (FORK_CHASM.start + FORK_CHASM.end) / 2;
+    const along = FORK_DECK + (FORK_CHASM.start + FORK_CHASM.end) / 2;
     return { x: corner.x + Math.sin(heading) * along, y: 0, z: corner.z + Math.cos(heading) * along, heading };
   }
 
@@ -3115,7 +3325,12 @@ export class RunnerRenderer3D {
         if (item.pulled) prop.scaling.setAll(1.25);
       }
       else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance, t);
-      else if (isRunPower(item.kind)) { prop.position.y += Math.sin(t * 3 + item.id) * .15; prop.getChildren()[0]?.getChildren().forEach(c => { if (c.name === "halo") (c as TransformNode).rotation.y = t * 2; }); }
+      else if (isRunPower(item.kind) || item.kind === "chest" || item.kind === "clock" || item.kind === "lantern") {
+        // Bob, and turn the model round so its shape reads.
+        prop.position.y += Math.sin(t * 3 + item.id) * .15;
+        const model = prop.getChildren()[0]?.getChildren().find(child => child.name === "model") as TransformNode | undefined;
+        if (model) { model.rotation.y = this.settings.reducedMotion ? .6 : t * 1.8 + item.id; model.rotation.x = item.kind === "lantern" || item.kind === "balloon" ? 0 : Math.sin(t * 1.3 + item.id) * .12; }
+      }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
         for (const [index, mesh] of prop.getChildMeshes().filter(mesh => mesh.name === "flame-volume").entries()) {
@@ -3296,11 +3511,14 @@ export class RunnerRenderer3D {
     this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
   }
 
-  private updateCamera(world: RunnerWorld, player: Vector3, centre: RoutePoint, shot: ReturnType<typeof captureMotion> | undefined, dt: number, t: number) {
+  /** `view` is the dog's drawn distance along the route; `turning` how fast the road is turning under it (rad/s). */
+  private updateCamera(world: RunnerWorld, player: Vector3, centre: RoutePoint, shot: ReturnType<typeof captureMotion> | undefined, dt: number, t: number, view: number, turning: number) {
     const portrait = this.engine.getRenderWidth() / Math.max(1, this.engine.getRenderHeight()) < .85;
     const k = (rate: number) => dt > 0 ? 1 - Math.exp(-rate * dt) : 1;
-    // The camera turns a little behind the road, so a corner swings the view round smoothly.
-    this.camYaw += angleTo(this.camYaw, centre.heading) * k(shot ? 2 : 4.5);
+    // The camera aims a few metres up the road the dog is actually taking (straight on until a turn is
+    // pressed), so it starts round a bend with the dog rather than after it, and eases out of it.
+    const aim = shot ? centre.heading : this.dogCentre(world, view + 3.5).heading;
+    this.camYaw += angleTo(this.camYaw, aim) * k(shot ? 2 : 4.5);
     // The view widens a little as the pace picks up, and a lot more on a dash.
     const pace = shot || this.settings.reducedMotion ? 0 : Math.max(0, Math.min(1, (world.speed - 13) / 17)) * .07;
     const fov = (portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .14 : 0);
@@ -3326,9 +3544,11 @@ export class RunnerRenderer3D {
       this.camLateral += (lateral + (world.cycling && !this.settings.reducedMotion ? .68 : 0) - this.camLateral) * k(10);
       const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
       const bx = centre.x + rx * this.camLateral, bz = centre.z + rz * this.camLateral;
-      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * .25;
-      this.cameraPos.set(bx - fx * back, elevationAt(world.distance - back) + height, bz - fz * back);
-      this.cameraTarget.set(bx + fx * 7, elevationAt(world.distance + 7) + 1.1 + world.jumpHeight * .35, bz + fz * 7);
+      // The camera rises with a jump a little, and goes right up with the balloons.
+      this.camRise += ((world.flying ? 1 : 0) - this.camRise) * k(3);
+      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * (.25 + .67 * this.camRise);
+      this.cameraPos.set(bx - fx * back, elevationAt(view - back) + height, bz - fz * back);
+      this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.jumpHeight * (.35 + .45 * this.camRise), bz + fz * 7);
       const sinceHit = world.elapsed - world.hitAt;
       if (!this.settings.reducedMotion && sinceHit < .35) {
         // Shake sideways to the view (not along world X, which is forward after a turn) and settle out.
@@ -3346,8 +3566,9 @@ export class RunnerRenderer3D {
         }
       }
     }
-    // Bank a touch into lane changes.
-    const bank = shot || this.settings.reducedMotion ? 0 : (world.position - world.lane) * .028;
+    // Bank a touch into lane changes and bends.
+    this.camBank += ((shot || this.settings.reducedMotion ? 0 : (world.position - world.lane) * .028 - Math.max(-.05, Math.min(.05, turning * .012))) - this.camBank) * k(8);
+    const bank = this.camBank;
     const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
     this.camera.upVector.set(rx * Math.sin(bank), Math.cos(bank), rz * Math.sin(bank));
     this.camera.position.copyFrom(this.cameraPos);
