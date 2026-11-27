@@ -23,7 +23,7 @@ export function defaultSettings(): Settings {
     sound: true,
     vibration: true,
     reducedMotion,
-    quality: "balanced",
+    quality: "high",
   };
 }
 
