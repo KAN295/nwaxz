@@ -14,6 +14,13 @@ import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTextur
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight.js";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight.js";
 import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem.js";
+import { FresnelParameters } from "@babylonjs/core/Materials/fresnelParameters.js";
+import { DefaultRenderingPipeline } from "@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline.js";
+import { ImageProcessingConfiguration } from "@babylonjs/core/Materials/imageProcessingConfiguration.js";
+import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator.js";
+import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent.js";
+import { Matrix, Quaternion } from "@babylonjs/core/Maths/math.vector.js";
+import "@babylonjs/core/Meshes/thinInstanceMesh.js";
 import "@babylonjs/core/Particles/particleSystemComponent.js";
 import type { Settings } from "../settings.ts";
 import { loadImage, withTimeout } from "../loading.ts";
@@ -21,6 +28,7 @@ import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { frogViewDirection } from "../escape/facing.ts";
+import type { Graphics } from "./progression.ts";
 import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, riderHeightAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { RunnerAmbience } from "./ambience3d.ts";
@@ -55,6 +63,13 @@ const FROG_CROP_SCALE = .9;
 const MILK = { neutral: 0, blink: 1, look: 2, raise: 3, tap: 4, wait: 5, laugh: 6, celebrate: 7 } as const;
 const MILK_EXTRA = { wave: 0, yawn: 1, surprise: 2, wash: 3 } as const;
 const SPECTATOR_SIZE = 1.7;
+/** Road surfaces that get wet in the rain (no rain falls in the mine or on the snowfield). */
+const WET_ROADS = ["road-aqueduct", "road-temple", "road-bamboo", "road-canyon"] as const;
+/** Scenes with puddles in the rain. */
+const PUDDLE_SCENES = new Set([0, 1, 3, 4]);
+const RIPPLES = 48;
+/** Templates that cast real-time shadows: obstacles, pickups, lamps and arches (dense plants and walls left out: they cost the most). */
+const SHADOW_CASTERS = /^(block|beam|spikes|boulder|cart-block|crate|runaway-cart|magnet|shield|boost|slow|double|spring|bike|balloon|chest|clock|lantern|temple-arch|mine-frame|lamp-post|snow-lamp|canyon-lamp|stone-lantern|snowman)/;
 /** Seconds the camera takes to swing round from the menu's front view to behind the running dog. */
 const INTRO_TIME = 1.15;
 const FISSURE_HALF = obstacleHalfDepth("gap", 0);
@@ -150,7 +165,7 @@ const PAINTED_SKIES: Partial<Record<number, { top: string; horizon: string; nigh
 type Theme = { sky: Color3; fog: Color3; nightSky: Color3; nightFog: Color3; ground: StandardMaterial; groundY: number };
 type Decor = { node: TransformNode; every: number; offset: number; vary: boolean };
 type RoadLane = { main: TransformNode; otherSide?: TransformNode };
-type Slot = { n: number; root: TransformNode; group?: TransformNode; lanes: RoadLane[]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean };
+type Slot = { n: number; root: TransformNode; group?: TransformNode; lanes: RoadLane[]; trees: Mesh[]; ores: Mesh[]; decor: Decor[]; theme: number; holes: (RunItem | "rope" | "bridge" | undefined)[]; pierCut: boolean; crossingGap: boolean; forkCut: boolean; puddle?: TransformNode; puddleLane?: number };
 
 const angleTo = (from: number, to: number) => { let d = (to - from) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return d; };
 /** Repeatable pseudo-random numbers for building scenery: the same seed always gives the same plants. */
@@ -197,6 +212,19 @@ export class RunnerRenderer3D {
   private heroRing!: Mesh;
   private heroSparkles!: ParticleSystem;
   private heroSparkTime = 0;
+  /** Rain: how wet the roads are (0 dry to 1 soaked), eased as the rain starts and stops. */
+  private wetness = 0;
+  private shownWet = -1;
+  private wetBase = new Map<string, { diffuse: Color3; specular: Color3; power: number }>();
+  private skyReflection!: DynamicTexture;
+  private wetFresnel = new FresnelParameters({ bias: .12, power: 1.8, leftColor: Color3.White(), rightColor: Color3.Black() });
+  private puddleFresnel = new FresnelParameters({ bias: .5, power: 1.2, leftColor: Color3.White(), rightColor: new Color3(.6, .6, .6) });
+  private puddlesShown = false;
+  /** Raindrops landing on the road: rings that spread and fade, drawn together in one call. */
+  private ripples!: Mesh;
+  private rippleState: { x: number; y: number; z: number; age: number; life: number }[] = [];
+  private rippleMatrix = new Matrix();
+  private rippleColours = new Float32Array(RIPPLES * 4);
   /** Slowly turning rays of light fanning out behind the dog on the menu. */
   private heroRays!: Mesh;
   private seenChests = 0;
@@ -359,6 +387,15 @@ export class RunnerRenderer3D {
     raysMat.emissiveColor = Color3.FromHexString("#ffd36b"); raysMat.alphaMode = Engine.ALPHA_ADD; raysMat.backFaceCulling = false;
     this.heroRays = MeshBuilder.CreatePlane("runner-hero-rays", { size: 1 }, this.scene);
     this.heroRays.material = raysMat; this.heroRays.isPickable = false; this.heroRays.billboardMode = Mesh.BILLBOARDMODE_ALL; this.heroRays.setEnabled(false);
+    this.ripples = MeshBuilder.CreateGround("runner-rain-ripples", { width: 1, height: 1 }, this.scene);
+    const rippleDropMat = new StandardMaterial("runner-rain-ripple", this.scene);
+    rippleDropMat.diffuseTexture = rippleTexture; rippleDropMat.useAlphaFromDiffuseTexture = true; rippleDropMat.disableLighting = true;
+    rippleDropMat.emissiveColor = new Color3(.85, .92, 1); rippleDropMat.alphaMode = Engine.ALPHA_ADD; rippleDropMat.backFaceCulling = false; rippleDropMat.zOffset = -3;
+    this.ripples.material = rippleDropMat; this.ripples.isPickable = false; this.ripples.alwaysSelectAsActiveMesh = true;
+    this.ripples.thinInstanceRegisterAttribute("color", 4);
+    for (let i = 0; i < RIPPLES; i++) { this.ripples.thinInstanceAdd(Matrix.Identity(), false); this.rippleState.push({ x: 0, y: -100, z: 0, age: 1, life: 1 }); }
+    this.ripples.thinInstanceSetAttributeAt("color", 0, [0, 0, 0, 0], true);
+    this.ripples.setEnabled(false);
     this.heroDisc = MeshBuilder.CreateGround("runner-hero-disc", { width: 1, height: 1 }, this.scene);
     this.heroDisc.material = this.radialMaterial("hero-disc", "rgba(255,210,110,.6)", true); this.heroDisc.isPickable = false; this.heroDisc.setEnabled(false);
     this.heroRing = MeshBuilder.CreateGround("runner-hero-ring", { width: 1, height: 1 }, this.scene);
@@ -634,6 +671,32 @@ export class RunnerRenderer3D {
     this.mat("road-bamboo", "#b9c0a2", stone);
     // Lit colours saturate, so warm tints must stay dark enough to survive full sun.
     this.mat("road-canyon", "#b37b50", stone).emissiveColor.set(.06, .03, .01);
+    // The sky as a wet surface sees it: dark overhead, bright along the horizon (tinted per scene by the fresnel colour).
+    this.skyReflection = new DynamicTexture("runner-sky-reflection", { width: 64, height: 128 }, this.scene, false);
+    const paintSky = (texture: DynamicTexture) => {
+      const ctx = texture.getContext() as CanvasRenderingContext2D, fade = ctx.createLinearGradient(0, 0, 0, 128);
+      fade.addColorStop(0, "#7d8a94"); fade.addColorStop(.38, "#d6dfe6"); fade.addColorStop(.5, "#ffffff"); fade.addColorStop(.56, "#8a959b"); fade.addColorStop(1, "#1c2226");
+      ctx.fillStyle = fade; ctx.fillRect(0, 0, 64, 128); texture.update();
+      texture.coordinatesMode = Texture.EQUIRECTANGULAR_MODE;
+    };
+    paintSky(this.skyReflection); this.skyReflection.level = 0;
+    // Puddles mirror the sky at full strength: their own copy, so the road can take less.
+    const puddleSky = new DynamicTexture("runner-puddle-sky", { width: 64, height: 128 }, this.scene, false);
+    paintSky(puddleSky); puddleSky.level = 1.1;
+    const puddle = new StandardMaterial("runner-puddle", this.scene), puddleMask = new DynamicTexture("runner-puddle-mask", { width: 128, height: 128 }, this.scene, false);
+    const maskCtx = puddleMask.getContext() as CanvasRenderingContext2D, randomPuddle = seeded(907);
+    for (let i = 0; i < 7; i++) {
+      const x = 40 + randomPuddle() * 48, y = 40 + randomPuddle() * 48, r = 18 + randomPuddle() * 22;
+      const blob = maskCtx.createRadialGradient(x, y, r * .55, x, y, r);
+      blob.addColorStop(0, "rgba(255,255,255,1)"); blob.addColorStop(1, "rgba(255,255,255,0)");
+      maskCtx.fillStyle = blob; maskCtx.fillRect(0, 0, 128, 128);
+    }
+    puddleMask.update(); puddleMask.hasAlpha = true;
+    puddle.diffuseColor = new Color3(.035, .04, .045); puddle.opacityTexture = puddleMask;
+    puddle.specularColor = new Color3(.95, .95, .95); puddle.specularPower = 220; puddle.useSpecularOverAlpha = false; puddle.useReflectionOverAlpha = false;
+    puddle.reflectionTexture = puddleSky; puddle.reflectionFresnelParameters = this.puddleFresnel;
+    puddle.zOffset = -1; puddle.maxSimultaneousLights = 2;
+    this.mats.puddle = puddle;
     const packed = this.mat("road-snow", "#a4b2bf"); packed.diffuseTexture = this.snowTexture(1.5); packed.emissiveColor.set(.05, .06, .08);
     this.mat("stone", "#d8cfb8", stone);
     this.mat("stone-dark", "#8e8a7c", stone);
@@ -1528,7 +1591,31 @@ export class RunnerRenderer3D {
   }
 
   /** Off-screen source meshes; every road slot and prop is an instance of these, so they batch. */
+  /** Light shafts: a cone of light under a lamp (bright at the lamp, gone at the ground) and a pool of light where it lands. */
+  private buildLightShafts() {
+    const texture = new DynamicTexture("runner-light-cone-tex", { width: 4, height: 128 }, this.scene, false);
+    const ctx = texture.getContext() as CanvasRenderingContext2D, fade = ctx.createLinearGradient(0, 0, 0, 128);
+    fade.addColorStop(0, "rgba(255,255,255,.95)"); fade.addColorStop(.35, "rgba(255,255,255,.45)"); fade.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = fade; ctx.fillRect(0, 0, 4, 128); texture.update(); texture.hasAlpha = true;
+    for (const [name, colour, alpha] of [["light-cone-night", "#ffd9a0", .2], ["light-cone-mine", "#ffcf8a", .055]] as const) {
+      const material = new StandardMaterial(`runner-${name}`, this.scene);
+      material.diffuseTexture = texture; material.useAlphaFromDiffuseTexture = true; material.disableLighting = true;
+      material.emissiveColor = Color3.FromHexString(colour); material.alphaMode = Engine.ALPHA_ADD; material.backFaceCulling = false; material.alpha = alpha;
+      this.mats[name] = material;
+    }
+    this.radialMaterial("light-pool-night", "rgba(255,214,150,.6)", true);
+    this.radialMaterial("light-pool-mine", "rgba(255,206,140,.28)", true);
+  }
+
+  /** A cone of light from a lamp at `(x, top)` down to the road, and its pool of light there. */
+  private lightShaft(r: TransformNode, x: number, top: number, spread: number, kind: "night" | "mine") {
+    this.cylinder("light-cone", r, { diameterTop: .3, diameterBottom: spread, height: top, tessellation: 20 }, [x, top / 2, 0], `light-cone-${kind}`);
+    const pool = MeshBuilder.CreateGround("light-pool", { width: spread * 1.15, height: spread * 1.15 }, this.scene);
+    pool.parent = r; pool.position.set(x, .03, 0); pool.material = this.mats[`light-pool-${kind}`]; pool.isPickable = false;
+  }
+
   private buildTemplates() {
+    this.buildLightShafts();
     const stash = new TransformNode("runner-templates", this.scene);
     stash.position.y = -500;
     // Built at the origin, then parked under the stash. `merge` folds static parts into one mesh per
@@ -1594,6 +1681,7 @@ export class RunnerRenderer3D {
       this.cylinder("lantern-roof", r, { diameterTop: .05, diameterBottom: .42, height: .18, tessellation: 6 }, [0, 6.42, 0], "lamp-iron");
       this.cylinder("lantern", r, { diameterTop: .32, diameterBottom: .25, height: .36, tessellation: 6 }, [0, 6.15, 0], "lamp");
       this.cylinder("lantern-base", r, { diameter: .27, height: .05, tessellation: 6 }, [0, 5.95, 0], "lamp-iron");
+      this.lightShaft(r, 0, 5.9, 3.2, "mine");
       const halo = MeshBuilder.CreatePlane("halo", { size: 2.4 }, this.scene); halo.parent = r; halo.position.set(0, 6.15, 0); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
     }, true);
     make("mine-cart-parked", r => {
@@ -1705,6 +1793,7 @@ export class RunnerRenderer3D {
     make("canyon-lamp", r => {
       for (const s of [-1, 1]) {
         const x = s * (ROAD_HALF + .65), lx = x - s * .78;
+        this.lightShaft(r, lx, 2.4, 2.3, "night");
         this.box("lamp-post-wood", r, [.22, 3.3, .22], [x, 1.5, 0], "wood");
         for (const k of [0, 1, 2]) {
           const stone = MeshBuilder.CreatePolyhedron("lamp-foot-rock", { type: 2, size: .2 + k * .05 }, this.scene);
@@ -2063,6 +2152,11 @@ export class RunnerRenderer3D {
       this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
     });
     // Carried while flying: a big bunch of balloons on strings gathered in the dog's paws.
+    // A puddle: a dark, glossy patch with a ragged edge that mirrors the sky.
+    make("puddle", r => {
+      const puddle = MeshBuilder.CreateGround("puddle", { width: 1, height: 1 }, this.scene);
+      puddle.parent = r; puddle.position.y = .014; puddle.material = this.mats.puddle; puddle.isPickable = false;
+    });
     make("balloon-bunch", r => this.balloons(r, 1.6, 5));
     // Worn while the spring shoes last: a coil under each pair of paws.
     make("spring-feet", r => {
@@ -2354,6 +2448,7 @@ export class RunnerRenderer3D {
   private lampPost(r: TransformNode, snowy: boolean) {
     for (const s of [-1, 1]) {
       const x = s * (ROAD_HALF + .55), lx = x - s * .74;
+      this.lightShaft(r, lx, 3.78, 2.9, "night");
       this.box("lamp-base", r, [.5, .36, .5], [x, .14, 0], "stone-dark");
       this.box("lamp-plinth", r, [.34, .14, .34], [x, .39, 0], "lamp-iron");
       this.cylinder("lamp-pole", r, { diameterBottom: .17, diameterTop: .1, height: 3.9, tessellation: 10 }, [x, 2.4, 0], "lamp-iron");
@@ -2556,6 +2651,9 @@ export class RunnerRenderer3D {
       return { main };
     });
     slot.decor = SCENE_DECOR[theme].map(([name, every, offset, vary]) => ({ node: this.instance(name, group), every, offset, vary: !!vary }));
+    slot.puddle = PUDDLE_SCENES.has(theme) ? this.instance("puddle", group) : undefined;
+    this.shaftsShown = "";
+    slot.puddle?.setEnabled(false);
     slot.ores = theme !== 2 ? [] : [-1, 1].map(side => {
       const ore = this.orePlane.clone("mine-ore-vein");
       ore.parent = group; ore.rotation.y = side * 1.15; ore.setEnabled(false);
@@ -2928,6 +3026,9 @@ export class RunnerRenderer3D {
     this.drawWeather(weather, t, running && (world.boost > 0 || zipping), centre.heading, player.y);
     if (rope && release < .15 && running && !this.settings.reducedMotion && Math.random() < .6) this.burst(this.cartSparks, this.ropeHandle.position, 2);
     this.drawSpectators(world, view, t, dt);
+    this.drawRain(world, view, weather, dt);
+    this.placeShadows(world, player, centre.heading, !night && theme !== 2);
+    this.updateLightShafts(night);
     const nearBridge = this.bridgeNear(world);
     this.ambience.update({
       dt: world.phase === "paused" ? 0 : dt, scene: theme, night, weather, camera: this.camera.position, distance: world.distance,
@@ -3166,6 +3267,16 @@ export class RunnerRenderer3D {
           const size = 1.5 + (n % 3) * .35, side = index === 0 ? -1 : 1;
           ore.material = this.mats[ORES[variant]];
           ore.scaling.set(side * size, size, 1); ore.position.set(side * (MINE_WALL - .2), size * .46 + (variant % 2) * .6, -.42);
+        }
+        if (slot.puddle) {
+          const pick = hash01(n, 71);
+          slot.puddleLane = pick < .34 ? Math.floor(hash01(n, 72) * 3) : undefined;
+          if (slot.puddleLane !== undefined) {
+            slot.puddle.position.set((slot.puddleLane - 1) * LANE_WIDTH + (hash01(n, 73) - .5) * .9, 0, (hash01(n, 74) - .5) * 2.2);
+            slot.puddle.rotation.y = hash01(n, 75) * Math.PI;
+            slot.puddle.scaling.set(1.3 + hash01(n, 76) * 1.2, 1, 1 + hash01(n, 77) * 1.4);
+          }
+          slot.puddle.setEnabled(this.puddlesShown && slot.puddleLane !== undefined);
         }
         // Plants and rocks turn and change size from tile to tile, so the same few models never line up.
         for (const d of slot.decor) {
@@ -3860,6 +3971,170 @@ export class RunnerRenderer3D {
       const n = Math.floor(this.heroSparkTime);
       if (n) { this.heroSparkTime -= n; this.burst(this.heroSparkles, new Vector3(player.x, player.y + .1, player.z), n); }
     }
+  }
+
+  /**
+   * Rain on the road: it darkens and starts to shine as it gets wet (and dries out slowly after),
+   * mirroring the bright horizon; puddles appear on about one tile in three; drops ring the surface.
+   */
+  private drawRain(world: RunnerWorld, view: number, weather: string, dt: number) {
+    const raining = weather === "rain" && this.graphics.wet && world.sceneIndex !== 2 && world.sceneIndex !== 5;
+    if (dt > 0) this.wetness += ((raining ? 1 : 0) - this.wetness) * (1 - Math.exp(-dt * (raining ? .6 : .2)));
+    if (!this.graphics.wet) this.wetness = 0;
+    const w = this.wetness;
+    if (Math.abs(w - this.shownWet) > .01) {
+      this.shownWet = w;
+      for (const name of WET_ROADS) {
+        const material = this.mats[name], base = this.wetBase.get(name);
+        if (!material || !base) continue;
+        material.diffuseColor.copyFrom(base.diffuse).scaleInPlace(1 - .36 * w);
+        Color3.LerpToRef(base.specular, new Color3(.42, .45, .5), w, material.specularColor);
+        material.specularPower = base.power + (110 - base.power) * w;
+      }
+      this.skyReflection.level = .8 * w;
+    }
+    // The horizon a wet road mirrors takes the colour of the fog.
+    const fog = this.scene.fogColor;
+    this.wetFresnel.leftColor.set(Math.min(1, fog.r * 1.35), Math.min(1, fog.g * 1.35), Math.min(1, fog.b * 1.35));
+    this.puddleFresnel.leftColor.copyFrom(this.wetFresnel.leftColor);
+    this.puddleFresnel.rightColor.copyFrom(this.wetFresnel.leftColor).scaleInPlace(.6);
+    const puddles = w > .35;
+    if (puddles !== this.puddlesShown) {
+      this.puddlesShown = puddles;
+      for (const slot of this.slots) slot.puddle?.setEnabled(puddles && slot.puddleLane !== undefined);
+    }
+    // Drops landing on the road ahead: each ring spreads and fades in half a second, then lands somewhere new.
+    const live = raining && w > .2 && !this.settings.reducedMotion && dt > 0;
+    this.ripples.setEnabled(live);
+    if (!live) return;
+    const scale = new Vector3(), at = new Vector3(), still = Quaternion.Identity();
+    for (let i = 0; i < RIPPLES; i++) {
+      const drop = this.rippleState[i];
+      drop.age += dt;
+      if (drop.age >= drop.life) {
+        const z = view + 1.5 + Math.random() * 30, p = this.place(z, (Math.random() - .5) * (ROAD_HALF * 2 - .4));
+        const pit = world.items.some(item => isFallObstacle(item.kind) && Math.abs(item.z - z) < obstacleHalfDepth(item.kind, item.z) + 1);
+        drop.x = p.x; drop.y = pit ? -100 : p.y + .03; drop.z = p.z; drop.age = Math.random() * .08; drop.life = .38 + Math.random() * .22;
+      }
+      const k = drop.age / drop.life, size = .16 + k * .8;
+      scale.set(size, 1, size); at.set(drop.x, drop.y, drop.z);
+      Matrix.ComposeToRef(scale, still, at, this.rippleMatrix);
+      this.ripples.thinInstanceSetMatrixAt(i, this.rippleMatrix, false);
+      const fade = (1 - k) * (1 - k * .6) * w;
+      this.rippleColours[i * 4] = this.rippleColours[i * 4 + 1] = this.rippleColours[i * 4 + 2] = fade; this.rippleColours[i * 4 + 3] = fade;
+    }
+    this.ripples.thinInstanceBufferUpdated("matrix");
+    this.ripples.thinInstanceSetBuffer("color", this.rippleColours, 4, false);
+  }
+
+  /** Picture effects the player can switch off (all on by default). */
+  private graphics: Graphics = { post: true, shadows: true, volumetric: true, wet: true };
+  setGraphics(graphics: Graphics) {
+    this.graphics = { ...graphics };
+    this.applyGraphics();
+  }
+  /** Turns the optional effects on or off to match the player's choice. */
+  private shaftsShown = "";
+  /** Tone mapping, bloom on the brightest things (lamps, coins, light shafts) and FXAA, while the player keeps it on. */
+  private pipeline?: DefaultRenderingPipeline;
+  private applyPostProcessing() {
+    if (!this.graphics.post) { this.pipeline?.dispose(); this.pipeline = undefined; return; }
+    if (this.pipeline) return;
+    const hdr = !!this.engine.getCaps().textureHalfFloatRender;
+    const pipeline = new DefaultRenderingPipeline("runner-post", hdr, this.scene, [this.camera]);
+    pipeline.samples = 1;
+    pipeline.fxaaEnabled = true;
+    pipeline.bloomEnabled = true; pipeline.bloomThreshold = hdr ? .9 : .8; pipeline.bloomWeight = .3; pipeline.bloomKernel = 40; pipeline.bloomScale = .5;
+    pipeline.imageProcessingEnabled = true;
+    const look = pipeline.imageProcessing;
+    look.toneMappingEnabled = true; look.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_KHR_PBR_NEUTRAL;
+    look.exposure = 1.08; look.contrast = 1.1;
+    this.pipeline = pipeline;
+  }
+  /** Night shafts show at night, mine shafts always; neither when the player has turned light shafts off. */
+  private updateLightShafts(night: boolean) {
+    const key = `${night}|${this.graphics.volumetric}`;
+    if (key === this.shaftsShown) return;
+    this.shaftsShown = key;
+    const atNight = new Set([this.mats["light-cone-night"], this.mats["light-pool-night"]]), inMine = new Set([this.mats["light-cone-mine"], this.mats["light-pool-mine"]]);
+    for (const slot of this.slots) for (const d of slot.decor) for (const mesh of d.node.getChildMeshes(false)) {
+      if (atNight.has(mesh.material as StandardMaterial)) mesh.isVisible = night && this.graphics.volumetric;
+      else if (inMine.has(mesh.material as StandardMaterial)) mesh.isVisible = this.graphics.volumetric;
+    }
+  }
+
+  /**
+   * Sun shadows over the stretch of road round the dog (from 12 m behind to about 30 m ahead): obstacles,
+   * pickups, lamps, arches and plants shadow the road. Only by day above ground, where the sun is strong.
+   */
+  private shadows?: ShadowGenerator;
+  private applyShadows() {
+    if (!this.graphics.shadows) {
+      this.shadows?.dispose(); this.shadows = undefined;
+      this.setShadowReceivers(false);
+      return;
+    }
+    if (this.shadows) return;
+    const generator = new ShadowGenerator(this.settings.quality === "high" ? 2048 : 1024, this.sun);
+    generator.usePercentageCloserFiltering = true; generator.filteringQuality = ShadowGenerator.QUALITY_LOW;
+    generator.bias = .0015; generator.normalBias = .02;
+    // The sky light fills shadows in, so the sun is blocked almost completely to leave a visible shade.
+    generator.setDarkness(.1);
+    // The templates sit far below the course, so the shadow map picks out their instances on the road instead.
+    for (const [name, template] of this.templates) {
+      if (!SHADOW_CASTERS.test(name)) continue;
+      for (const mesh of template.getChildMeshes(false)) if (!/halo|beam|light|glint|contact-shadow|puddle/.test(mesh.name)) mesh.metadata = { ...(mesh.metadata ?? {}), caster: true };
+    }
+    const map = generator.getShadowMap()!;
+    // Most of what casts a shadow stands still, so the map is drawn again only when the shadowed box moves on
+    // (every 4 m) or something is moving through it.
+    map.refreshRate = 0;
+    map.renderList = null;
+    map.renderListPredicate = mesh => {
+      const source = (mesh as AbstractMesh & { sourceMesh?: Mesh }).sourceMesh;
+      return !!source?.metadata?.caster && mesh.isEnabled() && mesh.isVisible;
+    };
+    this.sun.autoUpdateExtends = false; this.sun.autoCalcShadowZBounds = false;
+    this.sun.orthoLeft = -22; this.sun.orthoRight = 22; this.sun.orthoBottom = -22; this.sun.orthoTop = 22;
+    this.sun.shadowMinZ = 1; this.sun.shadowMaxZ = 140;
+    this.shadows = generator;
+    this.setShadowReceivers(true);
+  }
+  private setShadowReceivers(on: boolean) {
+    for (const [name, template] of this.templates) {
+      if (!name.startsWith("lane-") && !name.startsWith("puddle")) continue;
+      for (const mesh of template.getChildMeshes(false)) mesh.receiveShadows = on;
+    }
+    this.groundPlane.receiveShadows = on;
+  }
+  private shadowCell = "";
+  /** Keeps the shadowed box over the road round the dog, and the shadows off at night and underground. */
+  private placeShadows(world: RunnerWorld, player: Vector3, heading: number, sunny: boolean) {
+    if (!this.shadows) return;
+    if (this.sun.shadowEnabled !== sunny) { this.sun.shadowEnabled = sunny; this.shadowCell = ""; }
+    if (!sunny) return;
+    const ahead = 9, cx = Math.round((player.x + Math.sin(heading) * ahead) / 4) * 4, cz = Math.round((player.z + Math.cos(heading) * ahead) / 4) * 4, cy = Math.round(player.y / 2) * 2;
+    const cell = `${cx},${cy},${cz}`;
+    const moving = world.items.some(item => (item.roll && Math.abs(item.z - world.distance) < 40) || (item.thrownAt !== undefined && world.elapsed - item.thrownAt < .7));
+    if (cell === this.shadowCell && !moving) return;
+    this.shadowCell = cell;
+    const dir = this.sun.direction;
+    this.sun.position.set(cx - dir.x * 70, cy - dir.y * 70, cz - dir.z * 70);
+    this.shadows.getShadowMap()?.resetRefreshCounter();
+  }
+
+  private applyGraphics() {
+    this.shaftsShown = "";
+    this.applyPostProcessing();
+    this.applyShadows();
+    for (const name of WET_ROADS) {
+      const material = this.mats[name];
+      if (!material) continue;
+      if (!this.wetBase.has(name)) this.wetBase.set(name, { diffuse: material.diffuseColor.clone(), specular: material.specularColor.clone(), power: material.specularPower });
+      material.reflectionTexture = this.graphics.wet ? this.skyReflection : null;
+      material.reflectionFresnelParameters = this.graphics.wet ? this.wetFresnel : null as unknown as FresnelParameters;
+    }
+    this.shownWet = -1;
   }
 
   /** 0 on the menu, rising to 1 as the camera finishes swinging round behind the dog at the start of a run. */

@@ -124,3 +124,21 @@ export function addRun(career: Career, run: RunSummary, before?: RunSummary): Ca
     longest: Math.max(career.longest, metres), bestScore: Math.max(career.bestScore, run.score), bestCombo: Math.max(career.bestCombo, run.combo),
   };
 }
+
+export const GRAPHICS_KEY = "nwaxz-runner-graphics-v1";
+/**
+ * Picture effects a player can switch off if the game stutters; all on unless turned off.
+ * post: tone mapping, bloom and anti-aliasing; shadows: real-time shadows near the dog;
+ * volumetric: light shafts from lamps at night and in the mine; wet: wet roads, puddles and ripples in the rain.
+ */
+export type Graphics = { post: boolean; shadows: boolean; volumetric: boolean; wet: boolean };
+export const GRAPHICS_OPTIONS = ["post", "shadows", "volumetric", "wet"] as const;
+
+export function readGraphics(raw: string | null): Graphics {
+  const graphics: Graphics = { post: true, shadows: true, volumetric: true, wet: true };
+  try {
+    const value = JSON.parse(raw ?? "null");
+    if (value && typeof value === "object") for (const key of GRAPHICS_OPTIONS) if (typeof value[key] === "boolean") graphics[key] = value[key];
+  } catch { /* A broken record keeps everything on. */ }
+  return graphics;
+}

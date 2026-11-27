@@ -9,7 +9,7 @@ import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevati
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
 import { completeMission, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText } from '../src/runner/missions.ts';
-import { addRun, buyUpgrade, checkIn, durationAt, levelOf, readCareer, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
+import { addRun, buyUpgrade, checkIn, durationAt, levelOf, readCareer, readGraphics, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
 import { createRunnerSprite } from '../src/runner/actors2d.ts';
@@ -1034,4 +1034,10 @@ test('career: lifetime totals add up run by run; a revived run that ends again c
   assert.equal(again.runs, 1); assert.equal(again.metres, 900); assert.equal(again.silver, 70); assert.equal(again.revives, 1); assert.equal(again.longest, 900); assert.equal(again.bestScore, 15000);
   const two = addRun(again, { ...run, metres: 100, score: 500, combo: 1 });
   assert.equal(two.runs, 2); assert.equal(two.metres, 1000); assert.equal(two.longest, 900); assert.equal(two.bestScore, 15000); assert.equal(two.bestCombo, 4);
+});
+
+test('picture effects are all on by default; a saved choice turns only that one off', () => {
+  assert.deepEqual(readGraphics(null), { post: true, shadows: true, volumetric: true, wet: true });
+  assert.deepEqual(readGraphics('{"shadows":false,"wet":"no","extra":1}'), { post: true, shadows: false, volumetric: true, wet: true });
+  assert.deepEqual(readGraphics('[broken'), { post: true, shadows: true, volumetric: true, wet: true });
 });

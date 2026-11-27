@@ -418,3 +418,11 @@
 .runner-lobby-tool:active svg{transform:scale(.92)}
 .runner-lobby-tool[data-run="more"] svg{fill:currentColor;stroke:none}
 .runner-missions-page .runner-missions-title{display:none}
+
+/* Picture effects: one row per effect with an on/off switch. */
+.runner-fx{display:grid;gap:8px;margin:12px 0 4px;text-align:left}
+.runner-fx-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:12px;background:rgba(0,0,0,.25)}
+.runner-fx-row strong{display:block;font-size:14px}
+.runner-fx-row small{display:block;margin-top:2px;font-size:11px;color:var(--muted)}
+.runner-card .runner-fx-toggle{flex:none;width:58px;min-height:32px;margin:0;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--muted);font-size:13px}
+.runner-card .runner-fx-toggle.on{border-color:transparent;background:linear-gradient(180deg,#9ff0bb,#3fbf6e);color:#0f2a18}

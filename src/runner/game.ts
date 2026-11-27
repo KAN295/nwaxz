@@ -9,7 +9,7 @@ import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWar
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { completeMission, MISSIONS_KEY, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText, type Mission, type RunStats } from "./missions.ts";
-import { addRun, CAREER_KEY, readCareer, type Career, type RunSummary } from "./progression.ts";
+import { addRun, CAREER_KEY, GRAPHICS_KEY, GRAPHICS_OPTIONS, readCareer, readGraphics, type Career, type Graphics, type RunSummary } from "./progression.ts";
 import { buyUpgrade, checkIn, durationAt, levelOf, LOGIN_KEY, MAX_LEVEL, nextCost, readLogin, readUpgrades, UPGRADABLE, UPGRADES_KEY, upgradedDurations, dayKey } from "./progression.ts";
 import {
   RunnerWorld, RUN_SCENES, RUN_POWERS, CHASE_SECONDS, CHASE_START_GAP, LONG_GAP_START, GOLD_START, DIAMOND_START, NEAR_SCORE, ROLL_START, TURN_HINT_END, RECORD_KEYS, RUSH_SECONDS, CLOCK_SECONDS, DARK_MAX_GAP, LANTERN_GAP, BALLOON_START, REVIVE_GRACE,
@@ -99,6 +99,9 @@ export class RunnerGame {
   private careerOpen = false;
   private missionsOpen = false;
   private moreOpen = false;
+  private graphicsOpen = false;
+  /** Picture effects, all on unless the player turned some off on this device. */
+  private graphics: Graphics = (() => { try { return readGraphics(localStorage.getItem(GRAPHICS_KEY)); } catch { return readGraphics(null); } })();
   /** Lifetime totals on this device; `counted` is what the current run has already added. */
   private career: Career = (() => { try { return readCareer(localStorage.getItem(CAREER_KEY)); } catch { return readCareer(null); } })();
   private counted?: { world: RunnerWorld; summary: RunSummary };
@@ -258,6 +261,7 @@ export class RunnerGame {
       this.renderer?.dispose();
       this.renderer = new module.RunnerRenderer3D(this.el.canvas, this.settings);
       await this.renderer.load();
+      this.renderer.setGraphics(this.graphics);
       const look = getDogLook(this.wardrobe.equipped);
       if ("sprite" in look) {
         try {
@@ -324,6 +328,8 @@ export class RunnerGame {
       case "missions-back": this.missionsOpen = false; this.showPanel(); return;
       case "more": this.moreOpen = true; this.showPanel(); return;
       case "more-back": this.moreOpen = false; this.showPanel(); return;
+      case "graphics": this.graphicsOpen = true; this.showPanel(); return;
+      case "graphics-back": this.graphicsOpen = false; this.showPanel(); return;
       case "mode-prev": case "mode-next": this.switchMode(action === "mode-prev" ? -1 : 1); return;
       case "career-back": this.careerOpen = false; this.showPanel(); return;
       case "revive": this.revive(); return;
@@ -345,6 +351,7 @@ export class RunnerGame {
         return;
       }
     }
+    if (action.startsWith("fx-")) { this.toggleEffect(action.slice(3) as keyof Graphics); return; }
     if (action.startsWith("level-")) { this.buyLevel(action.slice(6) as RunPowerKind); return; }
     if (action.startsWith("buy-") || action.startsWith("equip-")) void this.chooseLook(action);
   };
@@ -550,6 +557,15 @@ export class RunnerGame {
       this.audio.effect("win"); this.flash("record");
     }
   }
+  /** Turns one picture effect on or off, for this device, and applies it straight away. */
+  private toggleEffect(key: keyof Graphics) {
+    if (!(GRAPHICS_OPTIONS as readonly string[]).includes(key)) return;
+    this.graphics = { ...this.graphics, [key]: !this.graphics[key] };
+    try { localStorage.setItem(GRAPHICS_KEY, JSON.stringify(this.graphics)); } catch { this.recordError = true; }
+    this.renderer?.setGraphics(this.graphics);
+    this.showPanel();
+  }
+
   /** The lobby's mode switcher: the previous or next mode, round in a loop. */
   private switchMode(step: number) {
     const at = MODES.findIndex(m => m.id === this.mode);
@@ -558,7 +574,7 @@ export class RunnerGame {
   }
 
   private begin() {
-    this.missionsOpen = this.moreOpen = this.careerOpen = false;
+    this.missionsOpen = this.moreOpen = this.careerOpen = this.graphicsOpen = false;
     this.tilt.calibrate(); this.world.start(); this.last = 0;
     this.audio.setMode("normal"); this.audio.setPlaying(true);
     this.holdScreenOn(true);
@@ -1018,8 +1034,14 @@ export class RunnerGame {
       html = this.careerHtml(btn);
     } else if (this.missionsOpen) {
       html = `<h2>任务</h2><p>已完成 ${this.missions.completed} 个 · 每个任务都要在一局之内完成，奖励马上入账。</p><div class="runner-missions-page">${this.missionsHtml(false)}</div>${btn("missions-back", "返回", "ghost")}`;
+    } else if (this.graphicsOpen) {
+      const names: Record<keyof Graphics, [string, string]> = {
+        post: ["后期效果", "色调、泛光和抗锯齿"], shadows: ["实时阴影", "奶狗附近的障碍和道具投下真实影子"],
+        volumetric: ["体积光", "夜里路灯下和矿洞里的光柱"], wet: ["雨天湿路", "路面变湿反光、积水和雨滴涟漪"],
+      };
+      html = `<h2>画面特效</h2><p>默认全部打开。觉得卡顿时可以关掉开销大的效果；设置只存在这台设备。</p><div class="runner-fx">${GRAPHICS_OPTIONS.map(key => `<div class="runner-fx-row"><div><strong>${names[key][0]}</strong><small>${names[key][1]}</small></div><button data-run="fx-${key}" class="runner-fx-toggle${this.graphics[key] ? " on" : ""}" aria-pressed="${this.graphics[key]}">${this.graphics[key] ? "开" : "关"}</button></div>`).join("")}</div>${btn("graphics-back", "返回", "ghost")}`;
     } else if (this.moreOpen) {
-      html = `<h2>更多</h2>${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}<div class="runner-row">${gyroRow}</div>${gyroNote}${btn("more-back", "返回", "ghost")}`;
+      html = `<h2>更多</h2>${btn("graphics", "画面特效", "ghost")}${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}<div class="runner-row">${gyroRow}</div>${gyroNote}${btn("more-back", "返回", "ghost")}`;
     } else if (this.upgradesOpen) {
       html = this.upgradesHtml(btn, note);
     } else if (w.phase === "ready") {
