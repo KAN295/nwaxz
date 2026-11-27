@@ -1,7 +1,34 @@
 import { parseSettings, type Settings } from "./settings.ts";
 import { PlaybackSession } from "./ios-audio.ts";
 
-type Effect = "tap" | "coin" | "win" | "dig" | "step" | "door" | "heartbeat" | "noise" | "breath";
+type Effect = "tap" | "coin" | "win" | "dig" | "step" | "door" | "heartbeat" | "noise" | "breath" | RunnerEffect;
+/** Sounds made for the runner, each a few tone and filtered-noise sweeps. */
+export type RunnerEffect = "jump" | "jump2" | "slide" | "land" | "swish" | "whoosh" | "bump" | "crash" | "splash" | "power" | "chest";
+/** One layer of a synthesized sound: a tone or a band of noise sweeping from one frequency to another. */
+type Sweep = { kind: "tone" | "noise"; from: number; to: number; volume: number; time: number; delay?: number; type?: OscillatorType; filter?: BiquadFilterType; q?: number };
+const arpeggio = (notes: number[], gap: number, volume: number, time: number, type: OscillatorType = "triangle"): Sweep[] =>
+  notes.map((note, index) => ({ kind: "tone", type, from: note, to: note, volume, time, delay: index * gap }));
+const runnerSounds: Record<RunnerEffect, Sweep[]> = {
+  jump: [{ kind: "noise", filter: "bandpass", q: 1.1, from: 700, to: 2600, volume: .07, time: .2 }, { kind: "tone", type: "sine", from: 360, to: 720, volume: .045, time: .13 }],
+  jump2: [{ kind: "noise", filter: "bandpass", q: 1.3, from: 1000, to: 3600, volume: .07, time: .2 }, { kind: "tone", type: "sine", from: 540, to: 1260, volume: .05, time: .15 }],
+  slide: [{ kind: "noise", filter: "bandpass", q: .9, from: 2400, to: 450, volume: .08, time: .3 }, { kind: "tone", type: "sine", from: 240, to: 140, volume: .035, time: .18 }],
+  land: [{ kind: "tone", type: "sine", from: 160, to: 52, volume: .1, time: .13 }, { kind: "noise", filter: "lowpass", from: 600, to: 200, volume: .04, time: .08 }],
+  swish: [{ kind: "noise", filter: "bandpass", q: 2.2, from: 1900, to: 1100, volume: .032, time: .09 }],
+  whoosh: [{ kind: "noise", filter: "bandpass", q: 1.6, from: 3200, to: 700, volume: .075, time: .26 }, { kind: "tone", type: "sine", from: 1400, to: 700, volume: .02, time: .2 }],
+  bump: [{ kind: "noise", filter: "lowpass", q: .7, from: 900, to: 160, volume: .13, time: .2 }, { kind: "tone", type: "sine", from: 120, to: 44, volume: .13, time: .2 }],
+  crash: [{ kind: "noise", filter: "lowpass", q: .8, from: 1500, to: 110, volume: .17, time: .34 }, { kind: "tone", type: "triangle", from: 96, to: 36, volume: .14, time: .32 }],
+  splash: [
+    { kind: "noise", filter: "lowpass", q: .6, from: 2800, to: 360, volume: .17, time: .6 },
+    { kind: "tone", type: "sine", from: 700, to: 1300, volume: .03, time: .06, delay: .13 },
+    { kind: "tone", type: "sine", from: 900, to: 1600, volume: .025, time: .05, delay: .26 },
+    { kind: "tone", type: "sine", from: 600, to: 1100, volume: .02, time: .05, delay: .38 },
+  ],
+  power: [...arpeggio([523, 659, 784, 1047], .055, .07, .13), { kind: "tone", type: "sine", from: 2093, to: 2637, volume: .025, time: .3, delay: .15 }],
+  chest: arpeggio([1047, 1319, 1568, 2093, 2637], .05, .055, .11, "sine"),
+};
+const isRunnerEffect = (effect: Effect): effect is RunnerEffect => effect in runnerSounds;
+/** Rising notes for a run of coins, so a long trail climbs up the scale. */
+const CHIME_SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
 type Voice = { oscillator: OscillatorNode; gain: GainNode };
 type Recording = "normal" | "horror" | "escape" | "laugh" | "whimper";
 const recordingPaths: Record<Recording, string> = {
@@ -13,7 +40,7 @@ const recordingPaths: Record<Recording, string> = {
   whimper: "/assets/audio/runner-puppy-whimper-v1.mp3",
 };
 const unlockEvents = ["pointerdown", "pointerup", "touchend", "click", "keydown"] as const;
-const effectNotes: Record<Effect, { frequencies: number[]; step: number; type: OscillatorType }> = {
+const effectNotes: Record<Exclude<Effect, RunnerEffect>, { frequencies: number[]; step: number; type: OscillatorType }> = {
   tap: { frequencies: [520], step: .07, type: "sine" },
   coin: { frequencies: [660, 990], step: .09, type: "sine" },
   win: { frequencies: [523, 659, 784, 1047], step: .12, type: "triangle" },
@@ -210,9 +237,58 @@ export class AudioManager {
       if (ready && this.settings.sound) this.playEffect(effect);
     });
   }
+  /** A coin in a run of coins: each one a step higher up the scale (0 is the first). */
+  chime(step: number): void {
+    if (this.disposed || document.hidden || !this.settings.sound) return;
+    const note = 880 * 2 ** (CHIME_SCALE[Math.max(0, Math.min(CHIME_SCALE.length - 1, Math.floor(step)))] / 12);
+    const layers: Sweep[] = [{ kind: "tone", type: "sine", from: note, to: note, volume: .06, time: .07 }, { kind: "tone", type: "sine", from: note * 1.5, to: note * 1.5, volume: .045, time: .12, delay: .045 }];
+    if (this.context?.state === "running") this.playSweeps(layers);
+    else void this.unlock().then(ready => { if (ready && this.settings.sound) this.playSweeps(layers); });
+  }
+  private noise?: AudioBuffer;
+  /** Layers tones and noise sweeps into one short sound, tracked so a hidden page silences it. */
+  private playSweeps(layers: Sweep[]): void {
+    const context = this.context;
+    if (!context || context.state !== "running" || this.disposed || document.hidden) return;
+    this.playback.activate();
+    if (!this.noise || this.noise.sampleRate !== context.sampleRate) {
+      const buffer = context.createBuffer(1, context.sampleRate, context.sampleRate), data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      this.noise = buffer;
+    }
+    for (const layer of layers) {
+      const start = context.currentTime + (layer.delay ?? 0), end = start + layer.time;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(.0001, start);
+      gain.gain.exponentialRampToValueAtTime(layer.volume, start + Math.min(.012, layer.time / 3));
+      gain.gain.exponentialRampToValueAtTime(.0001, end);
+      gain.connect(context.destination);
+      if (layer.kind === "tone") {
+        const oscillator = context.createOscillator();
+        oscillator.type = layer.type ?? "sine";
+        oscillator.frequency.setValueAtTime(layer.from, start);
+        if (layer.to !== layer.from) oscillator.frequency.exponentialRampToValueAtTime(layer.to, end);
+        oscillator.connect(gain);
+        const voice = { oscillator, gain };
+        this.voices.add(voice);
+        oscillator.onended = () => { this.voices.delete(voice); oscillator.disconnect(); gain.disconnect(); this.releasePlaybackIfIdle(); };
+        oscillator.start(start); oscillator.stop(end + .02);
+      } else {
+        const source = context.createBufferSource(), filter = context.createBiquadFilter();
+        source.buffer = this.noise; filter.type = layer.filter ?? "bandpass"; filter.Q.value = layer.q ?? 1;
+        filter.frequency.setValueAtTime(layer.from, start);
+        if (layer.to !== layer.from) filter.frequency.exponentialRampToValueAtTime(layer.to, end);
+        source.connect(filter); filter.connect(gain);
+        this.sampledVoices.set(source, gain);
+        source.onended = () => { this.sampledVoices.delete(source); source.disconnect(); filter.disconnect(); gain.disconnect(); this.releasePlaybackIfIdle(); };
+        source.start(start, Math.random() * .5); source.stop(end + .02);
+      }
+    }
+  }
   private playEffect(effect: Effect): void {
     const context = this.context;
     if (!context || context.state !== "running" || this.disposed || document.hidden) return;
+    if (isRunnerEffect(effect)) { this.playSweeps(runnerSounds[effect]); return; }
     this.playback.activate();
     if (effect === "breath") {
       const length = Math.floor(context.sampleRate * .42), buffer = context.createBuffer(1, length, context.sampleRate), data = buffer.getChannelData(0);

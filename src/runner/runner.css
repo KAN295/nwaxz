@@ -47,7 +47,6 @@
 .runner-effects[hidden]{display:none}
 .runner-effect,.runner-combo{position:relative;overflow:hidden;display:inline-flex;align-items:center;gap:6px;padding:4px 10px 6px 4px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font:700 13px/1 system-ui;font-variant-numeric:tabular-nums}
 .runner-effect em{font-style:normal;font-weight:600;font-size:12px}
-.runner-effect u{position:absolute;left:0;bottom:0;height:3px;width:var(--left);background:currentColor;transition:width .2s linear}
 .runner-effect-magnet{color:#ff9a8c}.runner-effect-shield{color:#8ff0ff}.runner-effect-boost{color:#ffd66b}
 .runner-effect-slow{color:#d8b5ff}.runner-effect-double{color:#ffcb67}
 .runner-effect i{width:24px;height:24px;background:url('/assets/runner/powerups-v1.png') 0 0/200% 200%}
@@ -347,3 +346,31 @@
 @media (max-width:560px){.runner-lobby .runner-title{font-size:27px;letter-spacing:4px}.runner-lobby .runner-wallet{flex-direction:column;align-items:flex-end}.runner-lobby .runner-play{min-height:54px;font-size:19px}}
 @media (max-height:520px){.runner-lobby-missions,.runner-lobby .runner-mode-note{display:none}.runner-lobby .runner-title{font-size:24px}.runner-lobby .runner-play{min-height:46px}}
 @media (prefers-reduced-motion:reduce){.runner-lobby,.runner-lobby .runner-play{animation:none}}
+
+/* Power-up timers: a ring round each icon empties as the power runs down, and blinks near the end. */
+.runner-effect{padding:3px 11px 3px 3px;gap:7px}
+.runner-effect b{min-width:1.2em;text-align:right}
+.runner-effect-ring{position:relative;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:conic-gradient(currentColor var(--left,100%),rgba(255,255,255,.14) 0)}
+.runner-effect-ring::before{content:"";position:absolute;inset:3px;border-radius:50%;background:rgba(8,18,18,.92)}
+.runner-effect .runner-effect-ring i{position:relative;width:21px;height:21px}
+.runner-effect.ending .runner-effect-ring,.runner-effect.ending b{animation:runner-effect-ending .5s steps(2,jump-none) infinite}
+@keyframes runner-effect-ending{50%{opacity:.35}}
+.runner-effect{animation:runner-effect-in .32s cubic-bezier(.2,1.4,.4,1)}
+@keyframes runner-effect-in{from{transform:translateX(18px) scale(.7);opacity:0}}
+.runner-combo{font:900 15px/1 ui-rounded,system-ui;text-shadow:0 2px 0 #6b4a10}
+.runner-combo.pop{animation:runner-combo-pop .38s cubic-bezier(.2,1.7,.4,1)}
+@keyframes runner-combo-pop{from{transform:scale(1.7)}}
+
+/* Result screen: the card springs in, the score counts up, stats pop in one by one, a new record lands like a stamp. */
+.runner-result{animation:runner-result-in .5s cubic-bezier(.2,1.15,.35,1) both}
+@keyframes runner-result-in{from{transform:translateY(26px) scale(.94);opacity:0}}
+.runner-result .runner-stats span{animation:runner-stat-in .38s cubic-bezier(.2,1.3,.4,1) both}
+.runner-result .runner-stats span:nth-child(1){animation-delay:.35s}
+.runner-result .runner-stats span:nth-child(2){animation-delay:.47s}
+.runner-result .runner-stats span:nth-child(3){animation-delay:.59s}
+.runner-result .runner-stats span:nth-child(4){animation-delay:.71s}
+@keyframes runner-stat-in{from{transform:translateY(12px) scale(.86);opacity:0}}
+.runner-result .runner-over-score em{animation:runner-stamp .45s cubic-bezier(.3,1.6,.5,1) 1.35s both,runner-bounce-badge .9s ease-in-out 1.8s infinite alternate}
+@keyframes runner-stamp{from{transform:rotate(-14deg) scale(2.6);opacity:0}to{transform:rotate(8deg) scale(1);opacity:1}}
+.runner-result .runner-over-extra,.runner-result .runner-progress,.runner-result .runner-missions{animation:runner-stat-in .4s ease-out .8s both}
+@media (prefers-reduced-motion:reduce){.runner-effect.ending .runner-effect-ring,.runner-effect.ending b,.runner-effect,.runner-combo.pop,.runner-result,.runner-result .runner-stats span,.runner-result .runner-over-score em,.runner-result .runner-over-extra,.runner-result .runner-progress,.runner-result .runner-missions{animation:none}}

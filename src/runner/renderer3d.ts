@@ -188,6 +188,10 @@ export class RunnerRenderer3D {
   private nextSpectator = 220;
   /** The splash ring left where the dog hits water. */
   private ripple!: Mesh;
+  /** A ring of light that spreads from the dog's feet when it picks up a power or opens a chest. */
+  private pickupRing!: Mesh;
+  private pickupRingAge = 9;
+  private seenChests = 0;
   private rippleAge = 9;
   /** The dog's sway under a zipline or the balloons: angle and angular speed (a damped pendulum). */
   /** Real seconds on the clock, for the menu's idle motion (the run's own clock stands still there). */
@@ -207,6 +211,8 @@ export class RunnerRenderer3D {
   private sea: Mesh;
   private shark!: { root: TransformNode; fin: AbstractMesh; shadow: Mesh; wake: Mesh; z: number; side: number; lateral: number; age: number; wait: number; active: boolean };
   private waterImpact = false;
+  /** Counts the dog's splashes into water, for the game to play the sound. */
+  splashes = 0;
   private sky: Mesh;
   private skyMat: StandardMaterial;
   private skies: { day: Texture; night: Texture }[] = [];
@@ -314,6 +320,11 @@ export class RunnerRenderer3D {
     rippleMat.diffuseTexture = rippleTexture; rippleMat.useAlphaFromDiffuseTexture = true; rippleMat.disableLighting = true; rippleMat.emissiveColor = Color3.White();
     rippleMat.alphaMode = Engine.ALPHA_ADD; rippleMat.backFaceCulling = false; rippleMat.zOffset = -2;
     this.ripple.material = rippleMat; this.ripple.isPickable = false; this.ripple.setEnabled(false);
+    this.pickupRing = MeshBuilder.CreateGround("runner-pickup-ring", { width: 1, height: 1 }, this.scene);
+    const pickupMat = new StandardMaterial("runner-pickup-ring", this.scene);
+    pickupMat.diffuseTexture = rippleTexture; pickupMat.useAlphaFromDiffuseTexture = true; pickupMat.disableLighting = true; pickupMat.emissiveColor = Color3.White();
+    pickupMat.alphaMode = Engine.ALPHA_ADD; pickupMat.backFaceCulling = false; pickupMat.zOffset = -3;
+    this.pickupRing.material = pickupMat; this.pickupRing.isPickable = false; this.pickupRing.setEnabled(false);
     this.shadow = MeshBuilder.CreateGround("runner-dog-shadow", { width: 1.8, height: 1.1 }, this.scene);
     this.shadow.material = this.radialMaterial("blob", "rgba(0,0,0,.55)", false);
 
@@ -2012,6 +2023,37 @@ export class RunnerRenderer3D {
       for (const x of [-.26, .26]) this.coil(r, x, .07, .3, 3.5, .03);
       this.mergeByMaterial(r);
     });
+    this.addContactShadows();
+  }
+
+  /**
+   * A soft dark patch on the road under every obstacle and pickup, sized to the model's own footprint
+   * (lights, halos and the cart's lamp beam left out), so things sit on the road instead of floating.
+   */
+  private addContactShadows() {
+    const pickups = new Set<string>([...RUN_POWERS.filter(kind => kind !== "fruit"), "chest", "clock", "lantern"]);
+    const standing = /^(block|beam|spikes|boulder|cart-block|crate|runaway-cart)/;
+    // Darkest under the model and still dark at its edge, where the camera actually sees it, then fading out.
+    const texture = new DynamicTexture("runner-contact-tex", { width: 128, height: 128 }, this.scene, false);
+    const ctx = texture.getContext() as CanvasRenderingContext2D, gradient = ctx.createRadialGradient(64, 64, 2, 64, 64, 63);
+    gradient.addColorStop(0, "rgba(0,0,0,.72)"); gradient.addColorStop(.5, "rgba(0,0,0,.5)"); gradient.addColorStop(.75, "rgba(0,0,0,.2)"); gradient.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gradient; ctx.fillRect(0, 0, 128, 128); texture.update(); texture.hasAlpha = true;
+    const material = new StandardMaterial("runner-contact", this.scene);
+    material.diffuseTexture = texture; material.useAlphaFromDiffuseTexture = true; material.disableLighting = true;
+    material.emissiveColor = Color3.Black(); material.zOffset = -2; material.backFaceCulling = false;
+    for (const [name, root] of this.templates) {
+      const base = name.split("@")[0];
+      if (!pickups.has(base) && !standing.test(base)) continue;
+      root.computeWorldMatrix(true);
+      for (const mesh of root.getChildMeshes()) mesh.computeWorldMatrix(true);
+      const { min, max } = root.getHierarchyBoundingVectors(true, mesh => !/halo|beam|light|glint/.test(mesh.name));
+      const origin = root.getAbsolutePosition();
+      const width = Math.min(7, (max.x - min.x) * 1.55 + .4), depth = Math.min(4.5, (max.z - min.z) * 1.55 + .4);
+      if (!(width > 0 && depth > 0)) continue;
+      const shadow = MeshBuilder.CreateGround("contact-shadow", { width, height: depth }, this.scene);
+      shadow.parent = root; shadow.material = material; shadow.isPickable = false;
+      shadow.position.set((min.x + max.x) / 2 - origin.x, .035, (min.z + max.z) / 2 - origin.z);
+    }
   }
 
   /** A coil spring of `turns` turns, `height` tall, standing at (x, 0, 0). */
@@ -2732,7 +2774,7 @@ export class RunnerRenderer3D {
       const below = surface - player.y - world.jumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
-        this.waterImpact = true;
+        this.waterImpact = true; this.splashes++;
         // A splash thrown up, and a ring of foam spreading on the water.
         this.ripple.position.set(this.dog.root.position.x, surface + .05, this.dog.root.position.z); this.rippleAge = 0;
         if (!this.settings.reducedMotion) {
@@ -2968,6 +3010,7 @@ export class RunnerRenderer3D {
     };
     this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0; this.frogBack = 8; this.frogSide = -1;
     this.sway = this.swayVelocity = this.lastLateral = 0; this.rippleAge = 9; this.nextSpectator = world.distance + 160;
+    this.pickupRingAge = 9; this.seenChests = world.chests;
     for (const spectator of this.spectators) { spectator.on = false; spectator.sprite.root.setEnabled(false); }
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
@@ -3518,6 +3561,7 @@ export class RunnerRenderer3D {
         const k = Math.max(0, Math.min(1, (world.elapsed - item.thrownAt) / .5));
         prop.position.y += 3.2 * (1 - k) * (1 - k) + Math.sin(Math.PI * k) * .9;
         prop.rotation.x += (1 - k) * 4; prop.rotation.z += (1 - k) * 2.5;
+        for (const part of prop.getChildMeshes(false)) if (part.name === "contact-shadow") part.setEnabled(k >= 1);
       }
       if (item.kind === "coin") {
         prop.position.y += item.y ?? .8; prop.rotation.y += t * 3 + item.id;
@@ -3525,10 +3569,13 @@ export class RunnerRenderer3D {
       }
       else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance, t);
       else if (isRunPower(item.kind) || item.kind === "chest" || item.kind === "clock" || item.kind === "lantern") {
-        // Bob, and turn the model round so its shape reads.
-        prop.position.y += Math.sin(t * 3 + item.id) * .15;
-        const model = prop.getChildren()[0]?.getChildren().find(child => child.name === "model") as TransformNode | undefined;
-        if (model) { model.rotation.y = this.settings.reducedMotion ? .6 : t * 1.8 + item.id; model.rotation.x = item.kind === "lantern" || item.kind === "balloon" ? 0 : Math.sin(t * 1.3 + item.id) * .12; }
+        // Bob the model (its ring and shadow stay on the road), and turn it round so its shape reads.
+        const bob = Math.sin(t * 3 + item.id) * .15;
+        const parts = prop.getChildren()[0]?.getChildren() ?? [];
+        const model = parts.find(child => child.name === "model") as TransformNode | undefined;
+        if (model) { model.position.y = 1.15 + bob; model.rotation.y = this.settings.reducedMotion ? .6 : t * 1.8 + item.id; model.rotation.x = item.kind === "lantern" || item.kind === "balloon" ? 0 : Math.sin(t * 1.3 + item.id) * .12; }
+        const shadow = parts.find(child => child.name === "contact-shadow") as Mesh | undefined;
+        if (shadow) shadow.scaling.setAll(1 - bob * .9);
       }
       else if (item.kind === "fire") {
         const phase = this.settings.reducedMotion ? 0 : t;
@@ -3600,6 +3647,18 @@ export class RunnerRenderer3D {
       this.burst(this.magic, at, apple ? 200 : 70, POWER_COLORS[world.lastPower]); this.flash.power = 1;
       if (apple) this.burst(this.appleSparkles, at, 120);
     }
+    // A ring of the power's colour spreads over the road from the dog; gold for a chest.
+    const ringColour = world.powerPicked > this.seen.power ? POWER_COLORS[world.lastPower][0] : world.chests > this.seenChests ? "#ffd75e" : "";
+    this.seenChests = world.chests;
+    if (ringColour && !this.settings.reducedMotion) { this.pickupRingAge = 0; (this.pickupRing.material as StandardMaterial).emissiveColor = Color3.FromHexString(ringColour); }
+    if (this.pickupRingAge < .55) {
+      this.pickupRingAge += dt;
+      const k = Math.min(1, this.pickupRingAge / .55);
+      this.pickupRing.position.set(player.x, player.y + .06, player.z);
+      this.pickupRing.scaling.setAll(.6 + (1 - (1 - k) ** 2) * 5.4);
+      (this.pickupRing.material as StandardMaterial).alpha = (1 - k) * .95;
+    }
+    this.pickupRing.setEnabled(this.pickupRingAge < .55);
     if (world.wallBumps > this.seen.bumps) this.burst(this.magic, new Vector3(player.x, player.y + .5, player.z), 26, ["#d9c7a4", "#7a6648"]);
     this.seen.bumps = world.wallBumps;
     this.seen.power = world.powerPicked;

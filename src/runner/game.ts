@@ -105,6 +105,8 @@ export class RunnerGame {
   private swipe?: { x: number; y: number; id: number; dir?: RunAction };
   private wakeLock?: { release(): Promise<void> };
   private seenApple = -1;
+  private seenLanded = 0;
+  private seenSplashes = 0;
   private seenThrows = 0;
   private seenBumps = 0;
   private warnedTurn = -1;
@@ -360,9 +362,14 @@ export class RunnerGame {
   };
 
   private act(action: RunAction) {
-    if (this.world.phase !== "running") return;
-    this.world.action(action);
-    if (action === "jump" || action === "slide") this.audio.effect("tap");
+    const w = this.world;
+    if (w.phase !== "running") return;
+    const jumps = w.jumpCount, slides = w.slides, lane = w.lane, turns = w.turnCount;
+    w.action(action);
+    // Each move has its own sound, and only when it actually happened.
+    if (w.jumpCount > jumps) this.audio.effect(w.jumpCount === 2 ? "jump2" : "jump");
+    else if (w.slides > slides) this.audio.effect("slide");
+    else if (w.lane !== lane || w.turnCount !== turns) this.audio.effect("swish");
   }
 
   // ---------- tilt ----------
@@ -476,7 +483,7 @@ export class RunnerGame {
       this.nearChain = w.elapsed - this.lastNearAt < 2.6 ? this.nearChain + 1 : 1;
       this.seenNear = w.nearMisses; this.seenNearScore = w.nearScore; this.lastNearAt = w.elapsed;
       this.pop(`<b>${this.nearChain > 1 ? `惊险 ×${this.nearChain}` : "惊险！"}</b><span>+${gained}</span>`);
-      this.audio.effect("tap"); this.vibrate(12);
+      this.audio.effect("whoosh"); this.vibrate(12);
     }
     if (w.rollsStarted > this.seenRolls) { this.seenRolls = w.rollsStarted; if (w.phase === "running") this.audio.effect("door"); }
     if (w.phase !== "running" || w.chase) return;
@@ -528,14 +535,59 @@ export class RunnerGame {
       const coins = this.world.coins;
       if (!document.hidden) this.world.advance(this.last ? (time - this.last) / 1000 : 0);
       this.last = time;
-      if (this.world.coins > coins) this.audio.effect("coin");
+      if (this.world.coins > coins) this.audio.chime((Math.max(1, this.world.streak) - 1) % 11);
       this.sync();
       if (this.ready) this.renderer?.draw(this.world);
       this.drawPortraits(time / 1000);
+      this.rollScore(time);
     } catch (error) {
       if (!this.frameFailed) { this.frameFailed = true; console.error("奶狗快跑：这一帧出错，已跳过", error); }
     }
   };
+
+  /**
+   * Power-up timers: a pill is added when a power starts and removed when it ends, so the others never
+   * redraw; each frame only moves the rings and the seconds, and a timer about to run out blinks.
+   */
+  private syncEffects() {
+    const w = this.world, el = this.el.effects;
+    for (const node of Array.from(el.children) as HTMLElement[]) {
+      const power = node.dataset.power as RunPowerKind | undefined;
+      if (power && !(w[power] > 0)) node.remove();
+    }
+    let combo = el.querySelector<HTMLElement>(".runner-combo");
+    for (const power of RUN_POWERS) {
+      if (!(w[power] > 0)) continue;
+      let node = el.querySelector<HTMLElement>(`[data-power="${power}"]`);
+      if (!node) {
+        node = document.createElement("span");
+        node.className = `runner-effect runner-effect-${power}`; node.dataset.power = power;
+        node.innerHTML = `<span class="runner-effect-ring"><i aria-hidden="true"></i></span><em>${POWER_INFO[power].name}</em><b></b>`;
+        el.insertBefore(node, combo);
+      }
+      const left = String(Math.max(0, Math.min(100, Math.round(w[power] / w.durations[power] * 100))));
+      if (node.dataset.left !== left) { node.dataset.left = left; node.style.setProperty("--left", `${left}%`); }
+      const seconds = String(Math.ceil(w[power])), label = node.lastElementChild as HTMLElement;
+      if (label.textContent !== seconds) label.textContent = seconds;
+      node.classList.toggle("ending", w[power] <= 2);
+    }
+    if (w.multiplier > 1) {
+      if (!combo) { combo = document.createElement("span"); combo.className = "runner-combo"; el.append(combo); }
+      const text = `×${w.multiplier}`;
+      if (combo.textContent !== text) { combo.textContent = text; combo.classList.remove("pop"); void combo.offsetWidth; combo.classList.add("pop"); }
+    } else combo?.remove();
+  }
+
+  private scoreRoll?: { to: number; start: number };
+  /** Counts the result screen's score up over about a second, easing out as it lands. */
+  private rollScore(time: number) {
+    const roll = this.scoreRoll;
+    if (!roll) return;
+    const node = this.el.panel.hidden ? null : this.el.panel.querySelector<HTMLElement>(".runner-over-score strong");
+    const k = Math.max(0, Math.min(1, (time - roll.start) / 1100));
+    if (node) node.textContent = String(Math.round(roll.to * (1 - (1 - k) ** 3)));
+    if (k >= 1 || !node) { if (node) node.textContent = String(roll.to); this.scoreRoll = undefined; }
+  }
 
   /** Last markup written to each HUD node: a frame compares strings instead of reading the DOM back. */
   private written = new WeakMap<HTMLElement, string>();
@@ -568,10 +620,7 @@ export class RunnerGame {
     if (labelOn) set(el.scene, [RUN_SCENES[w.sceneIndex].name, w.night ? "夜" : "", w.sceneIndex === 2 ? "" : WEATHER_NAME[w.weather]].filter(Boolean).join(" · "));
     el.scene.classList.toggle("show", labelOn);
 
-    const effects = RUN_POWERS.filter(key => w[key] > 0)
-      .map(key => `<span class="runner-effect runner-effect-${key}"><i aria-hidden="true"></i><em>${POWER_INFO[key].name}</em>${Math.ceil(w[key])}<u style="--left:${Math.round(w[key] / w.durations[key] * 100)}%"></u></span>`).join("")
-      + (w.multiplier > 1 ? `<span class="runner-combo">×${w.multiplier}</span>` : "");
-    set(el.effects, effects);
+    this.syncEffects();
     el.effects.hidden = w.phase !== "running";
     el.danger.hidden = w.phase !== "running" || w.danger === 0;
 
@@ -583,7 +632,7 @@ export class RunnerGame {
       const info = POWER_INFO[w.lastPower];
       const apple = w.lastPower === "fruit";
       this.toast(`<b>${apple ? "✦ " : ""}${info.name}${apple ? " ✦" : ""}</b>${info.text}`, w.lastPower, apple ? 2.8 : 1.8);
-      this.audio.effect(apple ? "win" : "coin");
+      this.audio.effect(apple ? "win" : "power");
       if (apple) { this.vibrate([30, 40, 60]); this.flash("apple"); }
     }
     // The golden apple announces itself as it drops from its tree.
@@ -593,29 +642,35 @@ export class RunnerGame {
       this.toast("<b>✦ 附魔金苹果 ✦</b>从树上掉下来了，快接住！", "fruit", 2.2);
       this.audio.effect("coin");
     }
-    if (w.wallBumps > this.seenBumps) { this.seenBumps = w.wallBumps; this.vibrate(70); this.audio.effect("tap"); }
+    if (w.wallBumps > this.seenBumps) { this.seenBumps = w.wallBumps; this.vibrate(70); this.audio.effect("bump"); }
     if (w.chase && w.chase.throws > this.seenThrows) { this.seenThrows = w.chase.throws; this.audio.effect("tap"); }
     if (w.shieldSaves !== this.seenEvents.shield) { this.seenEvents.shield = w.shieldSaves; this.toast("<b>护盾</b>挡住了撞击！", "shield"); }
     if (w.chests > this.seenPickups.chests) {
       this.seenPickups.chests = w.chests;
       const prize = w.lastChest.power ? `${POWER_INFO[w.lastChest.power].name}：${POWER_INFO[w.lastChest.power].text}` : `+${rewardText(w.lastChest)}`;
       this.toast(`<b>神秘宝箱</b>${prize}`, "chest", 2.2);
-      this.audio.effect("win"); this.vibrate([20, 30, 40]);
+      this.audio.effect("chest"); this.vibrate([20, 30, 40]);
     }
-    if (w.clocks > this.seenPickups.clocks) { this.seenPickups.clocks = w.clocks; this.pop(`<b>+${CLOCK_SECONDS} 秒</b>`); this.audio.effect("coin"); }
-    if (w.lanterns > this.seenPickups.lanterns) { this.seenPickups.lanterns = w.lanterns; this.pop(`<b>灯笼</b><span>奶蛙退后 ${LANTERN_GAP} 米</span>`); this.audio.effect("coin"); }
+    if (w.clocks > this.seenPickups.clocks) { this.seenPickups.clocks = w.clocks; this.pop(`<b>+${CLOCK_SECONDS} 秒</b>`); this.audio.effect("power"); }
+    if (w.lanterns > this.seenPickups.lanterns) { this.seenPickups.lanterns = w.lanterns; this.pop(`<b>灯笼</b><span>奶蛙退后 ${LANTERN_GAP} 米</span>`); this.audio.effect("power"); }
     if (w.stumbles > this.seenEvents.stumble) {
       this.seenEvents.stumble = w.stumbles;
+      this.audio.effect("bump");
       this.audio.haunt({ allowNormalMode: true });
     }
+    if (w.landedAt !== this.seenLanded) { this.seenLanded = w.landedAt; if (w.phase === "running" && w.elapsed - w.landedAt < .1) this.audio.effect("land"); }
+    const splashes = this.renderer?.splashes ?? 0;
+    if (splashes !== this.seenSplashes) { this.seenSplashes = splashes; if (w.phase === "caught") this.audio.effect("splash"); }
     el.capture.hidden = w.phase !== "caught" || (w.trapFall && w.captureTime < .48);
     if (w.phase === "caught") set(el.capture.querySelector("strong")!, w.reason);
 
     if (this.ready && this.shownPhase !== w.phase) {
+      // The result screen counts the score up from nothing.
+      if ((w.phase === "lost" || w.phase === "won") && !this.settings.reducedMotion && w.score > 0) this.scoreRoll = { to: w.score, start: performance.now() + 250 };
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); this.holdScreenOn(false); }
       if (w.phase === "won") { this.audio.effect("win"); this.flash("apple"); this.vibrate([40, 60, 40, 60, 120]); }
       if (w.chase?.escaped && w.phase === "lost") this.audio.haunt({ allowNormalMode: true });
-      if (w.phase === "caught" && this.shownPhase === "running") this.vibrate(180);
+      if (w.phase === "caught" && this.shownPhase === "running") { this.vibrate(180); if (!w.trapFall) this.audio.effect("crash"); }
       this.shownPhase = w.phase; this.showPanel();
     }
     // In the chase there is no grab from behind, so no whimper and laugh to go with it.
@@ -907,7 +962,8 @@ export class RunnerGame {
     this.shopObserver?.disconnect(); this.shopObserver = undefined;
     // The start screen is a lobby round the 3D dog; everything else is a card in the middle.
     panel.classList.toggle("lobby", lobby);
-    panel.innerHTML = lobby ? `<div class="runner-lobby">${html}</div>` : `<div class="runner-card">${html}</div>`;
+    const result = this.ready && !lobby && !this.shopOpen && !this.upgradesOpen && (w.phase === "lost" || w.phase === "won");
+    panel.innerHTML = lobby ? `<div class="runner-lobby">${html}</div>` : `<div class="runner-card${result ? " runner-result" : ""}">${html}</div>`;
     if (this.shopOpen) {
       const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop();
       const list = panel.querySelector(".runner-shop-list");
@@ -955,7 +1011,7 @@ export class RunnerGame {
       <p class="runner-over-kicker">${kicker}</p>
       ${head}
       ${revive}
-      <div class="runner-over-score"><small>${won ? "本次得分" : "本局得分"}</small><strong>${w.score}</strong>${newBest ? `<em>新纪录</em>` : ""}</div>
+      <div class="runner-over-score"><small>${won ? "本次得分" : "本局得分"}</small><strong>${this.scoreRoll ? 0 : w.score}</strong>${newBest ? `<em>新纪录</em>` : ""}</div>
       <div class="runner-stats runner-stats-4"><span><b>${metres}</b>米</span><span><b>${time}</b>用时</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>
       <p class="runner-over-extra">${extra}</p>
       ${progress}
