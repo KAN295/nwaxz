@@ -604,7 +604,7 @@ test('spring shoes jump high enough to clear a boulder in one go; chests pay out
 });
 
 test('revive: back on its feet past the hazard, road ahead cleared, protected; costs double; not on a clock', () => {
-  const w = place('gap', { z: 6, span: 3 }); run(w, 3);
+  const w = place('gap', { z: 6, span: 3 }); run(w, 3.5);
   assert.equal(w.phase, 'lost'); assert.equal(w.canRevive, true); assert.equal(w.reviveCost, REVIVE_COST);
   w.items.push({ id: 9, kind: 'block', lane: 1, z: w.distance + 12, span: 3, done: false });
   assert.equal(w.revive(), true);

@@ -1047,10 +1047,12 @@ export class RunnerGame {
     };
     const motion = this.settings.reducedMotion ? 0 : 1, dog = this.skinPortrait ?? this.art.dog;
     paint("dog", dog, this.drawingBounds(dog, 4, 4, 2), Math.sin(time * 5) * 2 * motion, true);
-    paint("frog", this.art.frog, cell(this.art.frog, 0, 4, 4), Math.sin(time * 4 + 1) * 2 * motion, false);
+    const laugh = FROG_EXTRA_ART.directionLaugh.frames[0];
+    // On the start card the frog breaks into its laugh every few seconds, shaking with it.
+    if (motion && time % 5.5 > 4.2 && this.art.hauntedLaugh) paint("frog", this.art.hauntedLaugh, [laugh.x, laugh.y, laugh.width, laugh.height], -Math.abs(Math.sin(time * 11)) * 4, true);
+    else paint("frog", this.art.frog, cell(this.art.frog, 0, 4, 4), Math.sin(time * 4 + 1) * 2 * motion, false);
     paint("dog-win", dog, this.drawingBounds(dog, 4, 4, 2), -Math.abs(Math.sin(time * 6)) * 8 * motion, true);
     paint("laugh", this.art.laugh, cell(this.art.laugh, 6, 4, 2), Math.sin(time * 14) * 2 * motion, false);
-    const laugh = FROG_EXTRA_ART.directionLaugh.frames[0];
     paint("haunt-laugh", this.art.hauntedLaugh, [laugh.x, laugh.y, laugh.width, laugh.height], Math.abs(Math.sin(time * 9)) * -3 * motion, true);
   }
 

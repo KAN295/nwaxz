@@ -129,6 +129,8 @@ const LANE_RATE = 16;
 const DANGER_TIME = 8;
 const GRACE_TIME = 1;
 const CAPTURE_TIME = 2.4;
+/** Seconds of capture time, from the crash, that play in slow motion. */
+const IMPACT_SLOW = .22;
 const TURN_WINDOW = 24;
 const TURN_LATE = 1.5;
 /** Share of corners after the first that become forks with a broken-bridge side. */
@@ -479,7 +481,8 @@ export class RunnerWorld {
   advance(seconds: number) {
     if (!Number.isFinite(seconds) || seconds <= 0) return;
     if (this.phase === "caught") {
-      this.captureTime += Math.min(seconds, .1);
+      // The moment of the crash plays in slow motion, then the capture (or the fall) runs at speed.
+      this.captureTime += Math.min(seconds, .1) * (this.captureTime < IMPACT_SLOW ? .4 : 1);
       if (this.captureTime >= CAPTURE_TIME) this.phase = "lost";
       return;
     }

@@ -44,6 +44,16 @@ const DOG_SIZE = 2.1;
 const FROG_SIZE = 2.4;
 // Feet sit near the bottom of each sheet cell (measured from the drawings).
 const DOG_FEET = .39, FROG_FEET = .48;
+/** The haunted frog's directional sheets (front, front-left, left, back-left, back, back-right, right, front-right). */
+type FrogSheet = "grab" | "laugh" | "stalk" | "stalkB" | "search";
+const FROG_ATLAS: Record<FrogSheet, keyof typeof FROG_EXTRA_ART> = { grab: "directionAttack", laugh: "directionLaugh", stalk: "directionStalk", stalkB: "directionStalkB", search: "directionSearch" };
+const FRONT = 0, BACK = 4;
+/** Directional frames are cropped to the frog, so they show a little smaller than the frog in its walk cells. */
+const FROG_CROP_SCALE = .9;
+/** Milk frogs at the roadside: cells of the 4×2 atlas and the 2×2 extras. */
+const MILK = { neutral: 0, blink: 1, look: 2, raise: 3, tap: 4, wait: 5, laugh: 6, celebrate: 7 } as const;
+const MILK_EXTRA = { wave: 0, yawn: 1, surprise: 2, wash: 3 } as const;
+const SPECTATOR_SIZE = 1.7;
 const FISSURE_HALF = obstacleHalfDepth("gap", 0);
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
 const GROUND_SIZE = 900, GROUND_SNAP = 70;
@@ -169,7 +179,17 @@ export class RunnerRenderer3D {
   private ropeLanyard: AbstractMesh;
   private cartLane = 0;
   private textures = new Map<string, Texture>();
-  private sheets: Partial<Record<"run" | "actions" | "fall" | "cart" | "walk" | "grab" | "laugh", Texture>> = {};
+  private sheets: Partial<Record<"run" | "actions" | "fall" | "cart" | "walk" | FrogSheet | "milkFrog" | "milkFrogExtra", Texture>> = {};
+  /** Roadside milk frogs cheering the dog on (two at most), with what each is up to. */
+  private spectators: { sprite: ReturnType<typeof createRunnerSprite>; atlas?: Texture; extra?: Texture; z: number; side: number; on: boolean; seed: number }[] = [];
+  private nextSpectator = 220;
+  /** The splash ring left where the dog hits water. */
+  private ripple!: Mesh;
+  private rippleAge = 9;
+  /** The dog's sway under a zipline or the balloons: angle and angular speed (a damped pendulum). */
+  private sway = 0;
+  private swayVelocity = 0;
+  private lastLateral = 0;
   private mats: Record<string, StandardMaterial> = {};
   private themes: Theme[] = [];
   private groundPlane: Mesh;
@@ -209,6 +229,7 @@ export class RunnerRenderer3D {
   private dust: ParticleSystem;
   private rollDust: ParticleSystem;
   private cartSparks: ParticleSystem;
+  private splash: ParticleSystem;
   /** Fraction of a dust particle owed while running, so the trail does not depend on the frame rate. */
   private stepDust = 0;
   private nearStreaks: ParticleSystem;
@@ -270,6 +291,20 @@ export class RunnerRenderer3D {
 
     this.dog = createRunnerSprite(this.scene, "runner-milk-dog-2d", DOG_SIZE);
     this.chaserSprite = createRunnerSprite(this.scene, "runner-milk-frog-2d", FROG_SIZE);
+    for (let i = 0; i < 2; i++) {
+      const sprite = createRunnerSprite(this.scene, `runner-spectator-${i}`, SPECTATOR_SIZE); sprite.root.setEnabled(false);
+      this.spectators.push({ sprite, z: 0, side: 1, on: false, seed: i * 3.7 });
+    }
+    // A ring of foam spreading where the dog lands in water.
+    this.ripple = MeshBuilder.CreateGround("runner-ripple", { width: 1, height: 1 }, this.scene);
+    const rippleTexture = new DynamicTexture("runner-ripple-tex", { width: 128, height: 128 }, this.scene, false);
+    const rippleCtx = rippleTexture.getContext() as CanvasRenderingContext2D, ring = rippleCtx.createRadialGradient(64, 64, 30, 64, 64, 62);
+    ring.addColorStop(0, "rgba(255,255,255,0)"); ring.addColorStop(.55, "rgba(235,250,255,.9)"); ring.addColorStop(.75, "rgba(220,245,255,.35)"); ring.addColorStop(1, "rgba(255,255,255,0)");
+    rippleCtx.fillStyle = ring; rippleCtx.fillRect(0, 0, 128, 128); rippleTexture.update(); rippleTexture.hasAlpha = true;
+    const rippleMat = new StandardMaterial("runner-ripple", this.scene);
+    rippleMat.diffuseTexture = rippleTexture; rippleMat.useAlphaFromDiffuseTexture = true; rippleMat.disableLighting = true; rippleMat.emissiveColor = Color3.White();
+    rippleMat.alphaMode = Engine.ALPHA_ADD; rippleMat.backFaceCulling = false; rippleMat.zOffset = -2;
+    this.ripple.material = rippleMat; this.ripple.isPickable = false; this.ripple.setEnabled(false);
     this.shadow = MeshBuilder.CreateGround("runner-dog-shadow", { width: 1.8, height: 1.1 }, this.scene);
     this.shadow.material = this.radialMaterial("blob", "rgba(0,0,0,.55)", false);
 
@@ -317,6 +352,13 @@ export class RunnerRenderer3D {
     this.cartSparks = this.particles("cart-sparks", 160, "#fff3b0", "#ff8a2a");
     this.cartSparks.gravity.set(0, -9, 0); this.cartSparks.minSize = .03; this.cartSparks.maxSize = .08;
     this.cartSparks.minLifeTime = .15; this.cartSparks.maxLifeTime = .38; this.cartSparks.minEmitPower = 1.6; this.cartSparks.maxEmitPower = 4;
+    // Water thrown up where the dog goes in: a column of drops that falls back.
+    this.splash = this.particles("water-splash", 140, "#f4fcff", "#9ad6e2");
+    this.splash.blendMode = ParticleSystem.BLENDMODE_STANDARD; this.splash.colorDead = new Color4(.85, .96, 1, 0);
+    this.splash.gravity.set(0, -13, 0); this.splash.minSize = .09; this.splash.maxSize = .27;
+    this.splash.minLifeTime = .55; this.splash.maxLifeTime = 1; this.splash.minEmitPower = 2.5; this.splash.maxEmitPower = 3.8;
+    this.splash.direction1 = new Vector3(-.5, 1.5, -.5); this.splash.direction2 = new Vector3(.5, 2, .5);
+    this.splash.minEmitBox = new Vector3(-.3, 0, -.3); this.splash.maxEmitBox = new Vector3(.3, .05, .3);
     // Near misses leave a few white streaks whipping past the dog.
     this.nearStreaks = this.particles("near-streaks", 80, "#ffffff", "#bfeaff");
     this.nearStreaks.billboardMode = ParticleSystem.BILLBOARDMODE_STRETCHED; this.nearStreaks.gravity.set(0, 0, 0);
@@ -704,17 +746,23 @@ export class RunnerRenderer3D {
     ];
   }
   async load() {
-    const [run, actions, fall, cart, walk, grab, laugh] = await Promise.all([
+    const [run, actions, fall, cart, walk, grab, laugh, stalk, stalkB, search, milkFrog, milkFrogExtra] = await Promise.all([
       loadImage("/assets/runner/milk-dog-run-v2.png"), loadImage("/assets/runner/milk-dog-actions-v2.png"),
       loadImage("/assets/runner/milk-dog-fall-v1.png"), loadImage(MINECART_SURPRISE_ART),
       loadImage("/assets/character/haunted-frog-directions-walk-v1.webp"),
       loadImage(FROG_EXTRA_ART.directionAttack.url), loadImage(FROG_EXTRA_ART.directionLaugh.url),
+      loadImage(FROG_EXTRA_ART.directionStalk.url), loadImage(FROG_EXTRA_ART.directionStalkB.url), loadImage(FROG_EXTRA_ART.directionSearch.url),
+      loadImage("/assets/character/milk-frog-atlas.webp"), loadImage("/assets/character/milk-frog-extra-v2.webp"),
     ]);
     this.sheets = {
       run: sheetTexture(this.scene, cleanSheet(run)), actions: sheetTexture(this.scene, cleanSheet(actions)),
       fall: sheetTexture(this.scene, cleanSheet(fall)), cart: sheetTexture(this.scene, cart.src),
       walk: sheetTexture(this.scene, walk.src), grab: sheetTexture(this.scene, grab.src), laugh: sheetTexture(this.scene, laugh.src),
+      stalk: sheetTexture(this.scene, stalk.src), stalkB: sheetTexture(this.scene, stalkB.src), search: sheetTexture(this.scene, search.src),
+      milkFrog: sheetTexture(this.scene, milkFrog.src), milkFrogExtra: sheetTexture(this.scene, milkFrogExtra.src),
     };
+    // Each spectator owns its textures (a sprite sets its frame on the texture), so they get their own copies.
+    for (const spectator of this.spectators) { spectator.atlas = this.sheets.milkFrog!.clone(); spectator.extra = this.sheets.milkFrogExtra!.clone(); spectator.sprite.frame(spectator.atlas, 0, 4, 2); }
     this.dog.frame(this.sheets.actions!, 0, 4, 2);
     this.chaserSprite.frame(this.sheets.walk!, 4, 4, 4);
     // The sky is a world-fixed band: the side strip (cliffs, trees, sky) of each scene picture,
@@ -2644,7 +2692,15 @@ export class RunnerRenderer3D {
     const gallop = motion && pose.sheet === "run" && !this.schoolSheet ? Math.sin(Math.PI * world.gait) ** 2 * .07 : 0;
     this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop + gallop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
-    const swing = rope ? -lateral * .11 * (1 - release) + Math.sin(Math.PI * release) * .17 : 0;
+    // Hanging from the zipline or the balloons the body swings like a pendulum: steering throws it out
+    // to the side, then it swings back and settles. On the ground it straightens up again.
+    const lateralSpeed = dt > 0 ? (lateral - this.lastLateral) / dt : 0;
+    this.lastLateral = lateral;
+    if (((rope && release < .2) || world.flying) && motion && dt > 0) {
+      this.swayVelocity += (-this.sway * 30 - this.swayVelocity * 3.6 - lateralSpeed * .75) * dt;
+      this.sway = Math.max(-.4, Math.min(.4, this.sway + this.swayVelocity * dt));
+    } else { this.sway *= dt > 0 ? Math.exp(-dt * 8) : 1; this.swayVelocity = 0; }
+    const swing = this.sway + (rope ? Math.sin(Math.PI * release) * .17 : 0);
     // Lean into lane changes (a little on foot, more on a ride or the bicycle) and into bends.
     const turning = this.route.turnRate(view) * world.speed;
     this.turnLean += (Math.max(-.16, Math.min(.16, turning * .035)) - this.turnLean) * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
@@ -2659,8 +2715,12 @@ export class RunnerRenderer3D {
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
         this.waterImpact = true;
+        // A splash thrown up, and a ring of foam spreading on the water.
+        this.ripple.position.set(this.dog.root.position.x, surface + .05, this.dog.root.position.z); this.rippleAge = 0;
         if (!this.settings.reducedMotion) {
-          this.burst(this.magic, new Vector3(this.dog.root.position.x, surface + .08, this.dog.root.position.z), 12, ["#d7eeee", "#416e72"]);
+          const at = new Vector3(this.dog.root.position.x, surface + .06, this.dog.root.position.z);
+          this.burst(this.splash, at, 96); this.burst(this.magic, at, 16, ["#eefaff", "#5a9aa0"]);
+          this.burst(this.dust, new Vector3(this.dog.root.position.x, surface + .1, this.dog.root.position.z), 18, ["#f4fcffcc", "#9fc8d099"]);
         }
       }
     }
@@ -2701,6 +2761,7 @@ export class RunnerRenderer3D {
     this.drawEffects(world, player, t, dt, capture, lift);
 
     if (!falling) this.updateCamera(world, player, centre, grab, dt, t, view, turning);
+    else this.followFall(world, player, dt);
     // Chaser: shown for the opening sprint and after a stumble.
     const frog = this.chaserSprite;
     // In the dark run the frog is always there, as far back as it actually is.
@@ -2716,14 +2777,16 @@ export class RunnerRenderer3D {
     } else if (!capture) {
       frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
       frog.root.rotation.setAll(0);
-      frog.frame(this.sheets.walk!, chaserFrame(world, this.settings.reducedMotion), 4, 4);
-      frog.root.scaling.setAll(1);
+      // Stalking after the dog, lunging when it is right there, casting about once it has lost it.
+      const pose = this.chaserPose(world, t);
+      const centreHeight = this.frogPose(pose.sheet, BACK);
       // On the log bridge the frog follows the log's centre line instead of an empty side lane.
       const onBridge = !!world.bridge;
       const base = onBridge ? centre : player;
       // Straight behind the dog it keeps further back so it does not hide the dog from the camera.
       const side = onBridge ? 0 : world.position > 1.4 ? -1 : 1, back = huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
-      frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + FROG_SIZE * FROG_FEET + Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12, base.z - fz * back + rz * side * 1.45);
+      const stride = pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .14;
+      frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + centreHeight + stride, base.z - fz * back + rz * side * 1.45);
       frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0 || !!world.hunt));
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
@@ -2740,13 +2803,79 @@ export class RunnerRenderer3D {
     }
     this.mats["apple-glint"].alpha = .22 + (this.settings.reducedMotion ? 0 : Math.sin(t * 5) * .1);
     this.drawShark(world, dt);
-    this.drawWeather(weather, t, running && world.boost > 0, centre.heading, player.y);
+    // Speed lines on a dash, and streaming past on a downhill zipline; sparks from the pulley on the cable.
+    const zipping = !!rope && isDownhillRope(rope) && release < .2;
+    this.drawWeather(weather, t, running && (world.boost > 0 || zipping), centre.heading, player.y);
+    if (rope && release < .15 && running && !this.settings.reducedMotion && Math.random() < .6) this.burst(this.cartSparks, this.ropeHandle.position, 2);
+    this.drawSpectators(world, view, t, dt);
     const nearBridge = this.bridgeNear(world);
     this.ambience.update({
       dt: world.phase === "paused" ? 0 : dt, scene: theme, night, weather, camera: this.camera.position, distance: world.distance,
       place: this.placeOnRoute, sea: !!nearBridge && world.distance > nearBridge.start - 60 && world.distance < nearBridge.end, reducedMotion: this.settings.reducedMotion,
     });
     this.scene.render();
+  }
+
+  /**
+   * Shows a frame of one of the haunted frog's directional sheets on the chaser sprite, cropped to the
+   * frog and `scale` times its usual size. Returns how high its centre sits above its feet.
+   */
+  private frogPose(sheet: FrogSheet, direction: number, scale = 1) {
+    const atlas = FROG_EXTRA_ART[FROG_ATLAS[sheet]], rect = atlas.frames[direction], size = scale * FROG_CROP_SCALE;
+    this.chaserSprite.region(this.sheets[sheet]!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
+    this.chaserSprite.root.scaling.set(size * rect.width / rect.height, size, 1);
+    return FROG_SIZE * size / 2;
+  }
+
+  /** The frog behind the dog: two stalking strides in turn; a lunge when right on it; looking about as it gives up. */
+  private chaserPose(world: RunnerWorld, t: number): { sheet: FrogSheet } {
+    if (this.settings.reducedMotion) return { sheet: "stalk" };
+    const lunging = world.hunt ? world.hunt.gap < 4.5 : world.danger > 6.8;
+    if (lunging) return { sheet: Math.floor(t * 5) % 2 ? "grab" : "stalkB" };
+    if (!world.hunt && world.danger > 0 && world.danger < .9 && world.elapsed > 4) return { sheet: "search" };
+    return { sheet: Math.floor(world.gait * 2) % 2 ? "stalk" : "stalkB" };
+  }
+
+  /**
+   * Now and then a milk frog stands at the roadside to cheer the dog past: waving as it comes, jumping
+   * for joy as it goes by, turning to watch it go. At night they yawn and rub their eyes; a near miss
+   * right in front of them makes them gasp. Not underground, on the log bridge, or in the dark run.
+   */
+  private drawSpectators(world: RunnerWorld, view: number, t: number, dt: number) {
+    const live = world.phase === "running" || world.phase === "paused" || world.phase === "ready";
+    if (live && view + 130 > this.nextSpectator) {
+      const spot = this.nextSpectator;
+      this.nextSpectator += 240 + Math.random() * 260;
+      const section = sectionFeature(spot), nearFeature = !!section && spot > section.start - 40 && spot < section.end + 25;
+      const free = this.spectators.find(s => !s.on);
+      if (free && sceneAt(spot) !== 2 && world.mode !== "dark" && !nearFeature && !world.turns.some(turn => Math.abs(turn.z - spot) < 32)) {
+        Object.assign(free, { on: true, z: spot, side: Math.random() < .5 ? -1 : 1, seed: Math.random() * 10 });
+      }
+    }
+    const motion = this.settings.reducedMotion ? 0 : 1, gasp = world.elapsed - world.nearAt < 1.3;
+    for (const s of this.spectators) {
+      const ahead = s.z - view;
+      if (!s.on || ahead < -14 || !s.atlas || !s.extra) { s.on = s.on && ahead >= -14; s.sprite.root.setEnabled(false); continue; }
+      let extra = false, cell: number = MILK.neutral, hop = 0;
+      const beat = (rate: number) => Math.floor(t * rate + s.seed) % 2 === 0;
+      if (world.night) { extra = beat(.6); cell = extra ? MILK_EXTRA.yawn : MILK.blink; }
+      else if (gasp && Math.abs(ahead) < 30) { extra = true; cell = MILK_EXTRA.surprise; }
+      else if (ahead > 22) { extra = beat(2.2); cell = extra ? MILK_EXTRA.wave : MILK.raise; }
+      else if (ahead > -3) { cell = beat(3) ? MILK.celebrate : MILK.laugh; hop = Math.abs(Math.sin(t * 9 + s.seed)) * .2 * motion; }
+      else cell = MILK.look;
+      if (extra) s.sprite.frame(s.extra, cell, 2, 2); else s.sprite.frame(s.atlas, cell, 4, 2);
+      const p = this.place(s.z, s.side * (ROAD_HALF + 1.9));
+      s.sprite.root.position.set(p.x, p.y + SPECTATOR_SIZE * .43 + hop, p.z);
+      s.sprite.tint(world.night ? .78 : 1);
+      s.sprite.root.setEnabled(true);
+    }
+    if (dt > 0 && this.rippleAge < 1.4) {
+      this.rippleAge += dt;
+      const k = this.rippleAge / 1.4;
+      this.ripple.scaling.setAll(.8 + k * 4.5);
+      (this.ripple.material as StandardMaterial).alpha = (1 - k) * .85;
+    }
+    this.ripple.setEnabled(this.rippleAge < 1.4);
   }
 
   /**
@@ -2767,14 +2896,15 @@ export class RunnerRenderer3D {
     frog.root.position.set(at.x, at.y + hang + FROG_SIZE * FROG_FEET + bob, at.z);
     frog.material.alpha = 1;
     frog.root.setEnabled(true);
-    if (done) {
-      // Turned to face the camera, doubled up laughing.
-      const atlas = FROG_EXTRA_ART.directionLaugh, rect = atlas.frames[0], scale = 1.15;
-      frog.region(this.sheets.laugh!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
+    // It turns round to lob a crate back, and to laugh at the dog when the dog runs into something.
+    const throwing = world.items.some(item => item.thrownAt !== undefined && world.elapsed - item.thrownAt < .35);
+    const taunting = world.hitAt > 0 && world.elapsed - world.hitAt < .9;
+    if (done || (motion && (taunting || throwing))) {
+      // Facing the camera: doubled up laughing at the end or at a stumble, arms out as it throws.
       frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
       frog.root.rotation.setAll(0);
-      frog.root.scaling.set(scale * rect.width / rect.height, scale, 1);
-      frog.root.position.y += Math.abs(Math.sin(t * 9)) * .08 * motion;
+      const laughing = done || taunting, centreHeight = this.frogPose(laughing ? "laugh" : "grab", FRONT, done ? 1.28 : 1.12);
+      frog.root.position.y += centreHeight - FROG_SIZE * FROG_FEET + (laughing ? Math.abs(Math.sin(t * 9)) * .08 * motion : 0);
     } else {
       frog.root.billboardMode = Mesh.BILLBOARDMODE_Y;
       frog.root.rotation.setAll(0); frog.root.scaling.setAll(1);
@@ -2808,6 +2938,8 @@ export class RunnerRenderer3D {
       landed: world.landedAt, slides: world.slides, doubles: world.doubleJumps, near: world.nearMisses, revives: world.revives,
     };
     this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0;
+    this.sway = this.swayVelocity = this.lastLateral = 0; this.rippleAge = 9; this.nextSpectator = world.distance + 160;
+    for (const spectator of this.spectators) { spectator.on = false; spectator.sprite.root.setEnabled(false); }
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -3521,15 +3653,11 @@ export class RunnerRenderer3D {
     const view = this.camera.position.subtract(frogAt);
     const angle = Math.atan2(Vector3.Dot(view, right), Vector3.Dot(view, forward));
     const frame = (8 + Math.round(-angle / (Math.PI / 4))) % 8;
-    if (time < .15) {
-      frog.frame(this.sheets.walk!, frame, 4, 4);
-    } else {
-      const laughing = time >= CAPTURE_LAUGH_AT;
-      const atlas = laughing ? FROG_EXTRA_ART.directionLaugh : FROG_EXTRA_ART.directionAttack;
-      const rect = atlas.frames[frame];
-      frog.region(this.sheets[laughing ? "laugh" : "grab"]!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
-      frog.root.scaling.x *= rect.width / rect.height;
-    }
+    // Closing in at a stalk, the grab, then doubled up laughing — every pose turned to face the camera as it swings round.
+    const sheet: FrogSheet = time < .15 ? (Math.floor(time * 20) % 2 ? "stalkB" : "stalk") : time >= CAPTURE_LAUGH_AT ? "laugh" : "grab";
+    const atlas = FROG_EXTRA_ART[FROG_ATLAS[sheet]], rect = atlas.frames[frame];
+    frog.region(this.sheets[sheet]!, rect.x / atlas.width, rect.y / atlas.height, rect.width / atlas.width, rect.height / atlas.height);
+    frog.root.scaling.x *= rect.width / rect.height;
     frog.root.billboardMode = Mesh.BILLBOARDMODE_NONE;
     frog.material.alpha = world.danger > 0 || world.elapsed < 3.5 ? 1 : Math.min(1, time / .13);
     frog.root.setEnabled(frog.material.alpha > 0);
@@ -3547,6 +3675,18 @@ export class RunnerRenderer3D {
     this.shadow.position.x = dog.position.x;
     this.shadow.position.z = dog.position.z;
     this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
+  }
+
+  /** Off the edge: the camera stops where it was, rises a little and tips down to watch the dog go in. */
+  private followFall(world: RunnerWorld, player: Vector3, dt: number) {
+    if (this.settings.reducedMotion || dt <= 0) return;
+    const k = 1 - Math.exp(-dt * 3.4), rise = Math.min(1, world.captureTime / .4), dog = this.dog.root.position;
+    this.cameraPos.y += (player.y + 5.4 - this.cameraPos.y) * k * rise;
+    this.cameraTarget.x += (dog.x - this.cameraTarget.x) * k;
+    this.cameraTarget.z += (dog.z - this.cameraTarget.z) * k;
+    this.cameraTarget.y += (Math.max(dog.y, player.y - 2.6) - this.cameraTarget.y) * k;
+    this.camera.position.copyFrom(this.cameraPos);
+    this.camera.setTarget(this.cameraTarget);
   }
 
   /** `view` is the dog's drawn distance along the route; `turning` how fast the road is turning under it (rad/s). */
