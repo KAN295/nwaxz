@@ -246,16 +246,52 @@ export class AudioManager {
     else void this.unlock().then(ready => { if (ready && this.settings.sound) this.playSweeps(layers); });
   }
   private noise?: AudioBuffer;
+  private humVoice?: { source: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode; level: number; pitch: number };
+  /**
+   * A sound that lasts as long as something does, such as the pulley whirring along a zipline: called
+   * every frame with how loud (0 stops it) and how high (1 normal) it should be.
+   */
+  hum(level: number, pitch = 1): void {
+    const context = this.context, voice = this.humVoice;
+    const live = voice && this.sampledVoices.has(voice.source);
+    if (level <= 0 || !this.settings.sound || !context || context.state !== "running" || document.hidden || this.disposed) {
+      if (live && context) {
+        voice.gain.gain.setTargetAtTime(.0001, context.currentTime, .06);
+        voice.source.stop(context.currentTime + .4);
+      }
+      this.humVoice = undefined;
+      return;
+    }
+    if (live) {
+      if (Math.abs(voice.level - level) < .02 && Math.abs(voice.pitch - pitch) < .02) return;
+      voice.level = level; voice.pitch = pitch;
+      voice.gain.gain.setTargetAtTime(level * .05, context.currentTime, .08);
+      voice.filter.frequency.setTargetAtTime(700 * pitch, context.currentTime, .1);
+      return;
+    }
+    this.playback.activate();
+    if (!this.noise || this.noise.sampleRate !== context.sampleRate) this.makeNoise(context);
+    const source = context.createBufferSource(), filter = context.createBiquadFilter(), gain = context.createGain();
+    source.buffer = this.noise!; source.loop = true;
+    filter.type = "bandpass"; filter.Q.value = 5; filter.frequency.value = 700 * pitch;
+    gain.gain.setValueAtTime(.0001, context.currentTime); gain.gain.setTargetAtTime(level * .05, context.currentTime, .08);
+    source.connect(filter); filter.connect(gain); gain.connect(context.destination);
+    this.sampledVoices.set(source, gain);
+    source.onended = () => { this.sampledVoices.delete(source); source.disconnect(); filter.disconnect(); gain.disconnect(); this.releasePlaybackIfIdle(); };
+    source.start();
+    this.humVoice = { source, filter, gain, level, pitch };
+  }
+  private makeNoise(context: AudioContext) {
+    const buffer = context.createBuffer(1, context.sampleRate, context.sampleRate), data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    this.noise = buffer;
+  }
   /** Layers tones and noise sweeps into one short sound, tracked so a hidden page silences it. */
   private playSweeps(layers: Sweep[]): void {
     const context = this.context;
     if (!context || context.state !== "running" || this.disposed || document.hidden) return;
     this.playback.activate();
-    if (!this.noise || this.noise.sampleRate !== context.sampleRate) {
-      const buffer = context.createBuffer(1, context.sampleRate, context.sampleRate), data = buffer.getChannelData(0);
-      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-      this.noise = buffer;
-    }
+    if (!this.noise || this.noise.sampleRate !== context.sampleRate) this.makeNoise(context);
     for (const layer of layers) {
       const start = context.currentTime + (layer.delay ?? 0), end = start + layer.time;
       const gain = context.createGain();
@@ -275,7 +311,7 @@ export class AudioManager {
         oscillator.start(start); oscillator.stop(end + .02);
       } else {
         const source = context.createBufferSource(), filter = context.createBiquadFilter();
-        source.buffer = this.noise; filter.type = layer.filter ?? "bandpass"; filter.Q.value = layer.q ?? 1;
+        source.buffer = this.noise!; filter.type = layer.filter ?? "bandpass"; filter.Q.value = layer.q ?? 1;
         filter.frequency.setValueAtTime(layer.from, start);
         if (layer.to !== layer.from) filter.frequency.exponentialRampToValueAtTime(layer.to, end);
         source.connect(filter); filter.connect(gain);

@@ -4,6 +4,7 @@ import type { Settings } from "../settings.ts";
 import type { AudioManager } from "../audio.ts";
 import { RunnerTilt } from "./tilt.ts";
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART } from "./animation.ts";
+import { ropeReleaseProgress } from "./course.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
@@ -43,6 +44,8 @@ const MODES: readonly { id: RunMode; name: string; tag: string; note: string; st
 ];
 const modeInfo = (mode: RunMode) => MODES.find(item => item.id === mode)!;
 const UPGRADE_NOTE: Partial<Record<RunPowerKind, string>> = { balloon: "飞行时间" };
+/** How long the "one more go?" offer waits before the results come up, in milliseconds. */
+const OFFER_MS = 4500;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 /** Seconds the scene name stays up after the run enters a new scene. */
 const SCENE_LABEL_SECONDS = 3.2;
@@ -286,6 +289,7 @@ export class RunnerGame {
       case "upgrades": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.upgradesOpen = true; this.showPanel(); } return;
       case "upgrades-back": this.upgradesOpen = false; this.showPanel(); return;
       case "revive": this.revive(); return;
+      case "offer-skip": this.endOffer(); return;
       case "help-back": this.showPanel(); return;
       case "retry-art": void this.load(); return;
       case "skip-capture": this.world.finishCapture(); return;
@@ -330,7 +334,7 @@ export class RunnerGame {
     if (!this.persistWardrobe(wallet)) return;
     this.wardrobe = wallet;
     w.revive();
-    this.captureAudio = "waiting"; this.shownPhase = "running"; this.last = 0;
+    this.captureAudio = "waiting"; this.shownPhase = "running"; this.last = 0; this.offerUntil = 0;
     this.audio.setPlaying(true); this.holdScreenOn(true);
     this.toast(`<b>续命成功</b>${REVIVE_GRACE} 秒内无敌，继续跑！`, "shield", 2);
     this.flash("apple");
@@ -348,6 +352,11 @@ export class RunnerGame {
     }
     if (event.target instanceof HTMLInputElement) return;
     const phase = this.world.phase;
+    if (this.offering && !event.repeat && (event.key === "Enter" || event.key === "Escape")) {
+      event.preventDefault();
+      if (event.key === "Enter") this.revive(); else this.endOffer();
+      return;
+    }
     if (event.key === "Escape" || event.key === "p" || event.key === "P") {
       event.preventDefault(); if (event.repeat) return;
       if (phase === "paused") this.resume(); else this.pause();
@@ -419,7 +428,7 @@ export class RunnerGame {
     this.world = new RunnerWorld(this.mode === "daily" ? dailySeed(new Date()) : newSeed(), this.mode, { durations: upgradedDurations(this.upgrades) });
     this.seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 }; this.shownPurse = 0;
     this.shownScene = -1;
-    this.captureAudio = "waiting";
+    this.captureAudio = "waiting"; this.offerUntil = 0; this.rollPending = false; this.scoreRoll = undefined;
     this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
     this.seenEvents = { power: 0, shield: 0, stumble: 0 };
     this.seenApple = -1; this.seenThrows = 0; this.seenBumps = 0;
@@ -540,6 +549,7 @@ export class RunnerGame {
       if (this.ready) this.renderer?.draw(this.world);
       this.drawPortraits(time / 1000);
       this.rollScore(time);
+      this.tickOffer(time);
     } catch (error) {
       if (!this.frameFailed) { this.frameFailed = true; console.error("奶狗快跑：这一帧出错，已跳过", error); }
     }
@@ -578,6 +588,24 @@ export class RunnerGame {
     } else combo?.remove();
   }
 
+  /** When the "one more go?" offer runs out (0: none showing). */
+  private offerUntil = 0;
+  private get offering() { return this.offerUntil > 0 && this.world.phase === "lost"; }
+  private endOffer() { if (!this.offerUntil) return; this.offerUntil = 0; this.showPanel(); }
+  /** The offer's ring empties and its seconds count down; when it runs out the results come up. */
+  private tickOffer(time: number) {
+    if (!this.offerUntil) return;
+    if (this.world.phase !== "lost") { this.offerUntil = 0; return; }
+    const left = this.offerUntil - time;
+    if (left <= 0) { this.endOffer(); return; }
+    const ring = this.el.panel.querySelector<HTMLElement>(".runner-offer-ring");
+    if (ring) {
+      ring.style.setProperty("--left", `${(left / OFFER_MS * 100).toFixed(1)}%`);
+      const seconds = String(Math.ceil(left / 1000)), label = ring.querySelector("b");
+      if (label && label.textContent !== seconds) label.textContent = seconds;
+    }
+  }
+  private rollPending = false;
   private scoreRoll?: { to: number; start: number };
   /** Counts the result screen's score up over about a second, easing out as it lands. */
   private rollScore(time: number) {
@@ -658,6 +686,9 @@ export class RunnerGame {
       this.audio.effect("bump");
       this.audio.haunt({ allowNormalMode: true });
     }
+    // The pulley whirs along a zipline (higher on the steep downhill ones); wind hums under the balloons.
+    const ride = w.ride, rope = w.phase === "running" && ride?.kind === "rope" && ropeReleaseProgress(w.distance, ride) < .25;
+    this.audio.hum(rope ? 1 : w.phase === "running" && w.flying ? .55 : 0, rope ? .8 + w.speed / 40 : .5);
     if (w.landedAt !== this.seenLanded) { this.seenLanded = w.landedAt; if (w.phase === "running" && w.elapsed - w.landedAt < .1) this.audio.effect("land"); }
     const splashes = this.renderer?.splashes ?? 0;
     if (splashes !== this.seenSplashes) { this.seenSplashes = splashes; if (w.phase === "caught") this.audio.effect("splash"); }
@@ -666,11 +697,13 @@ export class RunnerGame {
 
     if (this.ready && this.shownPhase !== w.phase) {
       // The result screen counts the score up from nothing.
-      if ((w.phase === "lost" || w.phase === "won") && !this.settings.reducedMotion && w.score > 0) this.scoreRoll = { to: w.score, start: performance.now() + 250 };
+      if ((w.phase === "lost" || w.phase === "won") && !this.settings.reducedMotion && w.score > 0) this.rollPending = true;
+      // Like an arcade "continue?": a few seconds to buy another go before the results.
+      if (w.phase === "lost" && w.canRevive && this.wardrobe.gold >= w.reviveCost) this.offerUntil = performance.now() + OFFER_MS;
       if (w.phase === "caught" || w.phase === "lost" || w.phase === "won") { this.save(); this.audio.setPlaying(false); this.holdScreenOn(false); }
       if (w.phase === "won") { this.audio.effect("win"); this.flash("apple"); this.vibrate([40, 60, 40, 60, 120]); }
       if (w.chase?.escaped && w.phase === "lost") this.audio.haunt({ allowNormalMode: true });
-      if (w.phase === "caught" && this.shownPhase === "running") { this.vibrate(180); if (!w.trapFall) this.audio.effect("crash"); }
+      if (w.phase === "caught" && this.shownPhase === "running") { this.vibrate(180); if (!w.trapFall) { this.audio.effect("crash"); if (!this.settings.reducedMotion) this.flash("crash"); } }
       this.shownPhase = w.phase; this.showPanel();
     }
     // In the chase there is no grab from behind, so no whimper and laugh to go with it.
@@ -956,14 +989,26 @@ export class RunnerGame {
           <div class="runner-lobby-tools">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
           ${gyroNote}${note}
         </footer>`;
+    } else if (this.offering) {
+      const cost = w.reviveCost;
+      html = `<p class="runner-over-kicker">${w.reason}</p><h2 class="runner-offer-title">再来一次机会？</h2>
+        <div class="runner-offer-ring" style="--left:100%"><b>${Math.ceil(OFFER_MS / 1000)}</b></div>
+        <p class="runner-offer-note">回到跑道上继续跑，${REVIVE_GRACE} 秒无敌，前方障碍清空</p>
+        ${btn("revive", `续命 · <b>${cost}</b> 金币`, "primary runner-revive-button")}
+        <p class="runner-offer-wallet">现有 ${this.wardrobe.gold} 金币</p>
+        ${btn("offer-skip", "不用了，看结算", "ghost")}`;
     } else if (w.phase === "paused") {
       html = `<h2>暂停</h2>${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
-    } else html = this.resultHtml(btn, note);
+    } else {
+      // The score counts up the first time the results come up.
+      if (this.rollPending) { this.rollPending = false; this.scoreRoll = { to: w.score, start: performance.now() + 250 }; }
+      html = this.resultHtml(btn, note);
+    }
     this.shopObserver?.disconnect(); this.shopObserver = undefined;
     // The start screen is a lobby round the 3D dog; everything else is a card in the middle.
     panel.classList.toggle("lobby", lobby);
-    const result = this.ready && !lobby && !this.shopOpen && !this.upgradesOpen && (w.phase === "lost" || w.phase === "won");
-    panel.innerHTML = lobby ? `<div class="runner-lobby">${html}</div>` : `<div class="runner-card${result ? " runner-result" : ""}">${html}</div>`;
+    const result = this.ready && !lobby && !this.shopOpen && !this.upgradesOpen && !this.offering && (w.phase === "lost" || w.phase === "won");
+    panel.innerHTML = lobby ? `<div class="runner-lobby">${html}</div>` : `<div class="runner-card${result ? " runner-result" : ""}${this.ready && this.offering ? " runner-offer" : ""}">${html}</div>`;
     if (this.shopOpen) {
       const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop();
       const list = panel.querySelector(".runner-shop-list");
