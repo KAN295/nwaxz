@@ -76,6 +76,8 @@ export class RunnerGame {
   private loginGift = "";
   /** Pickups and revives already reported, so each is announced once. */
   private seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 };
+  /** Coins in the HUD last frame, to bounce the counter when more come in. */
+  private shownPurse = 0;
   private shopQuery = "";
   private shopError = "";
   private pendingSkin?: { id: string };
@@ -139,7 +141,7 @@ export class RunnerGame {
   <header class="runner-top">
     <button class="runner-icon" data-run="pause" aria-label="暂停跑酷">Ⅱ</button>
     <div class="runner-meter"><strong id="run-distance">0<small>米</small></strong><span>得分 <b id="run-score">0</b></span></div>
-    <div class="runner-coins"><i aria-hidden="true"></i><b id="run-coins">0</b></div>
+    <div class="runner-coins" aria-label="本局货币"><b id="run-coins">0</b></div>
   </header>
   <p class="runner-scene" id="runner-scene"></p>
   <div class="runner-chase" role="status" hidden></div>
@@ -408,7 +410,7 @@ export class RunnerGame {
   private newWorld() {
     // The daily run uses the day's seed, so everyone gets the same course; every run gets the upgrades bought.
     this.world = new RunnerWorld(this.mode === "daily" ? dailySeed(new Date()) : newSeed(), this.mode, { durations: upgradedDurations(this.upgrades) });
-    this.seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 };
+    this.seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 }; this.shownPurse = 0;
     this.shownScene = -1;
     this.captureAudio = "waiting";
     this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
@@ -548,7 +550,11 @@ export class RunnerGame {
     set(el.distance, `${Math.floor(w.runDistance)}<small>米</small>`);
     this.syncChase();
     set(el.score, String(w.score));
-    set(el.coins, `${w.silver}银 · ${w.gold}金 · ${w.diamond}钻`);
+    // Each currency with its own coin; the pill gives a little bounce whenever something comes in.
+    set(el.coins, `<span class="silver" title="银币"><i></i>${w.silver}</span><span class="gold" title="金币"><i></i>${w.gold}</span>${w.diamond ? `<span class="diamond" title="钻石"><i></i>${w.diamond}</span>` : ""}`);
+    const purse = w.silver + w.gold + w.diamond;
+    if (purse > this.shownPurse) { const pill = el.coins.parentElement!; pill.classList.remove("bump"); void pill.offsetWidth; pill.classList.add("bump"); }
+    this.shownPurse = purse;
     // The scene name only comes up for a moment when the run enters a new scene (and at the start).
     if (w.sceneIndex !== this.shownScene) { this.shownScene = w.sceneIndex; this.sceneLabelUntil = w.elapsed + SCENE_LABEL_SECONDS; }
     const labelOn = w.phase === "running" && w.elapsed < this.sceneLabelUntil;

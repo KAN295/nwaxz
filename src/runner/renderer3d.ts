@@ -459,6 +459,34 @@ export class RunnerRenderer3D {
     this.mats["shark-shadow"] = m;
     return m;
   }
+  /** A tileable normal map of fine, irregular bumps: three octaves of wrapped value noise. */
+  private detailBump(seed: number) {
+    const size = 256, random = seeded(seed);
+    const octaves = [[8, .55], [16, .3], [48, .15]].map(([cells, weight]) => ({ cells, weight, grid: Array.from({ length: cells * cells }, () => random()) }));
+    const height = new Float32Array(size * size);
+    const smooth = (t: number) => t * t * (3 - 2 * t);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      let h = 0;
+      for (const { cells, weight, grid } of octaves) {
+        const fx = x / size * cells, fy = y / size * cells, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = smooth(fx - x0), ty = smooth(fy - y0);
+        const at = (gx: number, gy: number) => grid[((gy % cells) * cells) + (gx % cells)];
+        const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx, bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+        h += (top + (bottom - top) * ty) * weight;
+      }
+      height[y * size + x] = h;
+    }
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d")!, image = ctx.createImageData(size, size), strength = 6;
+    const h = (x: number, y: number) => height[((y + size) % size) * size + ((x + size) % size)];
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const dx = (h(x + 1, y) - h(x - 1, y)) * strength, dy = (h(x, y + 1) - h(x, y - 1)) * strength, length = Math.hypot(dx, dy, 1), i = (y * size + x) * 4;
+      image.data[i] = (-dx / length * .5 + .5) * 255; image.data[i + 1] = (-dy / length * .5 + .5) * 255; image.data[i + 2] = (1 / length * .5 + .5) * 255; image.data[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    const texture = new Texture(canvas.toDataURL("image/png"), this.scene, false, true, Texture.TRILINEAR_SAMPLINGMODE);
+    texture.wrapU = texture.wrapV = Texture.WRAP_ADDRESSMODE; texture.anisotropicFilteringLevel = 8;
+    return texture;
+  }
   private dotTexture() {
     const texture = new DynamicTexture("runner-dot", { width: 32, height: 32 }, this.scene, false);
     const ctx = texture.getContext() as CanvasRenderingContext2D, g = ctx.createRadialGradient(16, 16, 1, 16, 16, 15);
@@ -656,6 +684,16 @@ export class RunnerRenderer3D {
     const moss = ground("bamboo-floor", "#5b7a43"), sand = ground("sand", "#9a663c", stone), drift = ground("snowfield", "#eef3f6");
     drift.diffuseTexture = this.snowTexture(groundRepeat(8));
     drift.emissiveColor.set(.34, .36, .38); sand.emissiveColor.set(.12, .06, .02);
+    // High quality only: fine bumps on road and stone, so they catch the light instead of looking printed.
+    if (this.settings.quality === "high") {
+      const bumps = this.detailBump(613);
+      for (const name of ["road-aqueduct", "road-temple", "road-mine", "road-bamboo", "road-canyon", "stone", "stone-dark", "moss-stone", "rock", "sandstone", "sandstone-light", "mesa-rock", "cliff-rock", "obstacle-rock", "bank-earth"]) {
+        const material = this.mats[name], diffuse = material?.diffuseTexture as Texture | null | undefined;
+        if (!material || !diffuse) continue;
+        const bump = bumps.clone(); bump.uScale = diffuse.uScale * 2; bump.vScale = diffuse.vScale * 2; bump.level = .55;
+        material.bumpTexture = bump;
+      }
+    }
     this.themes = [
       { sky: new Color3(.62, .74, .78), fog: new Color3(.66, .74, .74), nightSky: new Color3(.07, .1, .18), nightFog: new Color3(.1, .13, .2), ground: water, groundY: -7 },
       { sky: new Color3(.66, .76, .62), fog: new Color3(.6, .67, .55), nightSky: new Color3(.06, .09, .1), nightFog: new Color3(.08, .12, .12), ground: grass, groundY: -.35 },

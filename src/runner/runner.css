@@ -31,7 +31,15 @@
 .runner-coins{justify-self:end;display:flex;align-items:center;gap:6px;padding:6px 12px 6px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);pointer-events:none}
 .runner-coins i{width:20px;height:20px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff3b5,#f2c443 45%,#b9851c)}
 .runner-coins b{font:800 18px/1 ui-rounded,system-ui;font-variant-numeric:tabular-nums;color:var(--gold)}
-.runner-coins b{font-size:12px;white-space:nowrap}.runner-coins i{background:radial-gradient(circle at 35% 35%,#fff,#b4c8cf 55%,#677b85)}
+.runner-coins b{display:flex;gap:10px;font-size:14px;white-space:nowrap}
+.runner-coins b span{display:inline-flex;align-items:center;gap:4px;color:var(--ink)}
+.runner-coins b span.gold{color:var(--gold)}.runner-coins b span.diamond{color:#a9f4ff}
+.runner-coins b i{width:15px;height:15px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff,#b4c8cf 55%,#677b85);box-shadow:0 0 6px rgba(255,255,255,.25)}
+.runner-coins b .gold i{background:radial-gradient(circle at 35% 35%,#fff3b5,#f2c443 45%,#b9851c);box-shadow:0 0 6px rgba(242,196,67,.45)}
+.runner-coins b .diamond i{border-radius:3px;transform:rotate(45deg) scale(.82);background:linear-gradient(135deg,#eaffff,#6bd6ff)}
+.runner-coins.bump{animation:runner-coin-bump .25s ease-out}
+@keyframes runner-coin-bump{40%{transform:scale(1.08)}}
+@media (prefers-reduced-motion:reduce){.runner-coins.bump{animation:none}}.runner-coins i{background:radial-gradient(circle at 35% 35%,#fff,#b4c8cf 55%,#677b85)}
 .runner-scene{position:absolute;z-index:2;top:calc(max(12px,env(safe-area-inset-top)) + 64px);left:0;right:0;margin:0;text-align:center;font-size:15px;font-weight:700;letter-spacing:.14em;color:#fff1c8;text-shadow:0 1px 6px #000,0 0 14px rgba(0,0,0,.55);pointer-events:none;opacity:0;transform:translateY(-6px);transition:opacity .5s ease,transform .5s ease}
 .runner-scene.show{opacity:1;transform:none}
 .runner-screen:not([data-phase=running]) .runner-scene{display:none}
