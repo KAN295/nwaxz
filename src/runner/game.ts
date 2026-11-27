@@ -44,6 +44,18 @@ const MODES: readonly { id: RunMode; name: string; tag: string; note: string; st
 ];
 const modeInfo = (mode: RunMode) => MODES.find(item => item.id === mode)!;
 const UPGRADE_NOTE: Partial<Record<RunPowerKind, string>> = { balloon: "飞行时间" };
+/** One of these comes up while the course loads. */
+const TIPS = [
+  "倒木和裂缝要跳，低门要下滑；屏幕中间会提示。",
+  "在空中再按一次跳是二段跳，可以越过滚石和矿车。",
+  "在空中按下滑会急降，落地接着滑过去。",
+  "岔路口跟着银币走，另一边通向断桥。",
+  "撞到东西后奶蛙会追上来，8 秒内别再撞。",
+  "临门换道、贴着跳过或滑过算惊险闪避，会加分和连击。",
+  "道具升级能让磁铁、护盾、冲刺等持续更久。",
+  "暗夜逃亡里捡灯笼能把奶蛙逼退。",
+  "连续收币会提高倍数，最高 5 倍。",
+];
 /** How long the "one more go?" offer waits before the results come up, in milliseconds. */
 const OFFER_MS = 4500;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
@@ -110,6 +122,9 @@ export class RunnerGame {
   private seenApple = -1;
   private seenLanded = 0;
   private seenSplashes = 0;
+  private tip = TIPS[Math.floor(Math.random() * TIPS.length)];
+  /** When the next heartbeat is due while the frog is close (performance.now milliseconds). */
+  private nextBeat = 0;
   private seenThrows = 0;
   private seenBumps = 0;
   private warnedTurn = -1;
@@ -687,6 +702,10 @@ export class RunnerGame {
       this.audio.effect("bump");
       this.audio.haunt({ allowNormalMode: true });
     }
+    // A heartbeat while the frog is right behind: after a stumble, or creeping up in the dark (faster the closer it gets).
+    const near = w.phase === "running" ? (w.hunt ? (w.hunt.gap < 9 ? w.hunt.gap / 9 : -1) : w.danger > 0 ? .5 : -1) : -1;
+    const now = performance.now();
+    if (near >= 0 && now >= this.nextBeat) { this.audio.effect("heartbeat"); this.nextBeat = now + 420 + near * 520; }
     // The pulley whirs along a zipline (higher on the steep downhill ones); wind hums under the balloons.
     const ride = w.ride, rope = w.phase === "running" && ride?.kind === "rope" && ropeReleaseProgress(w.distance, ride) < .25;
     this.audio.hum(rope ? 1 : w.phase === "running" && w.flying ? .55 : 0, rope ? .8 + w.speed / 40 : .5);
@@ -944,7 +963,7 @@ export class RunnerGame {
     const gyroNote = this.gyroMessage ? `<p class="runner-note" role="status">${this.gyroMessage}</p>` : "";
     let html: string, lobby = false;
     if (!this.ready) {
-      html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div>`}${btn("exit", "返回", "ghost")}`;
+      html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div><p class="runner-tip"><b>小贴士</b>${this.tip}</p>`}${btn("exit", "返回", "ghost")}`;
     } else if (this.shopOpen) {
       const pending = this.pendingSkin?.id;
       const status = pending ? "正在加载皮肤…" : this.shopError;

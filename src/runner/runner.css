@@ -386,3 +386,7 @@
 .runner-card .runner-offer-note{margin:0 0 4px;font-size:12px}
 .runner-card .runner-offer-wallet{margin:6px 0 0;font-size:11px}
 @media (prefers-reduced-motion:reduce){.runner-offer{animation:none}}
+
+/* A tip while the course loads. */
+.runner-card .runner-tip{margin:12px 0 0;padding:8px 12px;border-radius:12px;background:rgba(0,0,0,.25);font-size:12px;line-height:1.6;text-align:left}
+.runner-card .runner-tip b{margin-right:8px}
