@@ -519,6 +519,7 @@ export class RunnerGame {
     this.nextMilestone = 1000; this.passedRecord = this.record.distance < 300 || !isLongRun(this.mode);
     this.loginGift = "";
     if (this.world.chase) this.toast(`<b>夺回金苹果</b>恐怖奶蛙抢走了附魔金苹果，${CHASE_SECONDS} 秒内追上它！`, "fruit", 2.6);
+    else this.pop(`<b>出发！</b><span>${this.world.rush ? "60 秒收金币" : this.world.hunt ? "奶蛙就在身后" : "别让奶蛙追上"}</span>`);
   }
   private resume() {
     if (this.world.phase !== "paused") return;
@@ -998,7 +999,8 @@ export class RunnerGame {
         <p class="runner-offer-wallet">现有 ${this.wardrobe.gold} 金币</p>
         ${btn("offer-skip", "不用了，看结算", "ghost")}`;
     } else if (w.phase === "paused") {
-      html = `<h2>暂停</h2>${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
+      // Paused: how the run is going, and how far along each mission is.
+      html = `<h2>暂停</h2><div class="runner-stats runner-stats-4"><span><b>${Math.floor(w.runDistance)}</b>米</span><span><b>${w.score}</b>得分</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>${this.missionsHtml(true)}${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
     } else {
       // The score counts up the first time the results come up.
       if (this.rollPending) { this.rollPending = false; this.scoreRoll = { to: w.score, start: performance.now() + 250 }; }

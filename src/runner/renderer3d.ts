@@ -2765,7 +2765,10 @@ export class RunnerRenderer3D {
     const turning = this.route.turnRate(view) * world.speed;
     this.turnLean += (Math.max(-.16, Math.min(.16, turning * .035)) - this.turnLean) * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
     const lean = motion ? (world.lane - position) * (world.ride || bike ? .13 : .07) + swing + this.turnLean : 0;
-    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
+    // A double jump throws in a barrel roll (the other way round in the right-hand lane).
+    const sinceSecond = world.elapsed - world.jumpedAt, rolling = motion && world.jumpCount === 2 && world.airborne && sinceSecond < .46;
+    const spin = rolling ? Math.PI * 2 * (k => k * k * (3 - 2 * k))(sinceSecond / .46) * (world.lane === 2 ? 1 : -1) : 0;
+    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean + spin);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.set(1 + land * .06 - takeoff * .05 - breathe * .5, 1 - land * .10 + takeoff * .09 + breathe, 1);
     this.dog.material.alpha = 1;
