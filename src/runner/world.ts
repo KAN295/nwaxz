@@ -492,6 +492,18 @@ export class RunnerWorld {
     while (this.accumulator >= STEP && this.phase === "running") { this.accumulator -= STEP; this.step(STEP); }
   }
 
+  /** Drops what the dog has left behind, in place: this runs every step, so it makes no new arrays. */
+  private prune() {
+    const items = this.items, limit = this.distance - 10;
+    let kept = 0;
+    for (const item of items) if (item.z + (item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0) > limit) items[kept++] = item;
+    items.length = kept;
+    const turns = this.turns;
+    kept = 0;
+    for (const turn of turns) if (turn.z > this.distance - 30) turns[kept++] = turn;
+    turns.length = kept;
+  }
+
   private airTime() {
     // Time until landing from the current height and vertical speed.
     const v = this.verticalSpeed;
@@ -593,8 +605,7 @@ export class RunnerWorld {
       if (this.hunt.gap <= 0) { this.hunt.gap = 0; this.fail("在黑暗里被恐怖奶蛙抓住了", "黑夜里奶蛙一直跟在后面：别撞东西，多捡灯笼把它逼退。"); return; }
     }
 
-    this.items = this.items.filter(item => item.z + (item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0) > this.distance - 10);
-    this.turns = this.turns.filter(t => t.z > this.distance - 30);
+    this.prune();
     this.populate();
   }
 

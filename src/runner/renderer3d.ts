@@ -20,6 +20,7 @@ import { loadImage, withTimeout } from "../loading.ts";
 import { cleanSheet, createRunnerSprite, sheetTexture } from "./actors2d.ts";
 import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, dogFall, dogPose } from "./animation.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
+import { frogViewDirection } from "../escape/facing.ts";
 import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, riderHeightAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
 import { RunnerAmbience } from "./ambience3d.ts";
@@ -54,6 +55,8 @@ const FROG_CROP_SCALE = .9;
 const MILK = { neutral: 0, blink: 1, look: 2, raise: 3, tap: 4, wait: 5, laugh: 6, celebrate: 7 } as const;
 const MILK_EXTRA = { wave: 0, yawn: 1, surprise: 2, wash: 3 } as const;
 const SPECTATOR_SIZE = 1.7;
+/** Seconds the camera takes to swing round from the menu's front view to behind the running dog. */
+const INTRO_TIME = 1.15;
 const FISSURE_HALF = obstacleHalfDepth("gap", 0);
 const SKY_RADIUS = 330, SKY_HEIGHT = 345;
 const GROUND_SIZE = 900, GROUND_SNAP = 70;
@@ -187,6 +190,12 @@ export class RunnerRenderer3D {
   private ripple!: Mesh;
   private rippleAge = 9;
   /** The dog's sway under a zipline or the balloons: angle and angular speed (a damped pendulum). */
+  /** Real seconds on the clock, for the menu's idle motion (the run's own clock stands still there). */
+  private idleClock = 0;
+  /** How far back the chaser is drawn, eased so it never jumps (menu, start, stumbles). */
+  private frogBack = 9;
+  private frogSide = -1;
+  private frogDirection = BACK;
   private sway = 0;
   private swayVelocity = 0;
   private lastLateral = 0;
@@ -2620,6 +2629,10 @@ export class RunnerRenderer3D {
     const weather = world.weather; // already sunny underground and snowing on the snowfield
     const capture = world.phase === "caught" || world.phase === "lost" || (world.phase === "paused" && world.reason !== "");
     const t = world.elapsed + (capture ? world.captureTime : 0);
+    this.idleClock += dt;
+    // On the menu the camera looks at the dog from the front; a new run swings it round behind.
+    const intro = this.introProgress(world);
+    const heroFront = intro < .45 && this.dogLook === "original" && !this.schoolSheet;
     const running = world.phase === "running";
 
     this.drawAtmosphere(theme, look, night, weather, world.mode === "dark");
@@ -2677,6 +2690,8 @@ export class RunnerRenderer3D {
     } else {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
+    // Only the default dog has front views: standing happy on the menu, trotting off as the run starts.
+    if (heroFront && !capture) this.dog.frame(this.sheets.actions!, world.phase === "ready" || Math.floor(world.gait * 4) % 2 ? 4 : 5, 4, 2);
     const bike = world.cycling && !capture;
     const lift = bike ? this.drawBike(world, player, centre.heading) : 0;
     this.bicycle.setEnabled(bike);
@@ -2690,7 +2705,10 @@ export class RunnerRenderer3D {
     const motion = !capture && !this.settings.reducedMotion;
     // A gallop bounces once a stride.
     const gallop = motion && pose.sheet === "run" && !this.schoolSheet ? Math.sin(Math.PI * world.gait) ** 2 * .07 : 0;
-    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop + gallop, player.z + fz * fall.forward);
+    // Waiting on the menu the dog breathes and gives a little hop now and then.
+    const waiting = world.phase === "ready" && !this.settings.reducedMotion, beat = this.idleClock % 4.2;
+    const idleHop = waiting && beat < .42 ? Math.sin(Math.PI * beat / .42) * .32 : 0, breathe = waiting ? Math.sin(this.idleClock * 2.7) * .022 : 0;
+    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop + gallop + idleHop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
     // Hanging from the zipline or the balloons the body swings like a pendulum: steering throws it out
     // to the side, then it swings back and settles. On the ground it straightens up again.
@@ -2707,7 +2725,7 @@ export class RunnerRenderer3D {
     const lean = motion ? (world.lane - position) * (world.ride || bike ? .13 : .07) + swing + this.turnLean : 0;
     this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
-    this.dog.root.scaling.set(1 + land * .06 - takeoff * .05, 1 - land * .10 + takeoff * .09, 1);
+    this.dog.root.scaling.set(1 + land * .06 - takeoff * .05 - breathe * .5, 1 - land * .10 + takeoff * .09 + breathe, 1);
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
       const surface = this.fallSurface(world, world.fallObstacle);
@@ -2765,7 +2783,9 @@ export class RunnerRenderer3D {
     // Chaser: shown for the opening sprint and after a stumble.
     const frog = this.chaserSprite;
     // In the dark run the frog is always there, as far back as it actually is.
-    const close = capture || world.hunt ? 1 : world.phase === "ready" ? 0 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
+    // On the menu the frog lurks further back down the road, watching the dog.
+    const lurking = world.phase === "ready" && !world.hunt;
+    const close = capture || world.hunt || lurking ? 1 : world.danger > 0 ? Math.min(1, world.danger / 2) : Math.max(0, 1 - world.elapsed / 3.5);
     const huntBack = world.hunt && world.phase !== "ready" ? Math.max(2.4, Math.min(18, world.hunt.gap)) : undefined;
     this.chaseApple.setEnabled(false);
     if (world.chase) {
@@ -2779,13 +2799,22 @@ export class RunnerRenderer3D {
       frog.root.rotation.setAll(0);
       // Stalking after the dog, lunging when it is right there, casting about once it has lost it.
       const pose = this.chaserPose(world, t);
-      const centreHeight = this.frogPose(pose.sheet, BACK);
+      // It turns to face the camera on the menu and while the camera swings round; in the run it is seen from behind.
+      const direction = lurking || intro < 1 ? this.facing(frog.root.position, centre.heading) : BACK;
+      const centreHeight = this.frogPose(lurking ? (this.idleClock % 6.5 > 5.2 ? "laugh" : "search") : pose.sheet, direction);
       // On the log bridge the frog follows the log's centre line instead of an empty side lane.
       const onBridge = !!world.bridge;
       const base = onBridge ? centre : player;
       // Straight behind the dog it keeps further back so it does not hide the dog from the camera.
-      const side = onBridge ? 0 : world.position > 1.4 ? -1 : 1, back = huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
-      const stride = pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .14;
+      // While the camera swings round on the right at the start, the frog keeps to the left.
+      const sideTarget = onBridge ? 0 : lurking || intro < 1 || world.position > 1.4 ? -1 : 1;
+      const target = lurking ? 8 : huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
+      // Eased, so it closes in when the run starts (and after a stumble) and crosses lanes instead of jumping.
+      const ease = (rate: number) => dt > 0 && !this.settings.reducedMotion ? 1 - Math.exp(-dt * rate) : 1;
+      this.frogBack += (target - this.frogBack) * ease(intro < 1 ? 2.2 : 6);
+      this.frogSide += (sideTarget - this.frogSide) * ease(5);
+      const back = this.frogBack, side = this.frogSide;
+      const stride = lurking || pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .14;
       frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + centreHeight + stride, base.z - fz * back + rz * side * 1.45);
       frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0 || !!world.hunt));
       frog.material.alpha = Math.min(1, close * 1.5);
@@ -2937,7 +2966,7 @@ export class RunnerRenderer3D {
       silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1, bumps: world.wallBumps,
       landed: world.landedAt, slides: world.slides, doubles: world.doubleJumps, near: world.nearMisses, revives: world.revives,
     };
-    this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0;
+    this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0; this.turnLean = 0; this.camBank = 0; this.camRise = 0; this.frogBack = 8; this.frogSide = -1;
     this.sway = this.swayVelocity = this.lastLateral = 0; this.rippleAge = 9; this.nextSpectator = world.distance + 160;
     for (const spectator of this.spectators) { spectator.on = false; spectator.sprite.root.setEnabled(false); }
     this.flash = { shield: 0, power: 0 };
@@ -3677,6 +3706,18 @@ export class RunnerRenderer3D {
     this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
   }
 
+  /** 0 on the menu, rising to 1 as the camera finishes swinging round behind the dog at the start of a run. */
+  private introProgress(world: RunnerWorld) {
+    if (this.settings.reducedMotion || world.revives > 0) return 1;
+    return world.phase === "ready" ? 0 : Math.min(1, world.elapsed / INTRO_TIME);
+  }
+
+  /** Which of the frog's eight drawn directions the camera sees, for a frog running along `heading`. */
+  private facing(at: Vector3, heading: number) {
+    this.frogDirection = frogViewDirection({ x: at.x, z: at.z, angle: Math.PI / 2 - heading }, this.camera.position, this.frogDirection);
+    return this.frogDirection;
+  }
+
   /** Off the edge: the camera stops where it was, rises a little and tips down to watch the dog go in. */
   private followFall(world: RunnerWorld, player: Vector3, dt: number) {
     if (this.settings.reducedMotion || dt <= 0) return;
@@ -3699,7 +3740,9 @@ export class RunnerRenderer3D {
     this.camYaw += angleTo(this.camYaw, aim) * k(shot ? 2 : 4.5);
     // The view widens a little as the pace picks up, and a lot more on a dash.
     const pace = shot || this.settings.reducedMotion ? 0 : Math.max(0, Math.min(1, (world.speed - 13) / 17)) * .07;
-    const fov = (portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .14 : 0);
+    // The menu's front view (intro 0) swings round to the running view (1) as a run starts.
+    const intro = shot ? 1 : this.introProgress(world), swing = intro * intro * (3 - 2 * intro);
+    const fov = ((portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .14 : 0)) * (.84 + .16 * swing);
     this.camera.fov += (fov - this.camera.fov) * k(4);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
     if (shot) {
@@ -3727,6 +3770,18 @@ export class RunnerRenderer3D {
       const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * (.25 + .67 * this.camRise);
       this.cameraPos.set(bx - fx * back, elevationAt(view - back) + height, bz - fz * back);
       this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.jumpHeight * (.35 + .45 * this.camRise), bz + fz * 7);
+      if (intro < 1) {
+        // A low three-quarter view of the dog from in front, drifting a little while the menu is up.
+        const drift = world.phase === "ready" ? Math.sin(this.idleClock * .23) * .2 : 0;
+        // Only the default dog has a front view to show; a school look is seen from behind and to the side.
+        const front = this.dogLook === "original" && !this.schoolSheet;
+        const angle = ((front ? Math.PI - .55 : .62) + drift) * (1 - swing);
+        const ox = -fx * Math.cos(angle) + rx * Math.sin(angle), oz = -fz * Math.cos(angle) + rz * Math.sin(angle);
+        const reach = portrait ? 6 : 5.4, hx = player.x + ox * reach, hy = player.y + (portrait ? 1.6 : 1.4), hz = player.z + oz * reach;
+        const lookY = player.y + (portrait ? .3 : .66);
+        this.cameraPos.set(hx + (this.cameraPos.x - hx) * swing, hy + (this.cameraPos.y - hy) * swing, hz + (this.cameraPos.z - hz) * swing);
+        this.cameraTarget.set(player.x + (this.cameraTarget.x - player.x) * swing, lookY + (this.cameraTarget.y - lookY) * swing, player.z + (this.cameraTarget.z - player.z) * swing);
+      }
       const sinceHit = world.elapsed - world.hitAt;
       if (!this.settings.reducedMotion && sinceHit < .35) {
         // Shake sideways to the view (not along world X, which is forward after a turn) and settle out.

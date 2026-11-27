@@ -537,11 +537,18 @@ export class RunnerGame {
     }
   };
 
+  /** Last markup written to each HUD node: a frame compares strings instead of reading the DOM back. */
+  private written = new WeakMap<HTMLElement, string>();
+  private write(node: HTMLElement, html: string) {
+    if (this.written.get(node) === html) return;
+    this.written.set(node, html); node.innerHTML = html;
+  }
+
   /** Pushes world state into the DOM; writes only when something changed. */
   private sync() {
     const w = this.world, el = this.el;
     this.creditCollectedCoins();
-    const set = (node: HTMLElement, html: string) => { if (node.innerHTML !== html) node.innerHTML = html; };
+    const set = (node: HTMLElement, html: string) => this.write(node, html);
     el.main.dataset.phase = this.ready ? w.phase : "loading";
     el.main.classList.toggle("runner-hit", w.elapsed - w.hitAt < .35);
     el.main.classList.toggle("runner-chased", w.phase === "running" && w.danger > 0);
@@ -647,7 +654,7 @@ export class RunnerGame {
       html = `<span class="runner-chase-track runner-hunt-track"><i class="runner-chase-frog runner-hunt-frog" style="left:${Math.round(near * 82)}%"></i><i class="runner-chase-dog runner-hunt-dog"></i></span>`
         + `<b class="${urgent ? "urgent" : ""}">奶蛙在身后 ${Math.round(gap)} 米</b>`;
     }
-    if (el.innerHTML !== html) el.innerHTML = html;
+    this.write(el, html);
   }
 
   /** A brief full-screen flash for big moments. */
@@ -727,7 +734,7 @@ export class RunnerGame {
       }
     }
     cue.hidden = !html;
-    if (html && cue.innerHTML !== html) cue.innerHTML = html;
+    if (html) this.write(cue, html);
     cue.classList.toggle("now", urgent);
     cue.classList.toggle("above-road", aboveRoad);
   }
@@ -846,7 +853,7 @@ export class RunnerGame {
     const note = this.recordError ? `<p class="runner-note" role="status">纪录未能保存。</p>` : "";
     const gyroRow = `${btn("gyro", this.gyro === "off" ? "倾斜控制：关" : "倾斜控制：开", "ghost")}${this.gyro === "on" ? btn("calibrate", "重新校准", "ghost") : ""}`;
     const gyroNote = this.gyroMessage ? `<p class="runner-note" role="status">${this.gyroMessage}</p>` : "";
-    let html: string;
+    let html: string, lobby = false;
     if (!this.ready) {
       html = `<h2>${this.error ? "加载失败" : "正在准备跑道…"}</h2>${this.error ? `<p>${this.error}</p>${btn("retry-art", "重试")}` : `<div class="runner-spinner" aria-hidden="true"></div>`}${btn("exit", "返回", "ghost")}`;
     } else if (this.shopOpen) {
@@ -869,36 +876,38 @@ export class RunnerGame {
       const look = getDogLook(this.wardrobe.equipped), switcher = this.wardrobe.owned.length > 1;
       const lookName = look.id === ORIGINAL_LOOK.id ? "奶狗" : look.name;
       const chase = this.mode === "chase", info = modeInfo(this.mode);
+      lobby = true;
       const cards = MODES.map(m => `<button data-run="mode-${m.id}" class="runner-mode-card${m.id === this.mode ? " on" : ""}" aria-pressed="${m.id === this.mode}"><span>${m.tag}</span><strong>${m.name}</strong></button>`).join("");
       const today = new Date();
       const recordLine = this.mode === "rush" || chase ? `最高分 <b>${this.record.score}</b>` : `${this.mode === "daily" ? `${today.getMonth() + 1}月${today.getDate()}日 · 今日` : ""}最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米`;
+      // Room beside the dog: the mission list starts open only on a big enough screen.
+      const roomy = window.matchMedia("(min-width: 760px) and (min-height: 600px)").matches;
       html = `
-        <h2 class="runner-title">${TITLE}</h2>
-        ${this.walletHtml()}
+        <header class="runner-lobby-top">
+          <div class="runner-lobby-brand"><h2 class="runner-title">${TITLE}</h2><p class="runner-record">${recordLine}</p></div>
+          ${this.walletHtml()}
+        </header>
         ${this.loginGift ? `<p class="runner-gift" role="status">${this.loginGift}</p>` : ""}
-        <div class="runner-roster">
-          <figure class="runner-hero" style="--skin:${look.color}">
-            ${switcher ? btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`) : ""}
-            <canvas width="160" height="140" data-portrait="dog" aria-label="玩家：${lookName}"></canvas>
-            ${switcher ? btn("skin-next", "›", "runner-skin-arrow next", `aria-label="下一款皮肤"`) : ""}
-            <figcaption><span class="runner-look-name">${lookName}</span><small>${switcher ? "你 · 左右切换皮肤" : "你"}</small></figcaption>
-          </figure>
-          <span aria-hidden="true">VS</span>
-          <figure><canvas width="160" height="140" data-portrait="frog" aria-label="恐怖奶蛙"></canvas><figcaption>恐怖奶蛙<small>${chase ? "抢走了金苹果" : "追赶者"}</small></figcaption></figure>
+        <details class="runner-lobby-missions"${roomy ? " open" : ""}><summary>任务<small>已完成 ${this.missions.completed} 个</small></summary>${this.missionsHtml(false)}</details>
+        <div class="runner-lobby-skin" style="--skin:${look.color}">
+          ${switcher ? btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`) : ""}
+          <span class="runner-look-name">${lookName}</span>
+          ${switcher ? btn("skin-next", "›", "runner-skin-arrow next", `aria-label="下一款皮肤"`) : ""}
         </div>
-        <div class="runner-modes" role="group" aria-label="选择模式">${cards}</div>
-        <p class="runner-mode-note">${info.note}</p>
-        <p class="runner-record">${recordLine}</p>
-        ${this.missionsHtml(false)}
-        ${btn("start", info.start)}
-        <div class="runner-row">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}</div>
-        <div class="runner-row">${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
-        ${gyroNote}${note}`;
+        <footer class="runner-lobby-dock">
+          <div class="runner-modes" role="group" aria-label="选择模式">${cards}</div>
+          <p class="runner-mode-note">${info.note}</p>
+          ${btn("start", info.start, "primary runner-play")}
+          <div class="runner-lobby-tools">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
+          ${gyroNote}${note}
+        </footer>`;
     } else if (w.phase === "paused") {
       html = `<h2>暂停</h2>${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
     } else html = this.resultHtml(btn, note);
     this.shopObserver?.disconnect(); this.shopObserver = undefined;
-    panel.innerHTML = `<div class="runner-card">${html}</div>`;
+    // The start screen is a lobby round the 3D dog; everything else is a card in the middle.
+    panel.classList.toggle("lobby", lobby);
+    panel.innerHTML = lobby ? `<div class="runner-lobby">${html}</div>` : `<div class="runner-card">${html}</div>`;
     if (this.shopOpen) {
       const search = panel.querySelector<HTMLInputElement>(".runner-shop-search"); if (search) search.value = this.shopQuery; this.filterShop();
       const list = panel.querySelector(".runner-shop-list");
@@ -995,6 +1004,7 @@ export class RunnerGame {
   }
 
   private showHelp() {
+    this.el.panel.classList.remove("lobby");
     this.el.panel.innerHTML = `<div class="runner-card runner-help">
       <h2>玩法说明</h2>
       <div class="runner-keys"><span><kbd>←</kbd><kbd>→</kbd>换道 / 转弯</span><span><kbd>↑</kbd>跳（空中可再跳）</span><span><kbd>↓</kbd>下滑（空中按会急降）</span></div>

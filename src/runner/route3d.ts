@@ -60,7 +60,10 @@ export class RunnerRoute3D {
   version = 0;
 
   sync(turns: readonly Turn[], distance: number) {
-    for (const turn of [...turns].sort((a, b) => a.z - b.z)) {
+    // Turns are made in order along the road, so the usual case needs no sorted copy every frame.
+    let ordered = true;
+    for (let i = 1; i < turns.length && ordered; i++) ordered = turns[i].z >= turns[i - 1].z;
+    for (const turn of ordered ? turns : [...turns].sort((a, b) => a.z - b.z)) {
       if (turn.z <= this.base.z || this.corners.some(c => c.z === turn.z)) continue;
       const last = this.corners.at(-1);
       const start = last ? this.after(last) : this.base;
