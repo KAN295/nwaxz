@@ -12,7 +12,7 @@ export type RunAction = "left" | "right" | "jump" | "slide";
 export type RunPhase = "ready" | "running" | "caught" | "paused" | "won" | "lost";
 /** `chase` is the short special mode: win back the golden apple from the frog running ahead. */
 export type RunMode = "endless" | "chase";
-export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap" | "cart-block" | "bridge-branch" | "crate";
+export type RunObstacleKind = "block" | "gap" | "long-gap" | "beam" | "spikes" | "boulder" | "fire" | "trap" | "cart-block" | "bridge-branch" | "crate" | "runaway-cart";
 export type CoinTier = "silver" | "gold" | "diamond";
 const STANDARD_POWERS = ["shield", "magnet", "slow", "double", "boost"] as const;
 export const RUN_POWERS = [...STANDARD_POWERS, "bike", "fruit"] as const;
@@ -20,8 +20,15 @@ export type RunPowerKind = typeof RUN_POWERS[number];
 export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shield: 20, boost: 5, slow: 5, double: 8, bike: 9, fruit: 15 };
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind;
 export type RunWeather = "sunny" | "rain" | "snow";
-/** `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. `thrownAt` marks a crate the frog threw, for its flight. */
-export type RunItem = { id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind | "fork"; thrownAt?: number };
+/**
+ * `pulled` coins are flying toward the dog under a magnet; `lane` is then fractional. `thrownAt` marks a crate the frog threw, for its flight.
+ * `roll` is the speed (m/s) of a boulder or runaway cart that comes at the dog; `rollFrom` is where it set off, once it has.
+ * `threat` notes, a moment before contact, whether the dog was about to hit the obstacle: dodging it after that is a near miss.
+ */
+export type RunItem = {
+  id: number; z: number; lane: number; kind: RunItemKind; done: boolean; span?: 2 | 3; y?: number; pulled?: boolean; tier?: CoinTier; feature?: FeatureKind | "fork"; thrownAt?: number;
+  roll?: number; rollFrom?: number; threat?: boolean;
+};
 /** The frog in chase mode: metres ahead of the dog, seconds left, the lane it runs in. */
 export type RunChase = { gap: number; timeLeft: number; lane: number; nextThrow: number; throws: number; escaped: boolean };
 /**
@@ -32,7 +39,7 @@ export type RunChase = { gap: number; timeLeft: number; lane: number; nextThrow:
 export type RunTurn = { z: number; direction: "left" | "right"; taken: boolean; fork?: boolean; three?: boolean; bridge?: boolean; wrong?: "side" | "straight" };
 export type RunRecord = { version: 1; distance: number; coins: number; score: number };
 
-const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch", "crate"];
+const OBSTACLES: readonly string[] = ["block", "gap", "long-gap", "beam", "spikes", "boulder", "fire", "trap", "cart-block", "bridge-branch", "crate", "runaway-cart"];
 export const isRunObstacle = (kind: RunItemKind): kind is RunObstacleKind => OBSTACLES.includes(kind);
 export const isRunPower = (kind: RunItemKind): kind is RunPowerKind => (RUN_POWERS as readonly string[]).includes(kind);
 
@@ -94,12 +101,26 @@ export const BRIDGE_FORK_BREAK = 13;
 export const SHAFT_EDGE = 9.6;
 /** Turn and fork prompts only show for the first and middle part of a run; after this the player reads the scene. */
 export const TURN_HINT_END = 2000;
+/**
+ * Rolling boulders (temple, canyon, snowfield) and runaway carts (mine) lie still until the dog comes
+ * near, then come at it down one lane. They set off so as to roll this many metres before they meet
+ * the dog, and are laid this much further on, so they are met about where a still one would be.
+ */
+export const ROLL_TRAVEL = 12;
+/** Metres into a run before anything rolls; never in the chase, which has the frog's crates. */
+export const ROLL_START = 350;
+export const ROLL_SPEED = { boulder: 8, "runaway-cart": 10 } as const;
+const ROLLING_SCENES: readonly number[] = [1, 2, 4, 5];
+/** Seconds before contact. Dodging an obstacle the dog was still about to hit at that moment is a near miss. */
+export const NEAR_WINDOW = .3;
+/** Points for a near miss, before the coin streak multiplier. */
+export const NEAR_SCORE = 100;
 const STEP = 1 / 120;
 
 /** Height the dog must exceed to pass over each obstacle; beams need sliding instead. */
-const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48, crate: .85 };
+const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48, crate: .85, "runaway-cart": 1.45 };
 /** Half depth along the route. */
-const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49, crate: .5 };
+const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49, crate: .5, "runaway-cart": .95 };
 const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
@@ -161,7 +182,10 @@ const FAIL_TEXT: Record<RunObstacleKind, [string, string]> = {
   "cart-block": ["矿车撞上了塌方", "矿车里要提前换到畅通的轨道。"],
   "bridge-branch": ["撞上了桥上的横枝", "走在桥中央，靠近横枝时跳过去。"],
   crate: ["撞上了木箱", "奶蛙扔来的木箱要换道躲开，或者跳过去。"],
+  "runaway-cart": ["被失控的矿车撞飞了", "听到轰隆声先看矿车在哪条轨道，提前换道，或者二段跳越过去。"],
 };
+/** What rolled into the dog, by scene. */
+const ROLLED_INTO: Record<number, string> = { 1: "被滚来的石球撞倒了", 4: "被滚落的巨石撞倒了", 5: "被滚下来的大雪球撞倒了" };
 
 export class RunnerWorld {
   phase: RunPhase = "ready";
@@ -217,6 +241,19 @@ export class RunnerWorld {
   wallBumps = 0;
   wallSide = 0;
   wallBumpAt = -10;
+  /** Near misses this run, the points they earned, and the time and kind of the last one. */
+  nearMisses = 0;
+  nearScore = 0;
+  nearAt = -10;
+  nearKind: RunObstacleKind = "block";
+  /** Run tallies for missions: second jumps, slides, forks taken the right way, rides finished, obstacles ridden through on the bicycle, best coin multiplier, rolling hazards set off. */
+  doubleJumps = 0;
+  slides = 0;
+  forksCleared = 0;
+  ridesDone = 0;
+  smashed = 0;
+  bestMultiplier = 1;
+  rollsStarted = 0;
   readonly mode: RunMode;
   /** Where the run starts on the course: 0 in endless mode, the snowfield in chase mode. */
   readonly origin: number;
@@ -242,6 +279,10 @@ export class RunnerWorld {
   private mountedRide?: RideSection;
   private rideTakeoff = 0;
   private rideTakeoffGrade = 0;
+  /** Whether the dog was on the log bridge last step, to count crossing it. */
+  private onBridge = false;
+  /** Set by `row` when it lays a rolling hazard. */
+  private rolledRow = false;
 
   constructor(seed = 1, mode: RunMode = "endless") {
     this.seed = seed >>> 0 || 1;
@@ -285,7 +326,7 @@ export class RunnerWorld {
   get jumpHeight() { return this.mountedRide ? riderHeightAt(this.distance, this.mountedRide, this.rideTakeoff, this.rideTakeoffGrade) : this.altitude; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
-  get score() { return Math.floor(this.runDistance) * 10 + this.coinScore + this.bonusDistanceScore + this.chaseBonus; }
+  get score() { return Math.floor(this.runDistance) * 10 + this.coinScore + this.nearScore + this.bonusDistanceScore + this.chaseBonus; }
   /** Winning the chase pays for every second still on the clock. */
   get chaseBonus() { return this.chase && this.phase === "won" ? 2000 + Math.ceil(this.chase.timeLeft) * 300 : 0; }
   get sceneIndex() { return sceneAt(this.distance); }
@@ -325,6 +366,7 @@ export class RunnerWorld {
           this.fail("转错了方向", "看清弯道往哪边拐再转。"); return;
         }
         turn.taken = true; this.turnCount++; this.lastTurnDirection = turn.direction;
+        if (turn.fork) this.forksCleared++;
         return;
       }
       const lane = this.lane + (action === "left" ? -1 : 1);
@@ -334,11 +376,12 @@ export class RunnerWorld {
     else if (action === "jump") {
       if (this.jumpCount < 2) {
         this.slide = 0; this.jumpCount++; this.verticalSpeed = JUMP_VELOCITY; this.jump = this.airTime(); this.jumpedAt = this.elapsed;
+        if (this.jumpCount === 2) this.doubleJumps++;
       } else this.jumpBuffer = .15;
     } else if (this.airborne) {
       // Slide in the air slams the dog down and slides on landing.
-      this.verticalSpeed = Math.min(this.verticalSpeed, -14); this.jumpBuffer = 0; this.slide = SLIDE_TIME + this.airTime();
-    } else this.slide = SLIDE_TIME;
+      this.verticalSpeed = Math.min(this.verticalSpeed, -14); this.jumpBuffer = 0; this.slide = SLIDE_TIME + this.airTime(); this.slides++;
+    } else { if (this.slide === 0) this.slides++; this.slide = SLIDE_TIME; }
   }
 
   /**
@@ -391,6 +434,8 @@ export class RunnerWorld {
     if (this.double > 0 || this.fruit > 0) this.bonusDistanceScore += (Math.floor(this.distance) - previousMetre) * 10;
     this.gait += dt * Math.min(3.6, 1.8 + speed / 20);
     const bridge = this.bridge, upcoming = this.upcomingFeature;
+    if (this.onBridge && !bridge) this.ridesDone++;
+    this.onBridge = !!bridge;
     if (this.invincible && (bridge || (upcoming?.kind === "bridge" && upcoming.start - this.distance <= 18))) this.lane = 1;
     this.position += (this.lane - this.position) * Math.min(1, realDt * LANE_RATE);
     if (Math.abs(this.lane - this.position) < .002) this.position = this.lane;
@@ -442,6 +487,7 @@ export class RunnerWorld {
       return;
     }
 
+    this.rollItems(speed, dt);
     const coinsBefore = this.coins;
     for (const item of this.items) {
       if (item.done || (item.feature && item.feature !== (bridge?.kind ?? this.mountedRide?.kind))) continue;
@@ -449,6 +495,7 @@ export class RunnerWorld {
       else if (isRunPower(item.kind)) this.touchPower(item, item.kind);
       else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind, landingVelocity)) return;
     }
+    this.bestMultiplier = Math.max(this.bestMultiplier, this.multiplier);
     if (this.chase && !this.stepChase(realDt, dt, speed, this.coins - coinsBefore)) return;
 
     this.items = this.items.filter(item => item.z + (item.kind === "long-gap" ? obstacleHalfDepth(item.kind, item.z) : 0) > this.distance - 10);
@@ -501,7 +548,7 @@ export class RunnerWorld {
     if (this.mountedRide) {
       if (this.distance >= this.mountedRide.end) {
         if (this.mountedRide.kind === "rope") this.ropeLandedAt = this.elapsed;
-        this.mountedRide = undefined;
+        this.mountedRide = undefined; this.ridesDone++;
       }
       return true;
     }
@@ -547,13 +594,21 @@ export class RunnerWorld {
   /** Returns false when the run ended. */
   private touchObstacle(item: RunItem, kind: RunObstacleKind, landingVelocity: number) {
     const ahead = item.z - this.distance, depth = obstacleHalfDepth(kind, item.z);
-    if (ahead < -depth) { item.done = true; return true; }
-    if (ahead > depth) return true;
+    if (ahead < -depth) {
+      // Got past it. If the dog was still about to hit it a moment before, that was a near miss.
+      if (item.threat) this.nearMiss(kind);
+      item.done = true; return true;
+    }
+    if (ahead > depth) {
+      const closing = this.courseSpeed + (item.rollFrom !== undefined ? item.roll ?? 0 : 0);
+      if (item.threat === undefined && ahead - depth < closing * NEAR_WINDOW) item.threat = this.wouldHit(item, kind);
+      return true;
+    }
     if (!coversLane(item, this.position, .6)) return true;
     const clear = kind === "beam" ? this.slide > 0 && !this.airborne : this.altitude > CLEARANCE[kind];
     if (clear || this.invincible || this.grace > 0) return true;
     if (this.cycling && (kind === "block" || kind === "spikes")) {
-      item.done = true;
+      item.done = true; this.smashed++;
       return true;
     }
 
@@ -565,7 +620,8 @@ export class RunnerWorld {
         this.fallObstacle = item;
         this.fallVelocity = Math.min(0, this.verticalSpeed, landingVelocity);
       }
-      this.fail(...FAIL_TEXT[kind]);
+      if (item.roll && kind === "boulder") this.fail(ROLLED_INTO[sceneAt(item.z)] ?? "被滚来的巨石撞倒了", "滚石只沿一条道滚过来，看准它在哪条道，提前换道，或者二段跳越过去。");
+      else this.fail(...FAIL_TEXT[kind]);
       return false;
     }
     if (!this.stumbleFrom(CHASE_HIT_GAP, "被恐怖奶蛙抓住了", "撞到一次后要稳住，8秒内别再撞。")) return false;
@@ -573,6 +629,32 @@ export class RunnerWorld {
     // Not on the log bridge, where leaving the middle would drop the dog off it.
     if (kind !== "bridge-branch" && Math.abs(this.lane - item.lane) < .5 && Math.abs(this.position - item.lane) > .05) this.lane = Math.round(this.position + (this.position < item.lane ? -.5 : .5));
     return true;
+  }
+
+  /** Whether the dog, left as it is right now, would run into this obstacle. Long pits are always jumped late, so they never count. */
+  private wouldHit(item: RunItem, kind: RunObstacleKind) {
+    if (kind === "long-gap" || this.invincible || this.grace > 0 || (this.cycling && (kind === "block" || kind === "spikes"))) return false;
+    if (!coversLane(item, this.position, .6)) return false;
+    return kind === "beam" ? !(this.slide > 0 && !this.airborne) : this.altitude <= CLEARANCE[kind];
+  }
+
+  /** A last-moment dodge: points (under the coin multiplier) and a push to the coin streak. */
+  private nearMiss(kind: RunObstacleKind) {
+    this.nearMisses++; this.nearAt = this.elapsed; this.nearKind = kind;
+    this.nearScore += NEAR_SCORE * this.multiplier * (this.double > 0 || this.fruit > 0 ? 2 : 1);
+    this.streak += 2; this.streakTimer = 4;
+  }
+
+  /** Boulders and carts set off once they will meet the dog after rolling ROLL_TRAVEL metres, and keep going past it. */
+  private rollItems(speed: number, dt: number) {
+    for (const item of this.items) {
+      if (!item.roll) continue;
+      if (item.rollFrom === undefined) {
+        if (item.z - this.distance > ROLL_TRAVEL * (item.roll + speed) / item.roll) continue;
+        item.rollFrom = item.z; this.rollsStarted++;
+      }
+      item.z -= item.roll * dt;
+    }
   }
 
   private fail(reason: string, hint: string) { this.phase = "caught"; this.captureTime = 0; this.reason = reason; this.deathHint = hint; }
@@ -588,6 +670,17 @@ export class RunnerWorld {
   }
 
   private nearTurn(z: number) { return this.turns.some(turn => z > turn.z - 45 && z < turn.z + 25); }
+
+  /**
+   * A rolling hazard needs its whole run-up clear of corners and rides, in one scene. It lies further
+   * on than a row, past the corners laid so far, so the next corner still to come must be far enough too.
+   */
+  private canRoll(z: number) {
+    const end = z + ROLL_TRAVEL, scene = sceneAt(z);
+    if (this.chase || z - this.origin < ROLL_START || !ROLLING_SCENES.includes(scene) || sceneAt(end) !== scene || this.nearTurn(end) || end + 45 >= this.nextTurn) return false;
+    const section = sectionFeature(end);
+    return !(section && end > section.start - 26 && end < section.end + 23);
+  }
 
   private turnOutsideFeature(z: number, previous: number) {
     const section = sectionFeature(z);
@@ -631,7 +724,9 @@ export class RunnerWorld {
       // its rows out a little more, leaving room for the frog's crates.
       const early = Math.max(0, 1 - (z - this.origin) / 600) + (this.chase ? .35 : 0);
       const landingSpace = longGap ? .42 : 0;
-      this.nextRow += speed * (1.15 + early * .6 + landingSpace) + this.random() * 8;
+      // A rolling hazard waits further on than where it is met; keep the next row clear of it.
+      const rollRoom = this.rolledRow ? 4 : 0; this.rolledRow = false;
+      this.nextRow += speed * (1.15 + early * .6 + landingSpace) + rollRoom + this.random() * 8;
     }
   }
 
@@ -683,6 +778,12 @@ export class RunnerWorld {
       const lane = Math.floor(this.random() * 3);
       this.add(z, lane, this.pick(["beam", "boulder"] as const));
       free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
+    } else if (roll < .42 && this.canRoll(z)) {
+      // Something comes down one lane at the dog: a boulder, a giant snowball, or a runaway cart in the mine.
+      const lane = Math.floor(this.random() * 3), kind = scene === 2 ? "runaway-cart" : "boulder";
+      this.add(z + ROLL_TRAVEL, lane, kind, { roll: ROLL_SPEED[kind] });
+      free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
+      this.rolledRow = true;
     } else if (roll < .62) {
       // A single two-lane obstacle leaves one clear route.
       const lane = this.pick([0, 1]);

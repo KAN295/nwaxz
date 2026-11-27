@@ -22,6 +22,7 @@ import { CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART, captureMotion, chaserFrame, do
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
 import { BRIDGE_LENGTH, BRIDGE_WATER_Y, elevationAt, featureOf, GORGE_HALF_WIDTH, GORGE_Y, isDownhillRope, riderHeightAt, rideLateralScale, ROPE_GRAB_DISTANCE, ROPE_LANE_SCALE, ropeHeightAt, ropeReleaseProgress, SEA_Y, sectionFeature, sectionIndexAt, type CourseFeature } from "./course.ts";
 import { flameMesh } from "./fire3d.ts";
+import { RunnerAmbience } from "./ambience3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
@@ -76,6 +77,11 @@ const POWER_ART = {
 } satisfies Record<Exclude<RunPowerKind, "fruit">, number | string>;
 const FRUIT_TREE = "runner-fruit-tree";
 const ORES = ["mine-amethyst", "mine-calcite", "mine-malachite"] as const;
+/** Radius of the rolling boulders and snowballs, for how far they turn as they roll. */
+const ROLLER_RADIUS = 1.03;
+/** Dust kicked up underfoot and by rolling hazards, by scene (half see-through): canal stone, temple earth, mine grit, bamboo loam, red sand, powder snow. */
+const DUST: readonly [string, string][] = [["#d9d3c280", "#a59f8f66"], ["#b8a27f80", "#7f6c4f66"], ["#8a7b6880", "#4d423766"], ["#a7a27a80", "#6e6a4a66"], ["#e0a06a99", "#a7653b77"], ["#ffffffb3", "#d6e4f099"]];
+const SPLASH: [string, string] = ["#eef7fa80", "#9fb9c455"];
 type Grove = { ground: number; spacing: number; trees: readonly { name: string; height: number }[] };
 /** Painted tree cards by scene; the bamboo, canyon and snow scenes grow modelled plants as slot decor instead. */
 const GROVES: readonly Grove[] = [
@@ -193,9 +199,22 @@ export class RunnerRenderer3D {
   private fireEmbers: ParticleSystem;
   private fireSmoke: ParticleSystem;
   private fireParticleTime = 0;
+  /** Dust or snow underfoot (landings, slides, running) and behind rolling boulders; sparks under runaway carts; streaks on a near miss. */
+  private dust: ParticleSystem;
+  private rollDust: ParticleSystem;
+  private cartSparks: ParticleSystem;
+  /** Fraction of a dust particle owed while running, so the trail does not depend on the frame rate. */
+  private stepDust = 0;
+  private nearStreaks: ParticleSystem;
+  private dustTime = 0;
+  /** The animals round the road. */
+  private ambience: RunnerAmbience;
+  private placeOnRoute = (distance: number, lateral: number) => this.place(distance, lateral);
+  /** How hard the ground shakes under a boulder or cart rolling close by, 0–1. */
+  private rumble = 0;
   private coinMats: Record<"silver" | "gold" | "diamond", StandardMaterial>;
   private dogLook = "original";
-  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1, bumps: 0 };
+  private seen = { silver: 0, gold: 0, diamond: 0, power: 0, shield: 0, stumble: 0, turns: 0, wrong: -1, bumps: 0, landed: -Infinity, slides: 0, doubles: 0, near: 0 };
   private flash = { shield: 0, power: 0 };
   private turnBlend = { x: 0, z: 0 };
   private camYaw = 0;
@@ -233,6 +252,9 @@ export class RunnerRenderer3D {
     this.skyMat.disableLighting = true; this.skyMat.emissiveColor = Color3.White(); this.skyMat.fogEnabled = false; this.skyMat.backFaceCulling = false; this.skyMat.useAlphaFromDiffuseTexture = true;
     this.sky = MeshBuilder.CreateCylinder("runner-sky-dome", { diameter: SKY_RADIUS * 2, height: SKY_HEIGHT, tessellation: 48, cap: Mesh.NO_CAP, sideOrientation: Mesh.BACKSIDE }, this.scene);
     this.sky.material = this.skyMat; this.sky.isPickable = false; this.sky.infiniteDistance = false;
+    // The sky band first among see-through things, so nothing in front of it is drawn over.
+    this.sky.alphaIndex = -3;
+    this.ambience = new RunnerAmbience(this.scene);
 
     this.dog = createRunnerSprite(this.scene, "runner-milk-dog-2d", DOG_SIZE);
     this.chaserSprite = createRunnerSprite(this.scene, "runner-milk-frog-2d", FROG_SIZE);
@@ -267,6 +289,27 @@ export class RunnerRenderer3D {
     this.fireSmoke.color1 = new Color4(.28, .25, .23, .32); this.fireSmoke.color2 = new Color4(.39, .35, .32, .14);
     this.fireSmoke.gravity.set(0, 1.1, 0); this.fireSmoke.minSize = .16; this.fireSmoke.maxSize = .5;
     this.fireSmoke.minLifeTime = .6; this.fireSmoke.maxLifeTime = 1.6; this.fireSmoke.minEmitPower = .15; this.fireSmoke.maxEmitPower = .6;
+    // Soft dust (or snow) puffs: blended, not added, so they read on bright snow as well as on dark rock.
+    // The dog and the rolling boulders each have their own, since a burst moves its system's emitter.
+    const dust = (name: string, capacity: number) => {
+      const ps = this.particles(name, capacity, "#d9d3c2", "#a59f8f");
+      ps.blendMode = ParticleSystem.BLENDMODE_STANDARD; ps.colorDead = new Color4(.6, .6, .6, 0);
+      ps.gravity.set(0, -1.2, 0); ps.minSize = .12; ps.maxSize = .34;
+      ps.minLifeTime = .35; ps.maxLifeTime = .85; ps.minEmitPower = .5; ps.maxEmitPower = 2.2;
+      ps.direction1 = new Vector3(-1.2, .5, -1.2); ps.direction2 = new Vector3(1.2, 1.6, 1.2);
+      ps.minEmitBox = new Vector3(-.35, 0, -.35); ps.maxEmitBox = new Vector3(.35, .1, .35);
+      return ps;
+    };
+    this.dust = dust("ground-dust", 360);
+    this.rollDust = dust("roll-dust", 260); this.rollDust.minSize = .3; this.rollDust.maxSize = .8; this.rollDust.maxLifeTime = 1.1;
+    this.cartSparks = this.particles("cart-sparks", 160, "#fff3b0", "#ff8a2a");
+    this.cartSparks.gravity.set(0, -9, 0); this.cartSparks.minSize = .03; this.cartSparks.maxSize = .08;
+    this.cartSparks.minLifeTime = .15; this.cartSparks.maxLifeTime = .38; this.cartSparks.minEmitPower = 1.6; this.cartSparks.maxEmitPower = 4;
+    // Near misses leave a few white streaks whipping past the dog.
+    this.nearStreaks = this.particles("near-streaks", 80, "#ffffff", "#bfeaff");
+    this.nearStreaks.billboardMode = ParticleSystem.BILLBOARDMODE_STRETCHED; this.nearStreaks.gravity.set(0, 0, 0);
+    this.nearStreaks.minSize = .05; this.nearStreaks.maxSize = .1; this.nearStreaks.minLifeTime = .18; this.nearStreaks.maxLifeTime = .3;
+    this.nearStreaks.minEmitPower = 9; this.nearStreaks.maxEmitPower = 15;
     this.coinMats = { silver: this.glow("silver-coin", "#d9e5eb", "#293b44"), gold: this.mats.gold, diamond: this.glow("diamond-coin", "#a9f4ff", "#4794cb") };
 
     this.buildTemplates();
@@ -419,8 +462,10 @@ export class RunnerRenderer3D {
     ps.start();
     return ps;
   }
+  /** Emits `count` particles at `at`; colours are #rrggbb (opaque) or #rrggbbaa. */
   private burst(ps: ParticleSystem, at: Vector3, count: number, colors?: [string, string]) {
-    if (colors) { ps.color1 = Color4.FromHexString(`${colors[0]}ff`); ps.color2 = Color4.FromHexString(`${colors[1]}ff`); }
+    const colour = (hex: string) => Color4.FromHexString(hex.length === 9 ? hex : `${hex}ff`);
+    if (colors) { ps.color1 = colour(colors[0]); ps.color2 = colour(colors[1]); }
     (ps.emitter as Vector3).copyFrom(at);
     ps.manualEmitCount = Math.max(ps.manualEmitCount, 0) + count;
   }
@@ -484,6 +529,16 @@ export class RunnerRenderer3D {
     this.signMaterial("shaft-sign", "竖井", "危险 · 小心坠落");
     this.radialMaterial("lamp-halo", "rgba(255,200,110,.9)", true);
     this.radialMaterial("wake", "rgba(235,248,250,.75)", true);
+    // The runaway cart's headlight: a cone of light fading out along its length. The canvas bottom
+    // lands at the cone's narrow top end, at the lamp.
+    const beamTexture = new DynamicTexture("runner-headlight-tex", { width: 8, height: 128 }, this.scene, false);
+    const beamCtx = beamTexture.getContext() as CanvasRenderingContext2D, fade = beamCtx.createLinearGradient(0, 128, 0, 0);
+    fade.addColorStop(0, "rgba(255,228,160,.5)"); fade.addColorStop(.6, "rgba(255,220,150,.12)"); fade.addColorStop(1, "rgba(255,220,150,0)");
+    beamCtx.fillStyle = fade; beamCtx.fillRect(0, 0, 8, 128); beamTexture.update(); beamTexture.hasAlpha = true;
+    const headlight = new StandardMaterial("runner-headlight-beam", this.scene);
+    headlight.diffuseTexture = beamTexture; headlight.useAlphaFromDiffuseTexture = true; headlight.disableLighting = true;
+    headlight.emissiveColor = Color3.White(); headlight.alphaMode = Engine.ALPHA_ADD; headlight.backFaceCulling = false;
+    this.mats["headlight-beam"] = headlight;
     // Scenery for the newer scenes and the finer details: plain colours, so they cost no extra textures.
     this.mat("lamp-iron", "#2f2b28").specularColor.set(.35, .33, .3);
     this.mat("bamboo", "#a7bb5e").specularColor.set(.28, .3, .18);
@@ -612,7 +667,9 @@ export class RunnerRenderer3D {
     this.shark.root.setEnabled(true); this.shark.root.position.set(0, 0, 14);
     effects.forEach(mesh => { mesh.setEnabled(true); mesh.position.set(0, 1, 10); });
     this.mats["lamp-halo"].alpha = .9;
-    this.burst(this.sparks, new Vector3(0, 1, 10), 4); this.burst(this.magic, new Vector3(0, 1, 10), 4);
+    const at = new Vector3(0, 1, 10);
+    for (const system of [this.sparks, this.magic, this.dust, this.rollDust, this.cartSparks, this.nearStreaks]) this.burst(system, at, 4);
+    this.ambience.warm(true, at);
     this.camera.position.set(0, 4, -8); this.camera.setTarget(new Vector3(0, 1, 8));
     this.scene.render();
     warm.dispose();
@@ -621,6 +678,7 @@ export class RunnerRenderer3D {
     this.templates.values().next().value?.parent?.setEnabled(false);
     [...effects, ...this.rain, ...this.snow, ...this.streaks].forEach(mesh => mesh.setEnabled(false));
     this.shark.root.setEnabled(false);
+    this.ambience.warm(false, at);
   }
 
   private panorama(image: HTMLImageElement, scene: number) {
@@ -1420,20 +1478,22 @@ export class RunnerRenderer3D {
       const glow = MeshBuilder.CreatePlane("apple-glow", { size: 3 }, this.scene);
       glow.parent = r; glow.material = this.mats["apple-glow"]; glow.billboardMode = Mesh.BILLBOARDMODE_ALL; glow.isPickable = false;
     });
-    make("minecart", r => {
-      this.box("cart-floor", r, [1.55, .26, 1.86], [0, .28, 0], "metal");
-      for (const side of [-1, 1]) {
-        const sideWall = this.box("cart-side", r, [.16, .60, 1.91], [side * .77, .59, 0], "log-bark");
-        sideWall.rotation.z = -side * .18;
-        const endWall = this.box("cart-end", r, [1.66, .59, .16], [0, .59, side * .89], "log-bark");
-        endWall.rotation.x = side * .19;
-        this.box("cart-rim", r, [1.77, .10, .13], [0, .91, side * .96], "metal");
-        for (const z of [-.63, .63]) {
-          const wheel = this.cylinder("cart-wheel", r, { height: .17, diameter: .48, tessellation: 18 }, [side * .61, .25, z], "metal");
-          wheel.rotation.z = Math.PI / 2;
-        }
+    make("minecart", r => this.minecart(r));
+    // A runaway ore cart that comes down a lane at the dog: loaded with ore, its lamp lit and throwing a beam ahead.
+    make("runaway-cart", r => {
+      const body = new TransformNode("cart-body", this.scene); body.parent = r;
+      this.minecart(body);
+      const random = seeded(91);
+      for (let k = 0; k < 9; k++) {
+        const ore = MeshBuilder.CreatePolyhedron("runaway-ore", { type: k % 2 ? 2 : 1, size: .2 + random() * .14 }, this.scene);
+        ore.parent = body; ore.material = this.mats[k % 4 === 0 ? "gold" : k % 4 === 2 ? "crystal" : "obstacle-rock"];
+        ore.position.set((random() - .5) * 1.1, .86 + random() * .2, (random() - .5) * 1.4); ore.rotation.set(random() * 3, random() * 3, 0);
       }
-      this.box("cart-lantern", r, [.23, .26, .18], [0, .68, .99], "lamp");
+      this.mergeByMaterial(body);
+      // Narrow end (+Y) at the lamp, widening out ahead of the cart.
+      const beam = this.cylinder("headlight-beam", r, { diameterTop: .3, diameterBottom: 3.4, height: 9, tessellation: 18 }, [0, .62, 5.5], "headlight-beam");
+      beam.rotation.x = -Math.PI / 2;
+      const halo = MeshBuilder.CreatePlane("halo", { size: 2.2 }, this.scene); halo.parent = r; halo.position.set(0, .68, 1.05); halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
     });
     make("lamp-post", r => this.lampPost(r, false), true);
     make("snow-lamp", r => this.lampPost(r, true), true);
@@ -1755,6 +1815,7 @@ export class RunnerRenderer3D {
       make(`beam${at}`, r => this.barrier(r, scene), true);
       make(`beam-wide${at}`, r => this.gate(r, scene), true);
       make(`boulder${at}`, r => this.boulder(r, scene), true);
+      if (scene === 0 || scene === 1 || scene >= 4) make(`boulder-rolling${at}`, r => this.rollingBoulder(r, scene));
       make(`spikes-double${at}`, r => this.debris(r, scene), true);
       // Flames flicker, trapdoor planks swing open and long pits stretch their banks apart, so these keep their parts.
       make(`fire-double${at}`, r => this.campfire(r, scene, flameMaterial));
@@ -1818,6 +1879,69 @@ export class RunnerRenderer3D {
         this.cylinder("beam", r, { diameterTop: .65, diameterBottom: 1.2, height: 4.5, tessellation: 16 }, [0, 2.25, 0], `beam-${kind}`);
       });
     }
+  }
+
+  /** The ore cart the dog rides in the mine (and the runaway one). Its lantern is at the front, +Z. */
+  private minecart(r: TransformNode) {
+    this.box("cart-floor", r, [1.55, .26, 1.86], [0, .28, 0], "metal");
+    for (const side of [-1, 1]) {
+      const sideWall = this.box("cart-side", r, [.16, .60, 1.91], [side * .77, .59, 0], "log-bark");
+      sideWall.rotation.z = -side * .18;
+      const endWall = this.box("cart-end", r, [1.66, .59, .16], [0, .59, side * .89], "log-bark");
+      endWall.rotation.x = side * .19;
+      this.box("cart-rim", r, [1.77, .10, .13], [0, .91, side * .96], "metal");
+      for (const z of [-.63, .63]) {
+        const wheel = this.cylinder("cart-wheel", r, { height: .17, diameter: .48, tessellation: 18 }, [side * .61, .25, z], "metal");
+        wheel.rotation.z = Math.PI / 2;
+      }
+    }
+    this.box("cart-lantern", r, [.23, .26, .18], [0, .68, .99], "lamp");
+  }
+
+  /**
+   * Boulders and snowballs that roll: the ball sits on a pivot at its centre ("roller"), which turns as
+   * it rolls, so nothing is left lying round its foot.
+   */
+  private rollingBoulder(r: TransformNode, scene: number) {
+    const ball = new TransformNode("roller", this.scene); ball.parent = r; ball.position.y = ROLLER_RADIUS;
+    const random = seeded(471 + scene);
+    const onSurface = (up: number, around: number, out = 1) => new Vector3(Math.cos(around) * Math.sin(up), Math.cos(up), Math.sin(around) * Math.sin(up)).scale(out);
+    switch (scene) {
+      case 1: {
+        const stone = MeshBuilder.CreateSphere("stone-ball", { diameter: ROLLER_RADIUS * 2, segments: 20 }, this.scene);
+        stone.parent = ball; stone.material = this.mats["moss-stone"];
+        for (const [tilt, roll] of [[0, 0], [Math.PI / 2, .35]] as const) {
+          const band = MeshBuilder.CreateTorus("stone-ball-band", { diameter: ROLLER_RADIUS * 2, thickness: .1, tessellation: 36 }, this.scene);
+          band.parent = ball; band.rotation.set(tilt, 0, roll + Math.PI / 2); band.material = this.mats["stone-dark"];
+        }
+        for (let k = 0; k < 3; k++) {
+          const moss = MeshBuilder.CreateSphere("stone-ball-moss", { diameter: .7 + random() * .4, segments: 8 }, this.scene);
+          // Flattened against the stone: squashed along its own Z, which lookAt points outward.
+          moss.parent = ball; moss.position.copyFrom(onSurface(.5 + random() * 2, random() * 6.3, .93)); moss.scaling.set(1, 1, .35);
+          moss.lookAt(moss.position.scale(2)); moss.material = this.mats.moss;
+        }
+        break;
+      }
+      case 5: {
+        this.roughRock("snowball", ball, 1.05, 816, "snow", [0, 0, 0], .35, true);
+        for (let k = 0; k < 4; k++) { const out = onSurface(.4 + random() * 2.2, random() * 6.3); this.spike("snowball-twig", ball, out.scale(.9), out, .4 + random() * .3, .05, "pine-trunk", 4); }
+        for (let k = 0; k < 6; k++) {
+          const stone = MeshBuilder.CreateSphere("snowball-stone", { diameter: .1 + random() * .08, segments: 5 }, this.scene);
+          stone.parent = ball; stone.position.copyFrom(onSurface(.3 + random() * 2.5, random() * 6.3, 1.03)); stone.material = this.mats.coal;
+        }
+        break;
+      }
+      case 4: {
+        this.roughRock("boulder", ball, ROLLER_RADIUS, 814, "sandstone", [0, 0, 0]);
+        for (const [y, size] of [[-.28, 2.02], [.32, 1.9]] as const) {
+          const band = MeshBuilder.CreateTorus("boulder-band", { diameter: size, thickness: .1, tessellation: 28 }, this.scene);
+          band.parent = ball; band.position.y = y; band.scaling.set(1, .6, 1); band.material = this.mats["sandstone-light"];
+        }
+        break;
+      }
+      default: this.roughRock("boulder", ball, ROLLER_RADIUS, 811, "obstacle-rock", [0, 0, 0]);
+    }
+    this.mergeByMaterial(ball);
   }
 
   /** Folds a template's static parts into one mesh per material; billboards (lamp halos) stay separate. */
@@ -2372,6 +2496,11 @@ export class RunnerRenderer3D {
     this.mats["apple-glint"].alpha = .22 + (this.settings.reducedMotion ? 0 : Math.sin(t * 5) * .1);
     this.drawShark(world, dt);
     this.drawWeather(weather, t, running && world.boost > 0, centre.heading, player.y);
+    const nearBridge = this.bridgeNear(world);
+    this.ambience.update({
+      dt: world.phase === "paused" ? 0 : dt, scene: theme, night, weather, camera: this.camera.position, distance: world.distance,
+      place: this.placeOnRoute, sea: !!nearBridge && world.distance > nearBridge.start - 60 && world.distance < nearBridge.end, reducedMotion: this.settings.reducedMotion,
+    });
     this.scene.render();
   }
 
@@ -2429,7 +2558,11 @@ export class RunnerRenderer3D {
     this.lastTime = 0;
     this.fireParticleTime = 0;
     this.waterImpact = false;
-    this.seen = { silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1, bumps: world.wallBumps };
+    this.seen = {
+      silver: world.silver, gold: world.gold, diamond: world.diamond, power: world.powerPicked, shield: world.shieldSaves, stumble: world.stumbles, turns: world.turnCount, wrong: world.wrongTurn?.z ?? -1, bumps: world.wallBumps,
+      landed: world.landedAt, slides: world.slides, doubles: world.doubleJumps, near: world.nearMisses,
+    };
+    this.ambience.reset(); this.rumble = 0; this.stepDust = 0; this.dustTime = 0;
     this.flash = { shield: 0, power: 0 };
     this.turnBlend = { x: 0, z: 0 };
     this.camYaw = 0; this.camLateral = 0;
@@ -2916,12 +3049,31 @@ export class RunnerRenderer3D {
   private propName(item: RunItem) {
     if (item.kind === "coin") return `coin-${item.tier ?? "silver"}`;
     const scene = sceneAt(item.z), size = item.span === 3 ? "-wide" : item.span === 2 ? "-double" : "";
+    if (item.roll) {
+      if (item.kind === "runaway-cart") return "runaway-cart";
+      const themed = `boulder-rolling${scene === 0 ? "" : `@${RUN_SCENES[scene].id}`}`;
+      return this.templates.has(themed) ? themed : "boulder-rolling";
+    }
     if (item.kind === "block" && scene <= 1) {
       // Canal and temple logs: creepers in the temple, mushrooms on about half the two-lane piles.
       return `block${size}${scene === 1 ? "-vine" : ""}${item.span === 2 && hash01(item.id, 5) < .5 ? "-mushroom" : ""}`;
     }
     const themed = `${item.kind}${size}@${RUN_SCENES[scene].id}`;
     return this.templates.has(themed) ? themed : `${item.kind}${size}`;
+  }
+
+  /** A boulder turns as it rolls; a runaway cart faces the dog and rattles along. */
+  private drawRolling(prop: TransformNode, item: RunItem, t: number) {
+    const travelled = item.rollFrom === undefined ? 0 : item.rollFrom - item.z;
+    if (item.kind === "runaway-cart") {
+      prop.rotation.y += Math.PI;
+      const body = prop.getDescendants(false, node => node.name === "cart-body")[0] as TransformNode | undefined;
+      const rattle = item.rollFrom !== undefined && !this.settings.reducedMotion ? 1 : 0;
+      if (body) { body.rotation.z = Math.sin(t * 13 + item.id) * .045 * rattle; body.position.y = Math.abs(Math.sin(t * 17 + item.id)) * .05 * rattle; }
+      return;
+    }
+    const roller = prop.getDescendants(false, node => node.name === "roller")[0] as TransformNode | undefined;
+    if (roller) roller.rotation.x = -travelled / ROLLER_RADIUS;
   }
 
   private drawProps(world: RunnerWorld, t: number, dt: number) {
@@ -2951,6 +3103,7 @@ export class RunnerRenderer3D {
       }
       const p = this.place(item.z, itemOffset(item) * (item.feature === "rope" ? ROPE_LANE_SCALE : 1));
       prop.position.set(p.x, p.y, p.z); prop.rotation.set(isRunObstacle(item.kind) ? this.roadPitch(item.z) : 0, p.heading, 0);
+      if (item.roll) this.drawRolling(prop, item, t);
       if (item.thrownAt !== undefined) {
         // A crate the frog has just tossed back: it drops in tumbling and lands with a bump.
         const k = Math.max(0, Math.min(1, (world.elapsed - item.thrownAt) / .5));
@@ -2988,7 +3141,21 @@ export class RunnerRenderer3D {
         }
       }
     }
+    // Rolling hazards: dust thrown up behind a boulder, sparks under a cart, and the ground shaking as one comes close.
+    this.rumble = 0;
     if (world.phase !== "running") return;
+    this.dustTime += dt * 60;
+    const dustTicks = Math.floor(this.dustTime); this.dustTime -= dustTicks;
+    for (const item of world.items) {
+      if (!item.roll || item.rollFrom === undefined) continue;
+      const gap = item.z - world.distance;
+      if (gap < -12 || gap > 70) continue;
+      this.rumble = Math.max(this.rumble, 1 - Math.abs(gap) / 28);
+      if (!dustTicks || this.settings.reducedMotion) continue;
+      const at = this.place(item.z + 1.1, itemOffset(item));
+      if (item.kind === "runaway-cart") this.burst(this.cartSparks, new Vector3(at.x, at.y + .15, at.z), dustTicks * 2);
+      else this.burst(this.rollDust, new Vector3(at.x, at.y + .15, at.z), dustTicks * 2, DUST[sceneAt(item.z)]);
+    }
     const fire = world.items.find(item => item.kind === "fire" && item.z > world.distance - 2 && item.z < world.distance + 22);
     if (!fire) { this.fireParticleTime = 0; return; }
     this.fireParticleTime += dt * 60 * world.timeScale;
@@ -3028,6 +3195,33 @@ export class RunnerRenderer3D {
     this.seen.stumble = world.stumbles;
     this.flash.power = Math.max(0, this.flash.power - dt * 2.5);
     this.flash.shield = Math.max(0, this.flash.shield - dt * 2);
+
+    // Underfoot: a puff on landing, a spray as a slide starts, a little kicked up behind while running.
+    // Rain splashes instead of raising dust, except underground.
+    const rainy = world.weather === "rain" && world.sceneIndex !== 2;
+    const colours = rainy ? SPLASH : DUST[world.sceneIndex];
+    const feet = new Vector3(player.x, player.y + .06 + world.jumpHeight, player.z);
+    const onFoot = !capture && !world.ride && !world.cycling;
+    if (world.landedAt > this.seen.landed) { if (onFoot) this.burst(this.dust, feet, 12, colours); this.seen.landed = world.landedAt; }
+    if (world.slides > this.seen.slides) { if (onFoot && !world.airborne) this.burst(this.dust, feet, 10, colours); this.seen.slides = world.slides; }
+    if (world.doubleJumps > this.seen.doubles) { this.burst(this.magic, feet, 16, ["#ffffff", "#bfe9ff"]); this.seen.doubles = world.doubleJumps; }
+    if (onFoot && !world.airborne && world.phase === "running" && !this.settings.reducedMotion) {
+      // Powder snow and sand kick up most, then rain splashes; stone and earth only a little.
+      const rate = world.sceneIndex >= 4 ? 16 : rainy ? 10 : world.sceneIndex === 2 ? 6 : 4;
+      this.stepDust += dt * rate * Math.min(1.5, world.speed / 18);
+      const n = Math.floor(this.stepDust);
+      if (n) {
+        this.stepDust -= n;
+        this.burst(this.dust, new Vector3(feet.x - Math.sin(this.camYaw) * .35, feet.y, feet.z - Math.cos(this.camYaw) * .35), n, colours);
+      }
+    }
+    if (world.nearMisses > this.seen.near) {
+      // A near miss: white streaks whip back past the dog.
+      const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
+      this.nearStreaks.direction1.set(-fx - .5, .05, -fz - .5); this.nearStreaks.direction2.set(-fx + .5, .45, -fz + .5);
+      this.burst(this.nearStreaks, at, 14);
+      this.seen.near = world.nearMisses;
+    }
 
     const motion = this.settings.reducedMotion ? 0 : 1;
     // Shield: a bubble around the dog, blinking in its last three seconds; it bursts when used.
@@ -3107,7 +3301,9 @@ export class RunnerRenderer3D {
     const k = (rate: number) => dt > 0 ? 1 - Math.exp(-rate * dt) : 1;
     // The camera turns a little behind the road, so a corner swings the view round smoothly.
     this.camYaw += angleTo(this.camYaw, centre.heading) * k(shot ? 2 : 4.5);
-    const fov = (portrait ? 1.08 : .9) + (world.boost > 0 && !shot ? .14 : 0);
+    // The view widens a little as the pace picks up, and a lot more on a dash.
+    const pace = shot || this.settings.reducedMotion ? 0 : Math.max(0, Math.min(1, (world.speed - 13) / 17)) * .07;
+    const fov = (portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .14 : 0);
     this.camera.fov += (fov - this.camera.fov) * k(4);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
     if (shot) {
@@ -3139,7 +3335,21 @@ export class RunnerRenderer3D {
         const shake = Math.sin(t * 60) * .14 * (1 - sinceHit / .35);
         this.cameraPos.x += rx * shake; this.cameraPos.z += rz * shake;
       }
+      if (!this.settings.reducedMotion) {
+        // A small dip as the dog lands, and a rumble while a boulder or cart rolls close by.
+        const land = Math.max(0, 1 - (world.elapsed - world.landedAt) / .2);
+        this.cameraPos.y -= land * land * .13; this.cameraTarget.y -= land * land * .05;
+        if (this.rumble > 0) {
+          const r = this.rumble * this.rumble;
+          this.cameraPos.x += rx * Math.sin(t * 41) * .07 * r; this.cameraPos.z += rz * Math.sin(t * 41) * .07 * r;
+          this.cameraPos.y += Math.sin(t * 53) * .05 * r;
+        }
+      }
     }
+    // Bank a touch into lane changes.
+    const bank = shot || this.settings.reducedMotion ? 0 : (world.position - world.lane) * .028;
+    const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
+    this.camera.upVector.set(rx * Math.sin(bank), Math.cos(bank), rz * Math.sin(bank));
     this.camera.position.copyFrom(this.cameraPos);
     this.camera.setTarget(this.cameraTarget);
   }

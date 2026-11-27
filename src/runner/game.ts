@@ -7,8 +7,9 @@ import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, MINECART_SURPRISE_ART } from "./anim
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
+import { completeMission, MISSIONS_KEY, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText, type Mission, type RunStats } from "./missions.ts";
 import {
-  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, CHASE_RECORD_KEY, CHASE_SECONDS, CHASE_START_GAP, ENDLESS_RECORD_KEY, LONG_GAP_START, GOLD_START, DIAMOND_START, TURN_HINT_END, obstacleHalfDepth, readRunRecord,
+  RunnerWorld, RUN_SCENES, RUN_POWERS, RUN_POWER_SECONDS, CHASE_RECORD_KEY, CHASE_SECONDS, CHASE_START_GAP, ENDLESS_RECORD_KEY, LONG_GAP_START, GOLD_START, DIAMOND_START, NEAR_SCORE, ROLL_START, TURN_HINT_END, obstacleHalfDepth, readRunRecord, sceneAt,
   type RunAction, type RunPhase, type RunMode, type RunPowerKind, type RunTurn,
 } from "./world.ts";
 
@@ -31,6 +32,11 @@ const POWER_INFO = {
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 /** Seconds the scene name stays up after the run enters a new scene. */
 const SCENE_LABEL_SECONDS = 3.2;
+/** Cheers for each thousand metres of an endless run. */
+const MILESTONE_CHEERS = ["好样的！", "跑得漂亮！", "势不可挡！", "奶蛙望尘莫及！", "传说中的奶狗！"];
+/** What is coming down the lane, by scene. */
+const ROLLING_NAME: Record<number, string> = { 1: "石球滚来了", 2: "矿车冲过来了", 4: "滚石来了", 5: "大雪球滚来了" };
+type RunMission = { slot: number; mission: Mission; done: boolean };
 
 /** Corner prompt: forks and junctions first ask the player to look, then show the way once the turn is due. */
 function turnCue(turn: RunTurn, due: boolean) {
@@ -86,9 +92,25 @@ export class RunnerGame {
   private el: {
     main: HTMLElement; canvas: HTMLCanvasElement; panel: HTMLElement; distance: HTMLElement; score: HTMLElement; coins: HTMLElement;
     scene: HTMLElement; effects: HTMLElement; cue: HTMLElement; danger: HTMLElement; capture: HTMLElement; toast: HTMLElement; chase: HTMLElement;
+    pop: HTMLElement; banner: HTMLElement;
   };
   private seenEvents = { power: 0, shield: 0, stumble: 0 };
   private toastTimer = 0;
+  private missions = readMissionBook(null);
+  /** The missions this run plays for (dealt before it started) and which of them it has done. */
+  private runMissions: RunMission[] = [];
+  /** Missions dealt during the last run, for the next one. */
+  private dealt: Mission[] = [];
+  private seenNear = 0;
+  private seenNearScore = 0;
+  private nearChain = 0;
+  private lastNearAt = -10;
+  private seenRolls = 0;
+  private nextMilestone = 1000;
+  private passedRecord = false;
+  private banners: { html: string; kind: string }[] = [];
+  private bannerTimer = 0;
+  private popTimer = 0;
 
   constructor(private root: HTMLElement, private audio: AudioManager, private settings: Settings, private exit: () => void) {
     root.innerHTML = `
@@ -104,6 +126,8 @@ export class RunnerGame {
   <div class="runner-effects" aria-label="道具效果"></div>
   <div class="runner-cue" role="status" hidden></div>
   <p class="runner-toast" role="status" hidden></p>
+  <p class="runner-banner" role="status" hidden></p>
+  <p class="runner-pop" aria-hidden="true" hidden></p>
   <p class="runner-danger" role="status" hidden>恐怖奶蛙追上来了！别再撞了</p>
   <section class="runner-capture" aria-live="polite" hidden><strong></strong><button data-run="skip-capture">跳过</button></section>
   <section class="runner-panel" aria-live="polite"></section>
@@ -119,8 +143,10 @@ export class RunnerGame {
       main: $("main"), canvas: $("canvas"), panel: $(".runner-panel"), distance: $("#run-distance"), score: $("#run-score"),
       coins: $("#run-coins"), scene: $("#runner-scene"), effects: $(".runner-effects"), cue: $(".runner-cue"),
       danger: $(".runner-danger"), capture: $(".runner-capture"), toast: $(".runner-toast"), chase: $(".runner-chase"),
+      pop: $(".runner-pop"), banner: $(".runner-banner"),
     };
     this.loadRecord();
+    try { this.missions = readMissionBook(localStorage.getItem(MISSIONS_KEY)); } catch { this.recordError = true; }
     try {
       const saved = localStorage.getItem(WARDROBE_KEY);
       this.wardrobe = saved ? readWardrobe(saved) : migrateLegacyWardrobe(localStorage.getItem(LEGACY_WARDROBE_KEY));
@@ -320,12 +346,90 @@ export class RunnerGame {
     this.seenEvents = { power: 0, shield: 0, stumble: 0 };
     this.seenApple = -1; this.seenThrows = 0; this.seenBumps = 0;
     this.el.toast.hidden = true;
+    this.banners = []; clearTimeout(this.bannerTimer); this.el.banner.hidden = true;
+    clearTimeout(this.popTimer); this.el.pop.hidden = true;
     this.warnedTurn = this.urgentTurn = -1;
+  }
+
+  /** A line under the score for milestones, records and missions; several in a row wait their turn. */
+  private banner(html: string, kind: string) {
+    this.banners.push({ html, kind });
+    if (this.el.banner.hidden) this.nextBanner();
+  }
+  private nextBanner() {
+    const next = this.banners.shift(), el = this.el.banner;
+    if (!next) { el.hidden = true; return; }
+    el.innerHTML = next.html; el.dataset.kind = next.kind; el.hidden = false;
+    el.classList.remove("show"); void el.offsetWidth; el.classList.add("show");
+    this.bannerTimer = window.setTimeout(() => this.nextBanner(), 2400);
+  }
+  /** The near-miss call-out, by the dog. */
+  private pop(html: string) {
+    const el = this.el.pop;
+    el.innerHTML = html; el.hidden = false;
+    el.classList.remove("show"); void el.offsetWidth; el.classList.add("show");
+    clearTimeout(this.popTimer);
+    this.popTimer = window.setTimeout(() => { el.hidden = true; }, 900);
+  }
+
+  private runStats(): RunStats {
+    const w = this.world;
+    return {
+      mode: w.mode, distance: w.runDistance, silver: w.silver, gold: w.gold, score: w.score, nearMisses: w.nearMisses, doubleJumps: w.doubleJumps, slides: w.slides,
+      forksCleared: w.forksCleared, ridesDone: w.ridesDone, powers: w.powerPicked, shieldSaves: w.shieldSaves, bestMultiplier: w.bestMultiplier, won: w.phase === "won", timeLeft: w.chase?.timeLeft ?? 0,
+    };
+  }
+
+  /** Pays out any mission the run has just done and deals the next one into its slot. */
+  private checkMissions() {
+    if (!this.runMissions.some(entry => !entry.done)) return;
+    const stats = this.runStats();
+    for (const entry of this.runMissions) {
+      if (entry.done || !missionDone(entry.mission, stats)) continue;
+      entry.done = true;
+      for (const key of ["silver", "gold", "diamond"] as const) this.wardrobe[key] = Math.min(1e9, this.wardrobe[key] + (entry.mission.reward[key] ?? 0));
+      this.persistWardrobe();
+      this.missions = completeMission(this.missions, entry.slot);
+      this.dealt.push(missionAt(this.missions.active[entry.slot]));
+      try { localStorage.setItem(MISSIONS_KEY, JSON.stringify(this.missions)); } catch { this.recordError = true; }
+      this.banner(`<b>✓ 任务完成</b><span>${missionText(entry.mission)}</span><em>+${rewardText(entry.mission.reward)}</em>`, "mission");
+      this.audio.effect("win");
+    }
+  }
+
+  /** Near misses, rolling hazards setting off, every thousand metres and passing the longest run. */
+  private syncMoments() {
+    const w = this.world;
+    if (w.nearMisses > this.seenNear) {
+      const gained = w.nearScore - this.seenNearScore;
+      this.nearChain = w.elapsed - this.lastNearAt < 2.6 ? this.nearChain + 1 : 1;
+      this.seenNear = w.nearMisses; this.seenNearScore = w.nearScore; this.lastNearAt = w.elapsed;
+      this.pop(`<b>${this.nearChain > 1 ? `惊险 ×${this.nearChain}` : "惊险！"}</b><span>+${gained}</span>`);
+      this.audio.effect("tap"); this.vibrate(12);
+    }
+    if (w.rollsStarted > this.seenRolls) { this.seenRolls = w.rollsStarted; if (w.phase === "running") this.audio.effect("door"); }
+    if (w.phase !== "running" || w.chase) return;
+    if (w.runDistance >= this.nextMilestone) {
+      const k = this.nextMilestone / 1000;
+      this.banner(`<b>${this.nextMilestone} 米</b><span>${MILESTONE_CHEERS[Math.min(MILESTONE_CHEERS.length - 1, k - 1)]}</span>`, "milestone");
+      this.audio.effect("coin");
+      this.nextMilestone += 1000;
+    }
+    if (!this.passedRecord && w.runDistance > this.record.distance) {
+      this.passedRecord = true;
+      this.banner(`<b>新的最远纪录！</b><span>超过了 ${this.record.distance} 米</span>`, "record");
+      this.audio.effect("win"); this.flash("record");
+    }
   }
   private begin() {
     this.tilt.calibrate(); this.world.start(); this.last = 0;
     this.audio.setMode("normal"); this.audio.setPlaying(true);
     this.holdScreenOn(true);
+    // The run plays for the missions dealt so far; any finished now are replaced from the next run on.
+    this.runMissions = this.missions.active.map((index, slot) => ({ slot, mission: missionAt(index), done: false }));
+    this.dealt = [];
+    this.seenNear = this.seenNearScore = this.nearChain = this.seenRolls = 0; this.lastNearAt = -10;
+    this.nextMilestone = 1000; this.passedRecord = this.record.distance < 300;
     if (this.world.chase) this.toast(`<b>夺回金苹果</b>恐怖奶蛙抢走了附魔金苹果，${CHASE_SECONDS} 秒内追上它！`, "fruit", 2.6);
   }
   private resume() {
@@ -389,6 +493,8 @@ export class RunnerGame {
     el.danger.hidden = w.phase !== "running" || w.danger === 0;
 
     this.syncCue();
+    this.syncMoments();
+    if (w.phase !== "ready") this.checkMissions();
     if (w.powerPicked !== this.seenEvents.power) {
       this.seenEvents.power = w.powerPicked;
       const info = POWER_INFO[w.lastPower];
@@ -464,6 +570,8 @@ export class RunnerGame {
       const requiredMove = next?.span === 3 && next.z - w.distance < w.speed * 1.6 && !(w.cycling && (next.kind === "block" || next.kind === "spikes")) ? next : undefined;
       const longGap = next?.kind === "long-gap" ? next : undefined;
       const toLip = longGap ? longGap.z - obstacleHalfDepth("long-gap", longGap.z) - w.distance : Infinity;
+      // A boulder or cart already rolling down the dog's own lane.
+      const rolling = w.items.find(item => item.roll && item.rollFrom !== undefined && !item.done && item.lane === w.lane && item.z > w.distance && item.z - w.distance < (w.speed + item.roll) * 1.6);
       if (w.ride?.kind === "rope") {
         aboveRoad = true;
         html = "<b>↔</b><span>左右摆动收币</span>";
@@ -511,6 +619,9 @@ export class RunnerGame {
         // Only when the crate is in the dog's lane; the arrow points to a free side.
         urgent = next.z - w.distance < w.speed * .6;
         html = `<b>${w.lane === 0 ? "▶" : w.lane === 2 ? "◀" : "◀▶"}</b><span>奶蛙扔来木箱</span><small>换道或跳</small>`;
+      } else if (rolling?.roll) {
+        urgent = rolling.z - w.distance < (w.speed + rolling.roll) * .6;
+        html = `<b>${w.lane === 0 ? "▶" : w.lane === 2 ? "◀" : "◀▶"}</b><span>${ROLLING_NAME[sceneAt(rolling.z)] ?? "滚石来了"}</span><small>换道或二段跳</small>`;
       } else if (requiredMove) {
         const slide = requiredMove.kind === "beam";
         urgent = requiredMove.z - w.distance < w.speed * .55;
@@ -665,6 +776,7 @@ export class RunnerGame {
         <div class="runner-seg" aria-label="玩法">${toggle("mode-endless", "无限模式", !chase)}${toggle("mode-chase", "夺回金苹果", chase)}</div>
         <p class="runner-mode-note">${chase ? `特别模式：${CHASE_SECONDS} 秒内追上抢走附魔金苹果的恐怖奶蛙。穿过雪原和赤岩峡谷，收币和冲刺拉近距离，撞到东西会被甩开，小心它扔来的木箱。` : "一直跑下去，被恐怖奶蛙追上就结束。"}</p>
         <p class="runner-record">最高分 <b>${this.record.score}</b>${chase ? "" : ` · 最远 <b>${this.record.distance}</b> 米`}</p>
+        ${this.missionsHtml(false)}
         ${btn("start", chase ? "开始追击" : "开始奔跑")}
         ${btn("shop", "皮肤商城", "ghost")}
         <div class="runner-row">${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
@@ -713,10 +825,29 @@ export class RunnerGame {
       ${head}
       <div class="runner-over-score"><small>${won ? "本次得分" : "本局得分"}</small><strong>${w.score}</strong>${newBest ? `<em>新纪录</em>` : ""}</div>
       <div class="runner-stats runner-stats-4"><span><b>${metres}</b>米</span><span><b>${time}</b>用时</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>
+      <p class="runner-over-extra">惊险闪避 <b>${w.nearMisses}</b> 次 · 最高连击 <b>×${w.bestMultiplier}</b>${w.ridesDone ? ` · 完成 <b>${w.ridesDone}</b> 段特殊路段` : ""}</p>
       ${progress}
+      ${this.missionsHtml(true)}
       ${btn("restart", chase ? "再追一次" : "再跑一次")}
       <div class="runner-row">${chase ? btn("play-endless", "无限模式", "ghost") : ""}${btn("shop", "皮肤商城", "ghost")}${btn("exit", "主菜单", "ghost")}</div>
       <p class="runner-keyhint">按回车${chase ? "再追一次" : "再跑一次"}</p>${note}`;
+  }
+
+  /** The three missions: on the start screen what each pays; after a run how far it got with each, and what comes next. */
+  private missionsHtml(afterRun: boolean) {
+    const stats = this.runStats();
+    const rows = afterRun && this.runMissions.length
+      ? this.runMissions.map(({ mission, done }) => {
+        if (done) return `<li class="done"><span>✓ ${missionText(mission)}</span><em>+${rewardText(mission.reward)}</em></li>`;
+        const value = Math.max(0, Math.min(mission.target, missionValue(mission, stats)));
+        return `<li><span>${missionText(mission)}</span><em>${value} / ${mission.target}</em><i style="width:${Math.round(value / mission.target * 100)}%"></i></li>`;
+      })
+      : this.missions.active.map(index => {
+        const mission = missionAt(index);
+        return `<li><span>${missionText(mission)}</span><em>${rewardText(mission.reward)}</em></li>`;
+      });
+    const next = afterRun && this.dealt.length ? `<p class="runner-missions-next">新任务：${this.dealt.map(missionText).join("；")}</p>` : "";
+    return `<div class="runner-missions"><p class="runner-missions-title">任务<small>已完成 ${this.missions.completed} 个</small></p><ul>${rows.join("")}</ul>${next}</div>`;
   }
 
   private showHelp() {
@@ -734,6 +865,9 @@ export class RunnerGame {
         <li>先收银币，${GOLD_START}米起出现金币，${DIAMOND_START}米起才有稀有钻石。磁铁吸取附近货币，护盾挡一次撞击，飞鞋冲刺无敌5秒。连续收取分数翻倍，最高×5。</li>
         <li><b>沙漏</b>让跑动和跳跃一起放慢5秒；<b>双倍得分</b>让8秒内的路程和收币得分翻倍。</li>
         <li>双道活动木板下是深坑，可提前跳过或换到空道。收集货币可在皮肤商城解锁 102 套 QS 2027 高校主题奶狗。</li>
+        <li>${ROLL_START}米后，遗迹的<b>石球</b>、赤岩峡谷的<b>滚石</b>、雪原的<b>大雪球</b>会沿一条道朝你滚来，矿洞里还有冲过来的<b>失控矿车</b>。听到轰隆声就看清是哪条道，提前换道，或者二段跳越过去。</li>
+        <li>眼看要撞上时才躲开（换道、起跳或下滑）算<b>惊险闪避</b>：加 ${NEAR_SCORE} 分（受连击倍率加成），并推高连击。</li>
+        <li><b>任务</b>同时有三个，都要在一局之内完成，完成后马上得到银币、金币或钻石；换上的新任务从下一局开始算。</li>
         <li>无限模式的场景按路程依次切换：峡谷水渠、遗迹长廊、矿洞轨道、竹林小径、赤岩峡谷，偶尔经过雪原；1000米后进入较长的黑夜。</li>
         <li>特别模式<b>夺回金苹果</b>：恐怖奶蛙抢走了附魔金苹果在前面逃，${CHASE_SECONDS} 秒内追上它就赢。奶蛙比你稍慢，收银币、用冲刺能拉近距离，撞到东西或撞到路边会被甩开；它还会往后扔<b>木箱</b>，换道躲开或跳过去。</li>
       </ul>
@@ -803,6 +937,6 @@ export class RunnerGame {
     this.destroyed = true;
     this.shopObserver?.disconnect();
     cancelAnimationFrame(this.frame); this.abort.abort(); this.resize.disconnect();
-    this.audio.setPlaying(false); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); this.renderer?.dispose();
+    this.audio.setPlaying(false); clearTimeout(this.gyroTimer); clearTimeout(this.toastTimer); clearTimeout(this.bannerTimer); clearTimeout(this.popTimer); this.renderer?.dispose();
   }
 }

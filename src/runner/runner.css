@@ -11,7 +11,8 @@
 .runner-screen.runner-flash::before{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;background:radial-gradient(circle at 50% 58%,rgba(255,232,140,.8),rgba(196,140,255,.32) 48%,rgba(0,0,0,0) 76%);animation:runner-flash .9s ease-out forwards}
 @keyframes runner-flash{from{opacity:1}to{opacity:0}}
 .runner-canvas{display:block;width:100%;height:100%;touch-action:none;outline:none}
-.runner-screen::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;transition:box-shadow .15s}
+/* A soft vignette over the 3D view, drawn by the page rather than in every 3D shader. */
+.runner-screen::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;transition:box-shadow .15s;background:radial-gradient(ellipse 75% 70% at 50% 54%,transparent 62%,rgba(4,10,18,.34) 100%)}
 .runner-hit::after{box-shadow:inset 0 0 90px rgba(255,70,40,.55)}
 .runner-chased::after{box-shadow:inset 0 0 120px rgba(160,20,10,.45);animation:runner-pulse 1s ease-in-out infinite}
 .runner-boost::after{box-shadow:inset 0 0 110px rgba(255,214,110,.4)}
@@ -205,3 +206,38 @@
 .runner-toast.show{animation:runner-toast var(--toast-time,1.8s) ease-out forwards}
 @keyframes runner-toast{0%{opacity:0;transform:translateX(-50%) scale(.7)}12%{opacity:1;transform:translateX(-50%) scale(1.08)}20%{transform:translateX(-50%) scale(1)}80%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-14px)}}
 @media (prefers-reduced-motion:reduce){.runner-toast.show{animation:none}}
+
+/* Milestones, a new longest run and finished missions: a ribbon under the score, one at a time. */
+.runner-banner{position:absolute;z-index:3;left:50%;top:calc(max(12px,env(safe-area-inset-top)) + 96px);transform:translateX(-50%);display:flex;align-items:baseline;gap:10px;margin:0;padding:7px 18px;border-radius:999px;background:linear-gradient(90deg,rgba(14,32,32,.15),rgba(14,32,32,.9) 18%,rgba(14,32,32,.9) 82%,rgba(14,32,32,.15));border-top:1px solid var(--line);border-bottom:1px solid var(--line);white-space:nowrap;pointer-events:none;font-size:13px}
+.runner-banner[hidden]{display:none}
+.runner-banner b{font-size:18px;letter-spacing:1px;color:var(--gold)}
+.runner-banner em{font-style:normal;font-weight:800;color:#ffe9a8}
+.runner-banner[data-kind=mission] b{color:#9df2b3}
+.runner-banner[data-kind=record] b{color:#ffb38a}
+.runner-banner.show{animation:runner-banner 2.4s ease-out forwards}
+@keyframes runner-banner{0%{opacity:0;transform:translateX(-50%) translateY(-10px) scaleX(.6)}10%{opacity:1;transform:translateX(-50%) scaleX(1.04)}16%{transform:translateX(-50%)}84%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-6px)}}
+.runner-screen:has(.runner-banner:not([hidden])) .runner-toast{top:calc(17% + 46px)}
+.runner-screen:has(.runner-chase:not([hidden])) .runner-banner{top:calc(max(12px,env(safe-area-inset-top)) + 108px)}
+/* Near miss: a quick call-out just above the dog. */
+.runner-pop{position:absolute;z-index:3;left:50%;top:47%;transform:translateX(-50%);display:flex;align-items:baseline;gap:6px;margin:0;pointer-events:none;white-space:nowrap;text-shadow:0 2px 8px rgba(0,0,0,.65)}
+.runner-pop[hidden]{display:none}
+.runner-pop b{font:italic 900 24px/1 system-ui,sans-serif;letter-spacing:1px;color:#fff;text-shadow:0 0 12px rgba(120,220,255,.9),0 2px 6px rgba(0,0,0,.7)}
+.runner-pop span{font:800 16px/1 ui-rounded,system-ui;color:var(--gold)}
+.runner-pop.show{animation:runner-pop .9s ease-out forwards}
+@keyframes runner-pop{0%{opacity:0;transform:translateX(-50%) scale(.5)}15%{opacity:1;transform:translateX(-50%) scale(1.15)}30%{transform:translateX(-50%) scale(1)}70%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-26px)}}
+@media (prefers-reduced-motion:reduce){.runner-banner.show,.runner-pop.show{animation:none}}
+
+/* Missions on the start and result screens. */
+.runner-missions{margin:10px 0 4px;padding:8px 10px;border-radius:12px;background:rgba(0,0,0,.22);text-align:left}
+.runner-card .runner-missions-title{display:flex;justify-content:space-between;align-items:baseline;margin:0 0 4px;font-size:12px;font-weight:800;letter-spacing:.2em;color:var(--gold)}
+.runner-missions-title small{font-weight:500;letter-spacing:0;color:var(--muted)}
+.runner-missions ul{display:grid;gap:5px;margin:0;padding:0;list-style:none}
+.runner-missions li{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:10px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.05);font-size:12px;line-height:1.4}
+.runner-missions li span{position:relative;z-index:1;color:var(--ink)}
+.runner-missions li em{position:relative;z-index:1;flex:none;font-style:normal;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums}
+.runner-missions li i{position:absolute;inset:0 auto 0 0;background:rgba(246,211,107,.13)}
+.runner-missions li.done{background:rgba(110,220,140,.14)}
+.runner-missions li.done span{color:#a8f0bd}
+.runner-card .runner-missions-next{margin:6px 2px 0;font-size:11px;color:var(--muted)}
+.runner-card .runner-over-extra{margin:6px 0 0;font-size:12px}
+@media (max-height:620px){.runner-missions li{padding:3px 8px}}
