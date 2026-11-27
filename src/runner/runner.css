@@ -297,20 +297,7 @@
 @keyframes runner-revive{to{transform:scale(1.03)}}
 @media (prefers-reduced-motion:reduce){.runner-card .runner-revive-button,.runner-rush-clock::after{animation:none}}
 
-/* Missions on the start and result screens. */
-.runner-missions{margin:10px 0 4px;padding:8px 10px;border-radius:12px;background:rgba(0,0,0,.22);text-align:left}
-.runner-card .runner-missions-title{display:flex;justify-content:space-between;align-items:baseline;margin:0 0 4px;font-size:12px;font-weight:800;letter-spacing:.2em;color:var(--gold)}
-.runner-missions-title small{font-weight:500;letter-spacing:0;color:var(--muted)}
-.runner-missions ul{display:grid;gap:5px;margin:0;padding:0;list-style:none}
-.runner-missions li{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:10px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.05);font-size:12px;line-height:1.4}
-.runner-missions li span{position:relative;z-index:1;color:var(--ink)}
-.runner-missions li em{position:relative;z-index:1;flex:none;font-style:normal;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums}
-.runner-missions li i{position:absolute;inset:0 auto 0 0;background:rgba(246,211,107,.13)}
-.runner-missions li.done{background:rgba(110,220,140,.14)}
-.runner-missions li.done span{color:#a8f0bd}
-.runner-card .runner-missions-next{margin:6px 2px 0;font-size:11px;color:var(--muted)}
 .runner-card .runner-over-extra{margin:6px 0 0;font-size:12px}
-@media (max-height:620px){.runner-missions li{padding:3px 8px}}
 
 /* The start screen as a game lobby: the 3D dog stays in view between a top bar and a bottom dock. */
 .runner-panel.lobby:not([hidden]){display:block;padding:0;background:radial-gradient(ellipse 70% 60% at 50% 48%,rgba(4,10,10,0) 45%,rgba(4,10,10,.5)),linear-gradient(180deg,rgba(4,12,12,.6),rgba(4,12,12,0) 22%,rgba(4,12,12,0) 55%,rgba(4,12,12,.85));overflow:auto}
@@ -374,8 +361,8 @@
 @keyframes runner-stat-in{from{transform:translateY(12px) scale(.86);opacity:0}}
 .runner-result .runner-over-score em{animation:runner-stamp .45s cubic-bezier(.3,1.6,.5,1) 1.35s both,runner-bounce-badge .9s ease-in-out 1.8s infinite alternate}
 @keyframes runner-stamp{from{transform:rotate(-14deg) scale(2.6);opacity:0}to{transform:rotate(8deg) scale(1);opacity:1}}
-.runner-result .runner-over-extra,.runner-result .runner-progress,.runner-result .runner-missions{animation:runner-stat-in .4s ease-out .8s both}
-@media (prefers-reduced-motion:reduce){.runner-effect.ending .runner-effect-ring,.runner-effect.ending b,.runner-effect,.runner-combo.pop,.runner-result,.runner-result .runner-stats span,.runner-result .runner-over-score em,.runner-result .runner-over-extra,.runner-result .runner-progress,.runner-result .runner-missions{animation:none}}
+.runner-result .runner-over-extra,.runner-result .runner-progress{animation:runner-stat-in .4s ease-out .8s both}
+@media (prefers-reduced-motion:reduce){.runner-effect.ending .runner-effect-ring,.runner-effect.ending b,.runner-effect,.runner-combo.pop,.runner-result,.runner-result .runner-stats span,.runner-result .runner-over-score em,.runner-result .runner-over-extra,.runner-result .runner-progress{animation:none}}
 
 /* "One more go?": a ring counts down the seconds left to buy a revive before the results come up. */
 .runner-offer{animation:runner-result-in .4s cubic-bezier(.2,1.15,.35,1) both}
@@ -417,7 +404,6 @@
 .runner-lobby-tool svg{box-sizing:content-box;padding:12px;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.48);backdrop-filter:blur(6px);transition:transform .15s}
 .runner-lobby-tool:active svg{transform:scale(.92)}
 .runner-lobby-tool[data-run="more"] svg{fill:currentColor;stroke:none}
-.runner-missions-page .runner-missions-title{display:none}
 
 /* Picture effects: one row per effect with an on/off switch. */
 .runner-fx{display:grid;gap:8px;margin:12px 0 4px;text-align:left}

@@ -142,3 +142,9 @@ export function readGraphics(raw: string | null): Graphics {
   } catch { /* A broken record keeps everything on. */ }
   return graphics;
 }
+
+/** A reward written out, e.g. "40 银币 · 3 金币". */
+export function rewardText(reward: Partial<CurrencyPurse>) {
+  const names = { silver: "银币", gold: "金币", diamond: "钻石" } as const;
+  return (Object.keys(names) as (keyof CurrencyPurse)[]).filter(key => reward[key]).map(key => `${reward[key]} ${names[key]}`).join(" · ");
+}

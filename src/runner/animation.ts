@@ -26,7 +26,7 @@ export function captureMotion(time: number, reducedMotion: boolean) {
 
 /** Rear-view walk frames of the haunted frog sheet (4×4), alternating feet. */
 export function chaserFrame(world: RunnerWorld, reducedMotion: boolean): number {
-  return 4 + (!reducedMotion && Math.floor(world.gait * 2) % 2 ? 8 : 0);
+  return 4 + (!reducedMotion && Math.floor(world.drawnGait * 2) % 2 ? 8 : 0);
 }
 
 /** Dog sheets are 4×2: `run` holds an eight-frame gallop, `actions` holds jump/land/slide poses. */
@@ -47,7 +47,7 @@ export function dogPose(world: RunnerWorld, reducedMotion: boolean, falling = fa
   if (world.cycling) return { sheet: "actions", frame: 1 };
   if (world.stumble > 0) return { sheet: "actions", frame: 2 };
   if (reducedMotion || (!falling && !caught && world.phase !== "running")) return { sheet: "actions", frame: 0 };
-  return { sheet: "run", frame: Math.floor(world.gait * 8) % 8 };
+  return { sheet: "run", frame: Math.floor(world.drawnGait * 8) % 8 };
 }
 
 export function dogFall(world: RunnerWorld, reducedMotion: boolean) {

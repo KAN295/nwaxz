@@ -8,8 +8,7 @@ import { ropeReleaseProgress } from "./course.ts";
 import { canAfford, DOG_LOOKS, getDogLook, LEGACY_WARDROBE_KEY, migrateLegacyWardrobe, ORIGINAL_LOOK, readWardrobe, WARDROBE_KEY, type CurrencyPurse } from "./shop.ts";
 import type { RunnerRenderer3D } from "./renderer3d.ts";
 import { FROG_EXTRA_ART } from "../escape/extra-art.ts";
-import { completeMission, MISSIONS_KEY, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText, type Mission, type RunStats } from "./missions.ts";
-import { addRun, CAREER_KEY, GRAPHICS_KEY, GRAPHICS_OPTIONS, readCareer, readGraphics, type Career, type Graphics, type RunSummary } from "./progression.ts";
+import { addRun, CAREER_KEY, GRAPHICS_KEY, GRAPHICS_OPTIONS, readCareer, readGraphics, rewardText, type Career, type Graphics, type RunSummary } from "./progression.ts";
 import { buyUpgrade, checkIn, durationAt, levelOf, LOGIN_KEY, MAX_LEVEL, nextCost, readLogin, readUpgrades, UPGRADABLE, UPGRADES_KEY, upgradedDurations, dayKey } from "./progression.ts";
 import {
   RunnerWorld, RUN_SCENES, RUN_POWERS, CHASE_SECONDS, CHASE_START_GAP, LONG_GAP_START, GOLD_START, DIAMOND_START, NEAR_SCORE, ROLL_START, TURN_HINT_END, RECORD_KEYS, RUSH_SECONDS, CLOCK_SECONDS, DARK_MAX_GAP, LANTERN_GAP, BALLOON_START, REVIVE_GRACE,
@@ -62,7 +61,6 @@ const ICONS = {
   back: '<path d="M15 5l-7 7 7 7"/>',
   shop: '<path d="M5 8h14l-1.2 12H6.2z"/><path d="M9 8V7a3 3 0 0 1 6 0v1"/>',
   upgrade: '<path d="M12 4l6 6h-3.5v9h-5v-9H6z"/>',
-  missions: '<rect x="5" y="4" width="14" height="17" rx="2.5"/><path d="M9 9.5l1.6 1.6L14.5 7.5M9 15h6"/>',
   more: '<circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/>',
 } as const;
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -83,7 +81,6 @@ const NEW_ITEMS: readonly [distance: number, name: string, text: string, kind: s
 ];
 /** What is coming down the lane, by scene. */
 const ROLLING_NAME: Record<number, string> = { 1: "石球滚来了", 2: "矿车冲过来了", 4: "滚石来了", 5: "大雪球滚来了" };
-type RunMission = { slot: number; mission: Mission; done: boolean };
 
 /** Corner prompt: forks and junctions first ask the player to look, then show the way once the turn is due. */
 function turnCue(turn: RunTurn, due: boolean) {
@@ -105,7 +102,6 @@ export class RunnerGame {
   private shopOpen = false;
   private upgradesOpen = false;
   private careerOpen = false;
-  private missionsOpen = false;
   private moreOpen = false;
   private graphicsOpen = false;
   /** Picture effects, all on unless the player turned some off on this device. */
@@ -120,6 +116,7 @@ export class RunnerGame {
   private seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0, coinBags: 0, stars: 0 };
   /** The next of NEW_ITEMS to announce this run. */
   private nextItem = 0;
+  private inFrenzy = false;
   /** Coins in the HUD last frame, to bounce the counter when more come in. */
   private shownPurse = 0;
   private shopQuery = "";
@@ -168,11 +165,7 @@ export class RunnerGame {
   };
   private seenEvents = { power: 0, shield: 0, stumble: 0 };
   private toastTimer = 0;
-  private missions = readMissionBook(null);
-  /** The missions this run plays for (dealt before it started) and which of them it has done. */
-  private runMissions: RunMission[] = [];
-  /** Missions dealt during the last run, for the next one. */
-  private dealt: Mission[] = [];
+
   private seenNear = 0;
   private seenNearScore = 0;
   private nearChain = 0;
@@ -218,7 +211,6 @@ export class RunnerGame {
       pop: $(".runner-pop"), banner: $(".runner-banner"),
     };
     this.loadRecord();
-    try { this.missions = readMissionBook(localStorage.getItem(MISSIONS_KEY)); } catch { this.recordError = true; }
     try {
       const saved = localStorage.getItem(WARDROBE_KEY);
       this.wardrobe = saved ? readWardrobe(saved) : migrateLegacyWardrobe(localStorage.getItem(LEGACY_WARDROBE_KEY));
@@ -337,8 +329,6 @@ export class RunnerGame {
       case "upgrades": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.upgradesOpen = true; this.showPanel(); } return;
       case "upgrades-back": this.upgradesOpen = false; this.showPanel(); return;
       case "career": this.careerOpen = true; this.showPanel(); return;
-      case "missions": this.missionsOpen = true; this.showPanel(); return;
-      case "missions-back": this.missionsOpen = false; this.showPanel(); return;
       case "more": this.moreOpen = true; this.showPanel(); return;
       case "more-back": this.moreOpen = false; this.showPanel(); return;
       case "graphics": this.graphicsOpen = true; this.showPanel(); return;
@@ -502,7 +492,7 @@ export class RunnerGame {
     this.warnedTurn = this.urgentTurn = -1;
   }
 
-  /** A line under the score for milestones, records and missions; several in a row wait their turn. */
+  /** A line under the score for milestones and records; several in a row wait their turn. */
   private banner(html: string, kind: string) {
     this.banners.push({ html, kind });
     if (this.el.banner.hidden) this.nextBanner();
@@ -523,31 +513,6 @@ export class RunnerGame {
     this.popTimer = window.setTimeout(() => { el.hidden = true; }, 900);
   }
 
-  private runStats(): RunStats {
-    const w = this.world;
-    return {
-      mode: w.mode, distance: w.runDistance, silver: w.silver, gold: w.gold, score: w.score, nearMisses: w.nearMisses, doubleJumps: w.doubleJumps, slides: w.slides,
-      forksCleared: w.forksCleared, ridesDone: w.ridesDone, powers: w.powerPicked, shieldSaves: w.shieldSaves, bestMultiplier: w.bestMultiplier, won: w.phase === "won", timeLeft: w.chase?.timeLeft ?? 0,
-    };
-  }
-
-  /** Pays out any mission the run has just done and deals the next one into its slot. */
-  private checkMissions() {
-    if (!this.runMissions.some(entry => !entry.done)) return;
-    const stats = this.runStats();
-    for (const entry of this.runMissions) {
-      if (entry.done || !missionDone(entry.mission, stats)) continue;
-      entry.done = true;
-      for (const key of ["silver", "gold", "diamond"] as const) this.wardrobe[key] = Math.min(1e9, this.wardrobe[key] + (entry.mission.reward[key] ?? 0));
-      this.persistWardrobe();
-      this.missions = completeMission(this.missions, entry.slot);
-      this.dealt.push(missionAt(this.missions.active[entry.slot]));
-      try { localStorage.setItem(MISSIONS_KEY, JSON.stringify(this.missions)); } catch { this.recordError = true; }
-      this.banner(`<b>✓ 任务完成</b><span>${missionText(entry.mission)}</span><em>+${rewardText(entry.mission.reward)}</em>`, "mission");
-      this.audio.effect("win");
-    }
-  }
-
   /** Near misses, rolling hazards setting off, every thousand metres and passing the longest run. */
   private syncMoments() {
     const w = this.world;
@@ -560,6 +525,9 @@ export class RunnerGame {
     }
     if (w.rollsStarted > this.seenRolls) { this.seenRolls = w.rollsStarted; if (w.phase === "running") this.audio.effect("door"); }
     if (w.phase !== "running" || w.chase) return;
+    // A coin frenzy: every coin gold for a stretch, extra lines in every lane.
+    if (w.frenzy && !this.inFrenzy) { this.banner("<b>金币狂欢！</b><span>这一段金币全是金的，三条道都有</span>", "record"); this.audio.effect("chest"); }
+    this.inFrenzy = w.frenzy;
     const fresh = NEW_ITEMS[this.nextItem];
     if (fresh && isLongRun(this.mode) && w.runDistance >= fresh[0]) {
       this.nextItem++;
@@ -634,14 +602,11 @@ export class RunnerGame {
   }
 
   private begin() {
-    this.missionsOpen = this.moreOpen = this.careerOpen = this.graphicsOpen = false;
+    this.moreOpen = this.careerOpen = this.graphicsOpen = false;
     this.endShowcase();
     this.tilt.calibrate(); this.world.start(); this.last = 0;
     this.audio.setMode("normal"); this.audio.setPlaying(true);
     this.holdScreenOn(true);
-    // The run plays for the missions dealt so far; any finished now are replaced from the next run on.
-    this.runMissions = this.missions.active.map((index, slot) => ({ slot, mission: missionAt(index), done: false }));
-    this.dealt = [];
     this.seenNear = this.seenNearScore = this.nearChain = this.seenRolls = 0; this.lastNearAt = -10;
     this.nextMilestone = 1000; this.passedRecord = this.record.distance < 300 || !isLongRun(this.mode);
     this.loginGift = "";
@@ -782,7 +747,6 @@ export class RunnerGame {
 
     this.syncCue();
     this.syncMoments();
-    if (w.phase !== "ready") this.checkMissions();
     if (w.powerPicked !== this.seenEvents.power) {
       this.seenEvents.power = w.powerPicked;
       const info = POWER_INFO[w.lastPower];
@@ -1107,14 +1071,6 @@ export class RunnerGame {
         }).join("")}</div>${status ? `<p class="runner-note" role="status">${status}</p>` : ""}${btn("shop-back", "返回", "ghost")}${note}`;
     } else if (this.careerOpen) {
       html = this.careerHtml(btn);
-    } else if (this.missionsOpen) {
-      html = `<h2>任务</h2><p>已完成 ${this.missions.completed} 个 · 每个任务都要在一局之内完成，奖励马上入账。</p><div class="runner-missions-page">${this.missionsHtml(false)}</div>${btn("missions-back", "返回", "ghost")}`;
-    } else if (this.graphicsOpen) {
-      const names: Record<keyof Graphics, [string, string]> = {
-        post: ["后期效果", "色调、泛光和抗锯齿"], shadows: ["实时阴影", "奶狗附近的障碍和道具投下真实影子"],
-        volumetric: ["体积光", "夜里路灯下和矿洞里的光柱"], wet: ["雨天湿路", "路面变湿反光、积水和雨滴涟漪"],
-      };
-      html = `<h2>画面特效</h2><p>默认全部打开。觉得卡顿时可以关掉开销大的效果；设置只存在这台设备。</p><div class="runner-fx">${GRAPHICS_OPTIONS.map(key => `<div class="runner-fx-row"><div><strong>${names[key][0]}</strong><small>${names[key][1]}</small></div><button data-run="fx-${key}" class="runner-fx-toggle${this.graphics[key] ? " on" : ""}" aria-pressed="${this.graphics[key]}">${this.graphics[key] ? "开" : "关"}</button></div>`).join("")}</div>${btn("graphics-back", "返回", "ghost")}`;
     } else if (this.moreOpen) {
       html = `<h2>更多</h2>${btn("graphics", "画面特效", "ghost")}${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}<div class="runner-row">${gyroRow}</div>${gyroNote}${btn("more-back", "返回", "ghost")}`;
     } else if (this.upgradesOpen) {
@@ -1145,7 +1101,7 @@ export class RunnerGame {
           </div>
           <p class="runner-mode-note">${info.note}</p>
           ${btn("start", info.start, "primary runner-play")}
-          <nav class="runner-lobby-tools">${tool("shop", "商城", "shop")}${tool("upgrades", "升级", "upgrade")}${tool("missions", "任务", "missions")}${tool("more", "更多", "more")}</nav>
+          <nav class="runner-lobby-tools">${tool("shop", "商城", "shop")}${tool("upgrades", "升级", "upgrade")}${tool("more", "更多", "more")}</nav>
           ${gyroNote}${note}
         </footer>`;
     } else if (this.offering) {
@@ -1157,8 +1113,8 @@ export class RunnerGame {
         <p class="runner-offer-wallet">现有 ${this.wardrobe.gold} 金币</p>
         ${btn("offer-skip", "不用了，看结算", "ghost")}`;
     } else if (w.phase === "paused") {
-      // Paused: how the run is going, and how far along each mission is.
-      html = `<h2>暂停</h2><div class="runner-stats runner-stats-4"><span><b>${Math.floor(w.runDistance)}</b>米</span><span><b>${w.score}</b>得分</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>${this.missionsHtml(true)}${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
+      // Paused: how the run is going.
+      html = `<h2>暂停</h2><div class="runner-stats runner-stats-4"><span><b>${Math.floor(w.runDistance)}</b>米</span><span><b>${w.score}</b>得分</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>${btn("resume", "继续")}${btn("restart", "重新开始", "ghost")}<div class="runner-row">${gyroRow}${btn("exit", "主菜单", "ghost")}</div>${gyroNote}`;
     } else {
       // The score counts up the first time the results come up.
       if (this.rollPending) { this.rollPending = false; this.scoreRoll = { to: w.score, start: performance.now() + 250 }; }
@@ -1220,7 +1176,6 @@ export class RunnerGame {
       <div class="runner-stats runner-stats-4"><span><b>${metres}</b>米</span><span><b>${time}</b>用时</span><span><b>${w.silver}</b>银币</span><span><b>${w.gold + w.diamond}</b>金币·钻石</span></div>
       <p class="runner-over-extra">${extra}</p>
       ${progress}
-      ${this.missionsHtml(true)}
       ${btn("restart", again, revive ? "ghost" : "primary")}
       <div class="runner-row">${this.mode !== "endless" ? btn("play-endless", "无限奔跑", "ghost") : ""}${btn("upgrades", "道具升级", "ghost")}${btn("shop", "皮肤商城", "ghost")}${btn("exit", "主菜单", "ghost")}</div>
       <p class="runner-keyhint">按回车${again}</p>${note}`;
@@ -1267,22 +1222,6 @@ export class RunnerGame {
       <div class="runner-upgrades">${rows}</div>${btn("upgrades-back", "返回", "ghost")}${note}`;
   }
 
-  /** The three missions: on the start screen what each pays; after a run how far it got with each, and what comes next. */
-  private missionsHtml(afterRun: boolean) {
-    const stats = this.runStats();
-    const rows = afterRun && this.runMissions.length
-      ? this.runMissions.map(({ mission, done }) => {
-        if (done) return `<li class="done"><span>✓ ${missionText(mission)}</span><em>+${rewardText(mission.reward)}</em></li>`;
-        const value = Math.max(0, Math.min(mission.target, missionValue(mission, stats)));
-        return `<li><span>${missionText(mission)}</span><em>${value} / ${mission.target}</em><i style="width:${Math.round(value / mission.target * 100)}%"></i></li>`;
-      })
-      : this.missions.active.map(index => {
-        const mission = missionAt(index);
-        return `<li><span>${missionText(mission)}</span><em>${rewardText(mission.reward)}</em></li>`;
-      });
-    const next = afterRun && this.dealt.length ? `<p class="runner-missions-next">新任务：${this.dealt.map(missionText).join("；")}</p>` : "";
-    return `<div class="runner-missions"><p class="runner-missions-title">任务<small>已完成 ${this.missions.completed} 个</small></p><ul>${rows.join("")}</ul>${next}</div>`;
-  }
 
   private showHelp() {
     this.el.panel.classList.remove("lobby");

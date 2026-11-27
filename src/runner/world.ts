@@ -179,6 +179,9 @@ export const POWER_UNLOCK: Record<typeof STANDARD_POWERS[number], number> = { sh
 export const COIN_BAG_START = 2000;
 export const STAR_START = 3000;
 const COIN_BAG_CHANCE = .1;
+/** A coin frenzy (every coin gold, extra lines in every lane) from 2200 m, every 900-1300 m, 220 m long. */
+export const FRENZY_START = 2200;
+export const FRENZY_LENGTH = 220;
 const STAR_CHANCE = .08;
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
@@ -320,6 +323,12 @@ export class RunnerWorld {
   revives = 0;
   clocks = 0;
   coinBags = 0;
+  /** Coin frenzies started this run, and the stretch of the current one. */
+  frenzies = 0;
+  private frenzyFrom = Infinity;
+  private frenzyTo = -Infinity;
+  private nextFrenzy = FRENZY_START;
+  private comboRoom = 0;
   /** Power-ups and pickups laid so far this run (a new one is laid as soon as it unlocks). */
   private introduced = new Set<string>();
   /** Gold in the last coin bag picked up. */
@@ -386,6 +395,8 @@ export class RunnerWorld {
   get runDistance() { return this.distance - this.origin; }
   /** The difficulty tier the dog has reached (the short modes stay at the first). */
   get tier() { return this.chase || this.rush ? 1 : tierAt(this.runDistance); }
+  /** Inside a coin frenzy stretch. */
+  get frenzy() { return this.distance >= this.frenzyFrom && this.distance < this.frenzyTo; }
   /** Pace follows the distance run; the chase starts at a brisk 16 m/s, the coin rush at 15. */
   private paceAt(distance: number) { return baseSpeedAt(distance - this.origin + (this.chase ? 330 : this.rush ? 220 : 0)); }
   private get courseSpeed() {
@@ -414,6 +425,23 @@ export class RunnerWorld {
   /** Up among the balloons: over everything, taking corners by itself. */
   get flying() { return this.balloon > 0; }
   get jumpHeight() { return this.mountedRide ? riderHeightAt(this.distance, this.mountedRide, this.rideTakeoff, this.rideTakeoffGrade) : this.altitude; }
+  /*
+   * Drawing runs ahead of the last fixed step by `lag` (60, 120 and 144 Hz screens take 1, 2 or 3 steps a
+   * frame unevenly). These carry each motion on over that time, so nothing on screen moves in fits and starts.
+   */
+  /** Game time as drawn. */
+  get drawnElapsed() { return this.elapsed + this.lag * this.timeScale; }
+  /** Stride as drawn. */
+  get drawnGait() { return this.gait + this.lag * this.timeScale * Math.min(3.6, 1.8 + this.courseSpeed / 20); }
+  /** Height off the road as drawn: the jump arc (or the ride) carried on under gravity. */
+  get drawnJumpHeight() {
+    const lag = this.lag * this.timeScale;
+    if (this.mountedRide) return riderHeightAt(this.distance + lag * this.courseSpeed, this.mountedRide, this.rideTakeoff, this.rideTakeoffGrade);
+    if (lag <= 0 || !this.airborne) return this.altitude;
+    return Math.max(0, this.altitude + this.verticalSpeed * lag - .5 * GRAVITY * lag * lag);
+  }
+  /** Upward speed as drawn (m/s; negative on the way down), for stretching the dog in the air. */
+  get drawnRise() { return this.airborne && !this.mountedRide ? this.verticalSpeed - GRAVITY * this.lag * this.timeScale : 0; }
   get airborne() { return this.altitude > 0 || this.verticalSpeed > 0; }
   get multiplier() { return Math.min(5, 1 + Math.floor(this.streak / 10)); }
   get score() { return Math.floor(this.runDistance) * 10 + this.coinScore + this.nearScore + this.bonusDistanceScore + this.chaseBonus; }
@@ -871,7 +899,8 @@ export class RunnerWorld {
     const roll = this.random();
     // The coin rush pays out gold from the start.
     const goldChance = this.rush ? .15 : z < GOLD_START ? 0 : Math.min(.7, .1 + (z - GOLD_START) / 1300);
-    const tier: CoinTier = z >= DIAMOND_START && roll < DIAMOND_CHANCE ? "diamond" : roll < goldChance ? "gold" : "silver";
+    const frenzy = z >= this.frenzyFrom && z < this.frenzyTo;
+    const tier: CoinTier = z >= DIAMOND_START && roll < DIAMOND_CHANCE ? "diamond" : frenzy || roll < goldChance ? "gold" : "silver";
     this.add(z, lane, "coin", { ...extra, tier });
   }
 
@@ -933,9 +962,11 @@ export class RunnerWorld {
       const landingSpace = longGap ? .42 : 0;
       // A rolling hazard waits further on than where it is met; keep the next row clear of it.
       const rollRoom = this.rolledRow ? 4 : 0; this.rolledRow = false;
+      // A row that ends with a second obstacle (a gate or a jump just after) pushes the next row on by as much.
+      const comboRoom = this.comboRoom; this.comboRoom = 0;
       // Each tier takes .04 s off the time between rows (at most .24 s).
       const tight = this.chase || this.rush ? 0 : Math.min(.24, (tierAt(z - this.origin) - 1) * .04);
-      this.nextRow += speed * (1.15 - tight + early * .6 + landingSpace) + rollRoom + this.random() * 8;
+      this.nextRow += speed * (1.15 - tight + early * .6 + landingSpace) + rollRoom + comboRoom + this.random() * 8;
     }
   }
 
@@ -970,6 +1001,11 @@ export class RunnerWorld {
     const scene = sceneAt(z);
     const roll = this.random();
     const tier = this.chase || this.rush ? 1 : tierAt(z - this.origin);
+    if (isLongRun(this.mode) && z - this.origin >= this.nextFrenzy) {
+      this.frenzyFrom = z; this.frenzyTo = z + FRENZY_LENGTH; this.frenzies++;
+      this.nextFrenzy = z - this.origin + 900 + this.random() * 400;
+    }
+    const frenzy = z >= this.frenzyFrom && z < this.frenzyTo;
     const pattern = this.rows++;
     let free = Math.floor(this.random() * 3);
     let jumpArc = false;
@@ -993,6 +1029,8 @@ export class RunnerWorld {
       const lane = Math.floor(this.random() * 3), kind = scene === 2 ? "runaway-cart" : "boulder";
       this.add(z + ROLL_TRAVEL, lane, kind, { roll: ROLL_SPEED[kind] });
       free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
+      // From the fifth tier, sometimes two come down side by side and only one lane is free.
+      if (tier >= 5 && this.random() < .4) this.add(z + ROLL_TRAVEL, 3 - lane - free, kind, { roll: ROLL_SPEED[kind] });
       this.rolledRow = true;
     } else if (roll < .62) {
       // A single two-lane obstacle leaves one clear route.
@@ -1005,18 +1043,25 @@ export class RunnerWorld {
       const section = sectionFeature(after);
       // It lies past the row, where the next corner may not be laid yet: keep clear of that one too.
       const clear = !this.nearTurn(after) && after + 45 < this.nextTurn && !(section && after > section.start - 26 && after < section.end + 23);
-      if (tier >= 3 && clear && this.random() < Math.min(.35, (tier - 2) * .07)) this.add(after, 1, "beam", { span: 3 });
+      if (tier >= 3 && clear && this.random() < Math.min(.35, (tier - 2) * .07)) { this.add(after, 1, "beam", { span: 3 }); this.comboRoom = after - z; }
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
       const kind = this.pick(WHOLE_ROAD[scene] ?? WHOLE_ROAD[0]);
       this.add(z, 1, kind, { span: 3 });
       free = 1; jumpArc = kind !== "beam";
+      // From the fourth tier, a low gate is sometimes followed by something to jump: slide, then jump.
+      const leap = (WHOLE_ROAD[scene] ?? WHOLE_ROAD[0]).filter(other => other !== "beam");
+      const after = z + this.paceAt(z) * .7, section = sectionFeature(after);
+      const clear = !this.nearTurn(after) && after + 45 < this.nextTurn && !(section && after > section.start - 26 && after < section.end + 23);
+      if (kind === "beam" && tier >= 4 && leap.length && clear && this.random() < .3) { this.add(after, 1, this.pick(leap), { span: 3 }); this.comboRoom = after - z; }
     }
 
     // Coins: a line leading into the free lane, or an arc over a jump.
     if (longGap) for (let i = -2; i <= 2; i++) this.addCoin(z + i * longGapDepth / 2, free, { y: 1 + 1.2 * (1 - (i / 2) ** 2) });
     else if (jumpArc) for (let i = -2; i <= 2; i++) this.addCoin(z + i * 1.8, free, { y: .8 + 1.1 * (1 - (i / 2.6) ** 2) });
     else for (let i = 0; i < 5; i++) this.addCoin(z - 10 + i * 2.6, free);
+    if (frenzy) for (const lane of [0, 1, 2]) for (let i = 0; i < 4; i++) this.addCoin(z + 4 + i * 2.4, lane);
+    else if (tier >= 4 && !longGap && this.random() < .25) for (let i = 0; i < 8; i++) this.addCoin(z + 5 + i * 2, [0, 1, 2, 1][(i + free) % 4], { y: .8 });
     if (this.rush) {
       // The coin rush: a second, denser line just after each row, and a clock every few rows.
       const lane = this.pick([0, 1, 2]);

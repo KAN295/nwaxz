@@ -8,7 +8,6 @@ import { BEND_LENGTH, BEND_SLACK, CORNER_RADIUS, RunnerRoute3D } from '../src/ru
 import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
 import { RunnerTilt } from '../src/runner/tilt.ts';
 import { readWardrobe, migrateLegacyWardrobe, canAfford, DOG_LOOKS } from '../src/runner/shop.ts';
-import { completeMission, missionAt, missionDone, missionText, missionValue, readMissionBook, rewardText } from '../src/runner/missions.ts';
 import { addRun, buyUpgrade, checkIn, durationAt, levelOf, readCareer, readGraphics, readLogin, readUpgrades, upgradedDurations } from '../src/runner/progression.ts';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { Scene } from '@babylonjs/core/scene.js';
@@ -441,8 +440,8 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
       drive(w); w.advance(1 / 120);
     }
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
-    assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
-    assert.ok(maxItems < 140, `seed ${seed}: at most ${maxItems} items at once`);
+    assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 120, `seed ${seed}: ${w.items.length} items left`); // coin frenzies add lines in every lane assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
+    assert.ok(maxItems < 170, `seed ${seed}: at most ${maxItems} items at once`);
     assert.equal(earlyPickups.size, 2, `seed ${seed}: double score and the hourglass both turn up before 2000 m`);
     // The canal zipline, the log bridge and the mine cart all come before 3 km.
     assert.ok(w.ridesDone >= 3, `seed ${seed}: finished ${w.ridesDone} rides`);
@@ -559,7 +558,7 @@ test('boulders and runaway carts set off toward the dog and are met about where 
   run(snow, 4); assert.equal(snow.reason, '被滚下来的大雪球撞倒了');
 });
 
-test('run tallies count second jumps and slides for missions', () => {
+test('run tallies count second jumps and slides', () => {
   const w = new RunnerWorld(3); w.start(); w.items = []; w.turns = []; w.nextRow = w.nextTurn = Infinity;
   w.action('jump'); w.action('jump'); w.action('jump'); assert.equal(w.doubleJumps, 1);
   run(w, 1); w.action('slide'); w.action('slide'); assert.equal(w.slides, 1, 'pressing again mid-slide is one slide');
@@ -702,39 +701,6 @@ test('capture keeps the last running pose before contact and lifts the dog befor
   assert.equal(dogPose(w, false).frame, 2);
   assert.equal(captureMotion(w.captureTime, true).tilt, 0);
   assert.equal(captureMotion(2.4, false).orbit, 1);
-});
-
-test('missions: three at a time, dealt in order, repeating harder after the opening list', () => {
-  const fresh = readMissionBook(null);
-  assert.deepEqual(fresh, { version: 1, next: 3, active: [0, 1, 2], completed: 0 });
-  for (const raw of ['{"version":2}', '{"version":1,"next":3,"active":[0,1],"completed":0}', '{"version":1,"next":3,"active":[0,0,1],"completed":0}', '{"version":1,"next":2,"active":[0,1,2],"completed":0}', '{"version":1,"next":3,"active":[0,1,-2],"completed":0}', 'nope'])
-    assert.deepEqual(readMissionBook(raw), fresh, raw);
-  const after = completeMission(fresh, 1);
-  assert.deepEqual(after, { version: 1, next: 4, active: [0, 3, 2], completed: 1 });
-  assert.deepEqual(readMissionBook(JSON.stringify(after)), after);
-  // Every mission reads as a sentence, pays something, and later rounds ask for more.
-  for (let i = 0; i < 80; i++) {
-    const mission = missionAt(i);
-    assert.ok(missionText(mission).length > 3 && rewardText(mission.reward).length > 2, `mission ${i}`);
-    assert.ok(mission.target > 0);
-  }
-  const later = (kind, from) => { for (let i = from; ; i++) if (missionAt(i).kind === kind) return missionAt(i); };
-  assert.ok(later('near', 40).target < later('near', 80).target);
-  assert.equal(rewardText({ gold: 3 }), '3 金币'); assert.equal(rewardText({ silver: 40, diamond: 1 }), '40 银币 · 1 钻石');
-});
-
-test('missions count a run the way it was played', () => {
-  const w = new RunnerWorld(7, 'endless'); w.start();
-  for (let tick = 0; tick < 120 * 60 && w.phase === 'running'; tick++) { drive(w); w.advance(1 / 120); }
-  const stats = { mode: 'endless', distance: w.runDistance, silver: w.silver, gold: w.gold, score: w.score, nearMisses: w.nearMisses, doubleJumps: w.doubleJumps, slides: w.slides, forksCleared: w.forksCleared, ridesDone: w.ridesDone, powers: w.powerPicked, shieldSaves: w.shieldSaves, bestMultiplier: w.bestMultiplier, won: false, timeLeft: 0 };
-  assert.equal(missionValue(missionAt(0), stats), Math.floor(w.runDistance));
-  assert.equal(missionDone({ kind: 'distance', target: 500, reward: {} }, stats), w.runDistance >= 500);
-  assert.equal(missionValue({ kind: 'distance', target: 500, reward: {} }, { ...stats, mode: 'chase' }), 0, 'distance missions are for endless runs');
-  assert.equal(missionValue({ kind: 'chase-win', target: 1, reward: {} }, stats), 0);
-  assert.equal(missionValue({ kind: 'chase-time', target: 20, reward: {} }, { ...stats, mode: 'chase', won: true, timeLeft: 24.6 }), 24);
-  for (const [kind, value] of [['slide', w.slides], ['near', w.nearMisses], ['multiplier', w.bestMultiplier], ['silver', w.silver], ['powers', w.powerPicked], ['score', w.score]])
-    assert.equal(missionValue({ kind, target: 1, reward: {} }, stats), value, kind);
-  assert.ok(w.runDistance > 500 && w.bestMultiplier >= 1);
 });
 
 test('record parser rejects corrupt or foreign records', () => {
@@ -1073,4 +1039,20 @@ test('items arrive with distance: each power-up soon after its own distance, the
   assert.equal(b.gold - gold, 2 + 3); assert.equal(b.coinBags, 1);
   b.items = [{ id: 2, kind: 'star', lane: b.lane, z: b.distance + 2, done: false }]; const before = b.multiplier; run(b, .3);
   assert.equal(b.multiplier, Math.min(5, before + 1)); assert.equal(b.stars, 1);
+});
+
+test('late tiers bring new patterns and stay solvable: coin frenzies, slide-then-jump runs, twin rollers, coin snakes', () => {
+  let frenzies = 0, twins = 0, gold = 0;
+  for (const seed of [3, 8, 21, 34]) {
+    const w = new RunnerWorld(seed); w.start(); skipTo(w, w.origin + 3400); w.nextRow = w.distance + 40; w.turns = []; w.nextTurn = Infinity;
+    const rollers = new Map();
+    for (let t = 0; t < 120 * 150 && w.phase === 'running' && w.runDistance < 6600; t++) {
+      for (const i of w.items) if (i.roll && !rollers.has(i.id)) { rollers.set(i.id, i.z); if ([...rollers.values()].filter(z => Math.abs(z - i.z) < .01).length === 2) twins++; }
+      drive(w); w.advance(1 / 120);
+    }
+    assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.runDistance)}`);
+    assert.ok(w.runDistance >= 6600 && w.tier >= 7);
+    frenzies += w.frenzies; gold += w.gold;
+  }
+  assert.ok(frenzies >= 8, `${frenzies} coin frenzies`); assert.ok(twins >= 1, 'two rollers side by side'); assert.ok(gold > 200);
 });

@@ -2855,7 +2855,7 @@ export class RunnerRenderer3D {
     const theme = world.sceneIndex, look = this.themes[theme], night = world.night;
     const weather = world.weather; // already sunny underground and snowing on the snowfield
     const capture = world.phase === "caught" || world.phase === "lost" || (world.phase === "paused" && world.reason !== "");
-    const t = world.elapsed + (capture ? world.captureTime : 0);
+    const t = world.drawnElapsed + (capture ? world.captureTime : 0);
     this.idleClock += dt;
     // On the menu the camera looks at the dog from the front; a new run swings it round behind.
     const intro = this.introProgress(world);
@@ -2918,24 +2918,26 @@ export class RunnerRenderer3D {
       this.dog.frame(this.sheets[pose.sheet]!, pose.frame, 4, 2);
     }
     // Only the default dog has front views: standing happy on the menu, trotting off as the run starts.
-    if (heroFront && !capture) this.dog.frame(this.sheets.actions!, world.phase === "ready" || Math.floor(world.gait * 4) % 2 ? 4 : 5, 4, 2);
+    if (heroFront && !capture) this.dog.frame(this.sheets.actions!, world.phase === "ready" || Math.floor(world.drawnGait * 4) % 2 ? 4 : 5, 4, 2);
     const bike = world.cycling && !capture;
     const lift = bike ? this.drawBike(world, player, centre.heading) : 0;
     this.bicycle.setEnabled(bike);
     const rope = world.ride?.kind === "rope" ? world.ride : undefined;
-    const release = rope ? ropeReleaseProgress(world.distance, rope) : 0;
+    const release = rope ? ropeReleaseProgress(view, rope) : 0;
     // Squash on touchdown (rope release or any jump), stretch just after take-off.
     const animate = !this.settings.reducedMotion && !capture;
-    const land = animate ? Math.max(0, 1 - (world.elapsed - world.ropeLandedAt) / .16, 1 - (world.elapsed - world.landedAt) / .14) : 0;
-    const takeoff = animate && world.airborne ? Math.max(0, 1 - (world.elapsed - world.jumpedAt) / .18) : 0;
+    const sinceLand = Math.min(world.drawnElapsed - world.ropeLandedAt, world.drawnElapsed - world.landedAt);
+    const land = animate && sinceLand >= 0 && sinceLand < .2 ? Math.sin(Math.PI * sinceLand / .2) * (1 - sinceLand / .2) * 1.6 : 0;
+    // Stretched along the way it is moving, most just after take-off and just before landing, round at the top.
+    const takeoff = animate ? Math.min(1, Math.abs(world.drawnRise) / 10) * .85 : 0;
     const squash = (pose.sheet === "actions" && pose.frame === 3 ? .1 : 0) + land * .08;
     const motion = !capture && !this.settings.reducedMotion;
     // A gallop bounces once a stride.
-    const gallop = motion && pose.sheet === "run" && !this.schoolSheet ? Math.sin(Math.PI * world.gait) ** 2 * .07 : 0;
+    const gallop = motion && pose.sheet === "run" && !this.schoolSheet ? Math.sin(Math.PI * world.drawnGait) ** 2 * .07 : 0;
     // Waiting on the menu the dog breathes and gives a little hop now and then.
     const waiting = world.phase === "ready" && !this.settings.reducedMotion, beat = this.idleClock % 4.2;
     const idleHop = waiting && beat < .42 ? Math.sin(Math.PI * beat / .42) * .32 : 0, breathe = waiting ? Math.sin(this.idleClock * 2.7) * .022 : 0;
-    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.jumpHeight + lift - squash - fall.drop + gallop + idleHop, player.z + fz * fall.forward);
+    this.dog.root.position.set(player.x + fx * fall.forward, player.y + DOG_SIZE * DOG_FEET + world.drawnJumpHeight + lift - squash - fall.drop + gallop + idleHop, player.z + fz * fall.forward);
     const roll = this.schoolSheet ? fall.roll : fall.roll * .66;
     // Hanging from the zipline or the balloons the body swings like a pendulum: steering throws it out
     // to the side, then it swings back and settles. On the ground it straightens up again.
@@ -2956,7 +2958,7 @@ export class RunnerRenderer3D {
     this.dog.material.alpha = 1;
     if (falling && world.fallObstacle) {
       const surface = this.fallSurface(world, world.fallObstacle);
-      const below = surface - player.y - world.jumpHeight + fall.drop;
+      const below = surface - player.y - world.drawnJumpHeight + fall.drop;
       this.dog.material.alpha = Math.min(1, Math.max(0, (1.35 - below) / .45));
       if (!this.waterImpact && below > .28 && world.phase === "caught") {
         this.waterImpact = true; this.splashes++;
@@ -2981,7 +2983,7 @@ export class RunnerRenderer3D {
     const springs = world.spring > 0 && !capture && !world.ride && !world.flying && !bike;
     this.springFeet.setEnabled(springs);
     if (springs) {
-      this.springFeet.position.set(player.x, player.y + world.jumpHeight - .02, player.z);
+      this.springFeet.position.set(player.x, player.y + world.drawnJumpHeight - .02, player.z);
       this.springFeet.rotation.y = centre.heading;
       this.springFeet.scaling.set(1, 1 - land * .45 + takeoff * .5, 1);
     }
@@ -2989,19 +2991,19 @@ export class RunnerRenderer3D {
     const lantern = world.mode === "dark" && !falling;
     this.dogLantern.setEnabled(lantern);
     if (lantern) {
-      this.dogLantern.position.set(player.x + fx * .6, player.y + 1.1 + world.jumpHeight, player.z + fz * .6);
+      this.dogLantern.position.set(player.x + fx * .6, player.y + 1.1 + world.drawnJumpHeight, player.z + fz * .6);
       this.dogLantern.scaling.setAll(1 + (motion ? Math.sin(t * 7) * .04 : 0));
     }
     this.skinHalo.setEnabled((world.fruit > 0 || this.dogLook !== "original") && !capture && !world.ride && world.phase !== "ready");
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(world.fruit > 0 ? "#ffcf41" : getDogLook(this.dogLook).color);
       (this.skinHalo.material as StandardMaterial).emissiveColor.copyFrom(hue);
-      this.skinHalo.position.set(player.x, player.y + .08 + world.jumpHeight + lift, player.z);
+      this.skinHalo.position.set(player.x, player.y + .08 + world.drawnJumpHeight + lift, player.z);
       this.skinHalo.scaling.setAll(1 + Math.sin(t * 5) * .07);
     }
     const overGap = world.items.some(gap => (gap.kind === "gap" || gap.kind === "long-gap") && Math.abs(gap.z - world.distance) < obstacleHalfDepth(gap.kind, gap.z) && coversLane(gap, world.position, .6));
     this.shadow.position.set(player.x, player.y + .03, player.z); this.shadow.rotation.set(this.roadPitch(world.distance), centre.heading, 0);
-    this.shadow.scaling.setAll(Math.max(.4, 1 - world.jumpHeight * .25));
+    this.shadow.scaling.setAll(Math.max(.4, 1 - world.drawnJumpHeight * .25));
     this.shadow.setEnabled(!falling && !overGap && !world.ride);
 
     this.drawEffects(world, player, t, dt, capture, lift);
@@ -3042,7 +3044,7 @@ export class RunnerRenderer3D {
       this.frogBack += (target - this.frogBack) * ease(intro < 1 ? 2.2 : 6);
       this.frogSide += (sideTarget - this.frogSide) * ease(5);
       const back = this.frogBack, side = this.frogSide;
-      const stride = lurking || pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .14;
+      const stride = lurking || pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.drawnGait * Math.PI * 2)) * .14;
       const spread = lurking ? 2.2 : 1.45;
       frog.root.position.set(base.x - fx * back + rx * side * spread, elevationAt(world.distance - back) + centreHeight + stride, base.z - fz * back + rz * side * spread);
       frog.tint(lurking ? .62 : 1);
@@ -3095,7 +3097,7 @@ export class RunnerRenderer3D {
     const lunging = world.hunt ? world.hunt.gap < 4.5 : world.danger > 6.8;
     if (lunging) return { sheet: Math.floor(t * 5) % 2 ? "grab" : "stalkB" };
     if (!world.hunt && world.danger > 0 && world.danger < .9 && world.elapsed > 4) return { sheet: "search" };
-    return { sheet: Math.floor(world.gait * 2) % 2 ? "stalk" : "stalkB" };
+    return { sheet: Math.floor(world.drawnGait * 2) % 2 ? "stalk" : "stalkB" };
   }
 
   /**
@@ -3154,7 +3156,7 @@ export class RunnerRenderer3D {
     // Over a zipline it hangs from the cable like the dog does.
     const hang = ride?.kind === "rope" && z > ride.start && z < ride.end ? Math.max(0, riderHeightAt(z, ride)) : 0;
     const done = world.phase !== "running" && world.phase !== "paused";
-    const bob = done ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .12 * motion;
+    const bob = done ? 0 : Math.abs(Math.sin(world.drawnGait * Math.PI * 2)) * .12 * motion;
     frog.root.position.set(at.x, at.y + hang + FROG_SIZE * FROG_FEET + bob, at.z);
     frog.material.alpha = 1;
     frog.root.setEnabled(true);
@@ -3639,11 +3641,13 @@ export class RunnerRenderer3D {
 
     this.ropeHandle.setEnabled(mounted?.kind === "rope");
     if (mounted?.kind === "rope") {
-      const height = ropeHeightAt(world.distance, mounted);
-      const board = Math.min(1, (world.distance - mounted.start) / (ROPE_GRAB_DISTANCE * .55));
-      const spring = Math.min(1, ropeReleaseProgress(world.distance, mounted) * 4);
+      // Where the dog is drawn along the cable (the last step carried on), so the handle keeps pace with it.
+      const along = world.distance + world.lag * world.speed;
+      const height = ropeHeightAt(along, mounted);
+      const board = Math.min(1, (along - mounted.start) / (ROPE_GRAB_DISTANCE * .55));
+      const spring = Math.min(1, ropeReleaseProgress(along, mounted) * 4);
       const attached = Math.max(0, Math.min(1, board)) * (1 - spring);
-      const hand = height - player.y - world.jumpHeight - DOG_SIZE * DOG_FEET - .25;
+      const hand = height - player.y - world.drawnJumpHeight - DOG_SIZE * DOG_FEET - .25;
       const grip = .18 + (Math.max(.21, hand) - .18) * attached;
       const swing = lateral * attached;
       this.ropeHandle.position.set(centre.x, height, centre.z);
@@ -3661,7 +3665,7 @@ export class RunnerRenderer3D {
     const bump = Math.sin(Math.PI / 2 * progress);
     const rise = obstacle?.kind === "block" ? 1.04 * bump : .61 * bump;
     const tilt = this.settings.reducedMotion ? 0 : .27 * bump;
-    this.bicycle.position.set(player.x, player.y + world.jumpHeight + rise, player.z);
+    this.bicycle.position.set(player.x, player.y + world.drawnJumpHeight + rise, player.z);
     this.bicycle.rotation.set(this.roadPitch(world.distance) - tilt, heading - (this.settings.reducedMotion ? 0 : .12), this.settings.reducedMotion ? 0 : (world.lane - world.position) * .18);
     for (const wheel of this.bikeWheels) wheel.rotation.x = -world.distance / .4;
     return .72 + rise;
@@ -3865,7 +3869,7 @@ export class RunnerRenderer3D {
   }
 
   private drawEffects(world: RunnerWorld, player: Vector3, t: number, dt: number, capture: boolean, lift: number) {
-    const at = this.effectAt.set(player.x, player.y + .9 + world.jumpHeight + lift, player.z);
+    const at = this.effectAt.set(player.x, player.y + .9 + world.drawnJumpHeight + lift, player.z);
     const coinAt = this.coinAt.set(at.x, at.y + .3, at.z);
     for (const [tier, system] of [["silver", this.silverSparks], ["gold", this.sparks], ["diamond", this.diamondSparks]] as const) {
       if (world[tier] > this.seen[tier]) this.burst(system, coinAt, Math.min(30, (world[tier] - this.seen[tier]) * 8));
@@ -3903,7 +3907,7 @@ export class RunnerRenderer3D {
     // Rain splashes instead of raising dust, except underground.
     const rainy = world.weather === "rain" && world.sceneIndex !== 2;
     const colours = rainy ? SPLASH : DUST[world.sceneIndex];
-    const feet = this.feetAt.set(player.x, player.y + .06 + world.jumpHeight, player.z);
+    const feet = this.feetAt.set(player.x, player.y + .06 + world.drawnJumpHeight, player.z);
     const onFoot = !capture && !world.ride && !world.cycling;
     if (world.landedAt > this.seen.landed) { if (onFoot) this.burst(this.dust, feet, 12, colours); this.seen.landed = world.landedAt; }
     if (world.slides > this.seen.slides) { if (onFoot && !world.airborne) this.burst(this.dust, feet, 10, colours); this.seen.slides = world.slides; }
@@ -3944,15 +3948,15 @@ export class RunnerRenderer3D {
     const magnetOn = !capture && (golden || world.magnet > 0);
     this.magnetRing.setEnabled(magnetOn);
     if (magnetOn) {
-      this.magnetRing.position.set(player.x, player.y + .15 + world.jumpHeight + lift + Math.sin(t * 6) * .12 * motion, player.z);
+      this.magnetRing.position.set(player.x, player.y + .15 + world.drawnJumpHeight + lift + Math.sin(t * 6) * .12 * motion, player.z);
       this.magnetRing.rotation.y = t * 4; this.magnetRing.scaling.setAll(1 + Math.sin(t * 9) * .08 * motion);
       (this.magnetRing.material as StandardMaterial).alpha = world.magnet < 3 && Math.floor(t * 8) % 2 === 0 ? .25 : .8;
     }
     // Boost: golden glow under the dog plus speed lines (in drawWeather) and wider FOV.
     const boostOn = !capture && world.invincible;
     this.boostGlow.setEnabled(boostOn);
-    if (boostOn) { this.boostGlow.position.set(player.x, player.y + .05 + world.jumpHeight, player.z); this.boostGlow.rotation.y = Math.atan2(player.x - this.camera.position.x, player.z - this.camera.position.z); }
-    if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, player.y + .5 + world.jumpHeight, player.z), 2, POWER_COLORS.boost);
+    if (boostOn) { this.boostGlow.position.set(player.x, player.y + .05 + world.drawnJumpHeight, player.z); this.boostGlow.rotation.y = Math.atan2(player.x - this.camera.position.x, player.z - this.camera.position.z); }
+    if (boostOn && Math.random() < .5) this.burst(this.magic, new Vector3(player.x, player.y + .5 + world.drawnJumpHeight, player.z), 2, POWER_COLORS.boost);
   }
 
   private drawCapture(world: RunnerWorld, player: Vector3, heading: number, motion: ReturnType<typeof captureMotion>) {
@@ -3982,7 +3986,7 @@ export class RunnerRenderer3D {
 
     dog.position.subtractInPlace(forward.scale(.52 * reach + .73 * lift));
     dog.position.subtractInPlace(right.scale(side * .80 * lift));
-    dog.position.y += height - world.jumpHeight * reach;
+    dog.position.y += height - world.drawnJumpHeight * reach;
     dog.rotation.z = side * tilt;
     // Face each sprite toward the moving camera, including when it crosses the side of the road.
     for (const actor of [frog.root, dog]) {
@@ -3992,7 +3996,7 @@ export class RunnerRenderer3D {
     }
     this.shadow.position.x = dog.position.x;
     this.shadow.position.z = dog.position.z;
-    this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
+    this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.drawnJumpHeight * (1 - reach)) * .35));
   }
 
   /**
@@ -4272,9 +4276,9 @@ export class RunnerRenderer3D {
       const bx = centre.x + rx * this.camLateral, bz = centre.z + rz * this.camLateral;
       // The camera rises with a jump a little, and goes right up with the balloons.
       this.camRise += ((world.flying ? 1 : 0) - this.camRise) * k(3);
-      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * (.14 + .78 * this.camRise);
+      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.drawnJumpHeight * (.14 + .78 * this.camRise);
       this.cameraPos.set(bx - fx * back, elevationAt(view - back) + height, bz - fz * back);
-      this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.jumpHeight * (.2 + .6 * this.camRise), bz + fz * 7);
+      this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.drawnJumpHeight * (.2 + .6 * this.camRise), bz + fz * 7);
       if (intro < 1) {
         // A low three-quarter view of the dog from in front, drifting a little while the menu is up.
         const drift = world.phase === "ready" ? Math.sin(this.idleClock * .23) * .2 : 0;
