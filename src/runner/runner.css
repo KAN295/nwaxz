@@ -432,3 +432,9 @@
 .runner-lobby .runner-showcase-tag .runner-look-name{padding:0;border:0;background:none}
 .runner-lobby .runner-showcase-tag small{font-size:11px;color:var(--gold)}
 .runner-lobby .runner-showcase-tag .runner-look-name{max-width:min(78vw,340px);white-space:normal;overflow:visible;text-overflow:clip;text-align:center;line-height:1.3}
+
+/* The difficulty tier, beside the distance from the second tier on. */
+.runner-tier{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:rgba(232,85,58,.85);color:#fff;font:800 11px/1.4 system-ui;font-style:normal;letter-spacing:.05em;vertical-align:middle}
+/* New pickups in the HUD toasts. */
+.runner-toast[data-kind="coin-bag"]{border-color:rgba(255,180,58,.6)}
+.runner-toast[data-kind="star"]{border-color:rgba(255,228,90,.6)}

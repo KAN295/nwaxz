@@ -75,6 +75,12 @@ const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 const SCENE_LABEL_SECONDS = 3.2;
 /** Cheers for each thousand metres of an endless run. */
 const MILESTONE_CHEERS = ["好样的！", "跑得漂亮！", "势不可挡！", "奶蛙望尘莫及！", "传说中的奶狗！"];
+/** New items, in the order a long run brings them in, with what they do. */
+const NEW_ITEMS: readonly [distance: number, name: string, text: string, kind: string][] = [
+  [400, "双倍得分", "捡到后一段时间得分翻倍", "double"], [700, "飞鞋冲刺", "冲得更快，撞上东西也不怕", "boost"],
+  [1000, "沙漏", "一切放慢一会儿，更好躲", "slow"], [1500, "弹簧鞋", "跳得更高，滚石也能一跳而过", "spring"],
+  [2000, "金币袋", "捡到立刻得金币，越往后越多", "coin-bag"], [3000, "幸运星", "连击倍数立刻升一级", "star"],
+];
 /** What is coming down the lane, by scene. */
 const ROLLING_NAME: Record<number, string> = { 1: "石球滚来了", 2: "矿车冲过来了", 4: "滚石来了", 5: "大雪球滚来了" };
 type RunMission = { slot: number; mission: Mission; done: boolean };
@@ -111,7 +117,9 @@ export class RunnerGame {
   /** The day's check-in reward, shown once on the start screen. */
   private loginGift = "";
   /** Pickups and revives already reported, so each is announced once. */
-  private seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 };
+  private seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0, coinBags: 0, stars: 0 };
+  /** The next of NEW_ITEMS to announce this run. */
+  private nextItem = 0;
   /** Coins in the HUD last frame, to bounce the counter when more come in. */
   private shownPurse = 0;
   private shopQuery = "";
@@ -482,7 +490,7 @@ export class RunnerGame {
   private newWorld() {
     // The daily run uses the day's seed, so everyone gets the same course; every run gets the upgrades bought.
     this.world = new RunnerWorld(this.mode === "daily" ? dailySeed(new Date()) : newSeed(), this.mode, { durations: upgradedDurations(this.upgrades) });
-    this.seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0 }; this.shownPurse = 0;
+    this.seenPickups = { chests: 0, clocks: 0, lanterns: 0, revives: 0, coinBags: 0, stars: 0 }; this.shownPurse = 0; this.nextItem = 0;
     this.shownScene = -1;
     this.captureAudio = "waiting"; this.offerUntil = 0; this.rollPending = false; this.scoreRoll = undefined;
     this.shopOpen = false; this.credited = { silver: 0, gold: 0, diamond: 0 };
@@ -552,9 +560,16 @@ export class RunnerGame {
     }
     if (w.rollsStarted > this.seenRolls) { this.seenRolls = w.rollsStarted; if (w.phase === "running") this.audio.effect("door"); }
     if (w.phase !== "running" || w.chase) return;
+    const fresh = NEW_ITEMS[this.nextItem];
+    if (fresh && isLongRun(this.mode) && w.runDistance >= fresh[0]) {
+      this.nextItem++;
+      this.toast(`<b>新道具：${fresh[1]}</b>${fresh[2]}`, fresh[3], 2.4);
+    }
     if (w.runDistance >= this.nextMilestone) {
       const k = this.nextMilestone / 1000;
-      this.banner(`<b>${this.nextMilestone} 米</b><span>${MILESTONE_CHEERS[Math.min(MILESTONE_CHEERS.length - 1, k - 1)]}</span>`, "milestone");
+      // Every 1000 m is a new difficulty tier: faster, with less time between rows.
+      const cheer = MILESTONE_CHEERS[Math.min(MILESTONE_CHEERS.length - 1, k - 1)];
+      this.banner(`<b>${this.nextMilestone} 米${w.tier > 1 ? ` · 难度 ${w.tier}` : ""}</b><span>${w.tier > 1 ? `更快、更密 · ${cheer}` : cheer}</span>`, "milestone");
       this.audio.effect("coin");
       this.nextMilestone += 1000;
     }
@@ -747,7 +762,7 @@ export class RunnerGame {
     el.main.classList.toggle("runner-chased", w.phase === "running" && w.danger > 0);
     el.main.classList.toggle("runner-boost", w.phase === "running" && w.boost > 0);
     el.main.classList.toggle("runner-golden", w.phase === "running" && w.fruit > 0);
-    set(el.distance, `${Math.floor(w.runDistance)}<small>米</small>`);
+    set(el.distance, `${Math.floor(w.runDistance)}<small>米</small>${w.tier > 1 ? `<em class="runner-tier">难度 ${w.tier}</em>` : ""}`);
     this.syncChase();
     set(el.score, String(w.score));
     // Each currency with its own coin; the pill gives a little bounce whenever something comes in.
@@ -793,6 +808,8 @@ export class RunnerGame {
       this.audio.effect("chest"); this.vibrate([20, 30, 40]);
     }
     if (w.clocks > this.seenPickups.clocks) { this.seenPickups.clocks = w.clocks; this.pop(`<b>+${CLOCK_SECONDS} 秒</b>`); this.audio.effect("power"); }
+    if (w.coinBags > this.seenPickups.coinBags) { this.seenPickups.coinBags = w.coinBags; this.pop(`<b>金币袋</b><span>+${w.lastBag} 金币</span>`); this.audio.effect("chest"); }
+    if (w.stars > this.seenPickups.stars) { this.seenPickups.stars = w.stars; this.pop(`<b>幸运星</b><span>连击 ×${w.multiplier}</span>`); this.audio.effect("power"); }
     if (w.lanterns > this.seenPickups.lanterns) { this.seenPickups.lanterns = w.lanterns; this.pop(`<b>灯笼</b><span>奶蛙退后 ${LANTERN_GAP} 米</span>`); this.audio.effect("power"); }
     if (w.stumbles > this.seenEvents.stumble) {
       this.seenEvents.stumble = w.stumbles;

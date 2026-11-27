@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { RunnerWorld, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, CHASE_START, CHASE_SECONDS, CHASE_START_GAP, CHASE_CATCH, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, NEAR_SCORE, ROLL_START, ROLL_TRAVEL, ROLL_SPEED, FLY_HEIGHT, REVIVE_COST, RUSH_SECONDS, CLOCK_SECONDS, DARK_START_GAP, LANTERN_GAP, dailySeed, isLongRun, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
+import { RunnerWorld, POWER_UNLOCK, COIN_BAG_START, STAR_START, TIER_DISTANCE, TOP_TIER, tierAt, BIKE_START, FRUIT_START, LONG_GAP_START, BRIDGE_FORK_BREAK, CHASE_START, CHASE_SECONDS, CHASE_START_GAP, CHASE_CATCH, FORK_BRIDGE_BREAK, FORK_CHANCE, SHAFT_EDGE, TURN_HINT_END, NEAR_SCORE, ROLL_START, ROLL_TRAVEL, ROLL_SPEED, FLY_HEIGHT, REVIVE_COST, RUSH_SECONDS, CLOCK_SECONDS, DARK_START_GAP, LANTERN_GAP, dailySeed, isLongRun, readRunRecord, isRunObstacle, isRunPower, obstacleHalfDepth, weatherAt, nightAt, sceneAt, sceneWeather } from '../src/runner/world.ts';
 import { CAPTURE_GRAB_AT, CAPTURE_LAUGH_AT, captureMotion, dogFall, dogPose, chaserFrame } from '../src/runner/animation.ts';
 import { BEND_LENGTH, BEND_SLACK, CORNER_RADIUS, RunnerRoute3D } from '../src/runner/route3d.ts';
 import { BRIDGE_TURNS, CART_LENGTH, BRIDGE_LENGTH, DOWNHILL_ROPE_LENGTH, elevationAt, riderHeightAt, ROPE_RELEASE_DISTANCE, sectionFeature, sectionIndexAt, sectionStart, sectionScene } from '../src/runner/course.ts';
@@ -422,10 +422,12 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
     for (let tick = 0; tick < 120 * 150 && w.phase === 'running' && w.distance < 3000; tick++) {
       maxItems = Math.max(maxItems, w.items.length);
       for (const i of w.items) {
-        if (i.z < 1500 && (i.kind === 'slow' || i.kind === 'double')) earlyPickups.add(i.kind);
+        // Power-ups come in one by one as the run goes on: none before its unlock distance.
+        if (POWER_UNLOCK[i.kind] !== undefined) assert.ok(i.z >= POWER_UNLOCK[i.kind], `seed ${seed}: ${i.kind} at ${Math.round(i.z)} before ${POWER_UNLOCK[i.kind]} m`);
+        if (i.z < 2000 && (i.kind === 'slow' || i.kind === 'double')) earlyPickups.add(i.kind);
         if (!isRunObstacle(i.kind)) continue;
         // A rolling boulder or cart the dog got past keeps rolling away behind it.
-        if (!(i.roll && i.done)) for (const t of w.turns) assert.ok(i.z < t.z - 45 || i.z > t.z + 25, `seed ${seed}: obstacle ${i.z} near corner ${t.z}`);
+        if (!(i.roll && i.done)) for (const t of w.turns) assert.ok(i.z < t.z - 45 || i.z > t.z + 25, `seed ${seed}: ${i.kind}${i.roll ? ' (rolling)' : ''} ${i.span ?? 1}-lane at ${i.z} near corner ${t.z}`);
         if (i.span === 2 && i.kind === 'block') sawJoinedLogs = true;
         if (!seen.has(i.id)) {
           if (i.kind === 'long-gap') { assert.ok(i.z - obstacleHalfDepth(i.kind, i.z) >= LONG_GAP_START); assert.equal(i.span, 3); long++; }
@@ -441,7 +443,7 @@ test('40 seeded courses are solvable for 3 km with bounded memory and keep corne
     assert.equal(w.phase, 'running', `seed ${seed}: ${w.reason} at ${Math.round(w.distance)}`);
     assert.ok(w.distance >= 3000); assert.ok(full > 10); assert.ok(long >= 5); assert.ok(w.items.length < 80); assert.ok(w.turns.length <= 3); assert.ok(w.turnCount >= 7);
     assert.ok(maxItems < 140, `seed ${seed}: at most ${maxItems} items at once`);
-    assert.equal(earlyPickups.size, 2, `seed ${seed}: both new pickups appear before 1500m`);
+    assert.equal(earlyPickups.size, 2, `seed ${seed}: double score and the hourglass both turn up before 2000 m`);
     // The canal zipline, the log bridge and the mine cart all come before 3 km.
     assert.ok(w.ridesDone >= 3, `seed ${seed}: finished ${w.ridesDone} rides`);
     assert.ok(w.forksCleared >= 1, `seed ${seed}: took ${w.forksCleared} forks the right way`);
@@ -1040,4 +1042,35 @@ test('picture effects are all on by default; a saved choice turns only that one 
   assert.deepEqual(readGraphics(null), { post: true, shadows: true, volumetric: true, wet: true });
   assert.deepEqual(readGraphics('{"shadows":false,"wet":"no","extra":1}'), { post: true, shadows: false, volumetric: true, wet: true });
   assert.deepEqual(readGraphics('[broken'), { post: true, shadows: true, volumetric: true, wet: true });
+});
+
+test('difficulty: a new tier every 1000 m lifts the top speed and tightens the rows; the short modes stay at the first', () => {
+  assert.equal(tierAt(0), 1); assert.equal(tierAt(TIER_DISTANCE - 1), 1); assert.equal(tierAt(TIER_DISTANCE), 2); assert.equal(tierAt(2500), 3); assert.equal(tierAt(99999), TOP_TIER);
+  const w = new RunnerWorld(5); w.start();
+  const pace = d => w['paceAt'](w.origin + d);
+  assert.ok(Math.abs(pace(1950) - 30) < .01, 'the pace reaches 30 m/s by about 1900 m');
+  assert.ok(Math.abs(pace(2500) - 30.7) < .01 && Math.abs(pace(5500) - 32.8) < .01, 'each tier from the third adds .7 m/s to the top speed');
+  w.distance = w.origin + 3500; assert.equal(w.tier, 4);
+  for (const mode of ['chase', 'rush']) { const t = new RunnerWorld(5, mode); t.start(); t.distance += 5000; assert.equal(t.tier, 1); }
+});
+
+test('items arrive with distance: each power-up soon after its own distance, the coin bag after 2000 m, the lucky star after 3000 m', () => {
+  const w = new RunnerWorld(11); w.start(); w.turns = []; w.nextTurn = Infinity;
+  const firstAt = {};
+  for (let t = 0; t < 120 * 260 && w.phase === 'running' && w.runDistance < 3300; t++) {
+    for (const i of w.items) if (!(i.kind in firstAt) && (i.kind in POWER_UNLOCK || i.kind === 'coin-bag' || i.kind === 'star')) firstAt[i.kind] = i.z - w.origin;
+    drive(w); w.advance(1 / 120);
+  }
+  assert.equal(w.phase, 'running', `${w.reason} at ${Math.round(w.runDistance)}`);
+  for (const [kind, from] of [...Object.entries(POWER_UNLOCK), ['coin-bag', COIN_BAG_START], ['star', STAR_START]]) {
+    assert.ok(firstAt[kind] !== undefined, `${kind} turned up`);
+    // The first slots come after the warm-up rows, so the ones there from the start may take a little longer.
+    assert.ok(firstAt[kind] >= from && firstAt[kind] < Math.max(from, 200) + 250, `${kind} first at ${Math.round(firstAt[kind])} m (unlocks at ${from} m)`);
+  }
+  // A coin bag is gold at once (more on later tiers); a lucky star takes the combo up a step.
+  const b = new RunnerWorld(3); b.start(); skipTo(b, b.origin + 2400); b.nextRow = b.nextTurn = Infinity; b.turns = [];
+  b.items = [{ id: 1, kind: 'coin-bag', lane: b.lane, z: b.distance + 2, done: false }]; const gold = b.gold; run(b, .3);
+  assert.equal(b.gold - gold, 2 + 3); assert.equal(b.coinBags, 1);
+  b.items = [{ id: 2, kind: 'star', lane: b.lane, z: b.distance + 2, done: false }]; const before = b.multiplier; run(b, .3);
+  assert.equal(b.multiplier, Math.min(5, before + 1)); assert.equal(b.stars, 1);
 });

@@ -35,7 +35,7 @@ import { RunnerAmbience } from "./ambience3d.ts";
 import { GroundOpenings, MAX_GROUND_OPENINGS, type GroundOpening } from "./groundOpenings.ts";
 import { BEND_SLACK, CORNER_RADIUS, RunnerRoute3D, type RoutePoint } from "./route3d.ts";
 import { getDogLook } from "./shop.ts";
-import { BRIDGE_FORK_BREAK, coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPower, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, SHAFT_EDGE, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
+import { BRIDGE_FORK_BREAK, coversLane, FORK_BRIDGE_BREAK, FORK_BRIDGE_START, isFallObstacle, isRunObstacle, isRunPickup, isRunPower, RUN_PICKUPS, type RunPickupKind, LANE_WIDTH, obstacleHalfDepth, RUN_POWERS, RUN_SCENES, sceneAt, SHAFT_EDGE, type RunItem, type RunPowerKind, type RunTurn, type RunnerWorld } from "./world.ts";
 
 /**
  * Everything lives in fixed world coordinates along the route; only the camera, the dog
@@ -69,7 +69,7 @@ const WET_ROADS = ["road-aqueduct", "road-temple", "road-bamboo", "road-canyon"]
 const PUDDLE_SCENES = new Set([0, 1, 3, 4]);
 const RIPPLES = 48;
 /** Templates that cast real-time shadows: obstacles, pickups, lamps and arches (dense plants and walls left out: they cost the most). */
-const SHADOW_CASTERS = /^(block|beam|spikes|boulder|cart-block|crate|runaway-cart|magnet|shield|boost|slow|double|spring|bike|balloon|chest|clock|lantern|temple-arch|mine-frame|lamp-post|snow-lamp|canyon-lamp|stone-lantern|snowman)/;
+const SHADOW_CASTERS = /^(block|beam|spikes|boulder|cart-block|crate|runaway-cart|magnet|shield|boost|slow|double|spring|bike|balloon|chest|clock|lantern|coin-bag|star|temple-arch|mine-frame|lamp-post|snow-lamp|canyon-lamp|stone-lantern|snowman)/;
 /** Seconds the camera takes to swing round from the menu's front view to behind the running dog. */
 const INTRO_TIME = 1.15;
 const FISSURE_HALF = obstacleHalfDepth("gap", 0);
@@ -102,8 +102,9 @@ const POWER_COLORS: Record<RunPowerKind, [string, string]> = {
   slow: ["#ba91ee", "#ecd6ff"], double: ["#e8a344", "#ffe8ab"], spring: ["#6fe05a", "#d8ffc8"],
   bike: ["#44cbb2", "#acf9e8"], fruit: ["#ffb831", "#fff0a3"], balloon: ["#ff7eb6", "#ffe0f0"],
 };
-const PICKUP_COLORS: Record<"chest" | "clock" | "lantern", [string, string]> = {
+const PICKUP_COLORS: Record<RunPickupKind, [string, string]> = {
   chest: ["#ffcf4a", "#fff3c0"], clock: ["#6fe3ff", "#dff8ff"], lantern: ["#ff9a4a", "#ffe1c4"],
+  "coin-bag": ["#ffb43a", "#fff0c8"], star: ["#ffe45a", "#fff9d6"],
 };
 const FRUIT_TREE = "runner-fruit-tree";
 const ORES = ["mine-amethyst", "mine-calcite", "mine-malachite"] as const;
@@ -744,6 +745,8 @@ export class RunnerRenderer3D {
     this.mat("pit", "#05080a").specularColor.setAll(0);
     this.mat("foliage-dark", "#4a6538", rock, 2).specularColor.setAll(0);
     this.glow("gold", "#f2c443", "#7a560a").specularColor.set(.9, .8, .4);
+    const pouch = this.mat("pouch", "#b8362c"); pouch.emissiveColor.set(.18, .04, .03); pouch.specularColor.set(.35, .25, .25); pouch.specularPower = 24;
+    const starGold = this.glow("star-gold", "#ffd94a", "#b8860b"); starGold.specularColor.set(1, .95, .6); starGold.specularPower = 48; starGold.backFaceCulling = false;
     this.glow("lamp", "#ffe2a0", "#ffc25a");
     this.glow("warning", "#f2c443", "#3a2a00");
     this.glow("fork-flag", "#d8342a", "#5a0d08").backFaceCulling = false;
@@ -2160,7 +2163,7 @@ export class RunnerRenderer3D {
     medal.emissiveColor = Color3.White(); medal.transparencyMode = StandardMaterial.MATERIAL_ALPHATEST; medal.alphaCutOff = .4;
     this.mats["medal-art"] = medal;
     // Power-ups and pickups are small models that turn over a ring of light, under a light pillar so they read from far away.
-    for (const kind of [...RUN_POWERS.filter(kind => kind !== "fruit"), "chest", "clock", "lantern"] as const) make(kind, r => {
+    for (const kind of [...RUN_POWERS.filter(kind => kind !== "fruit"), ...RUN_PICKUPS] as const) make(kind, r => {
       const model = new TransformNode("model", this.scene); model.parent = r; model.position.y = 1.15;
       this.pickupModel(kind, model);
       this.mergeByMaterial(model);
@@ -2187,7 +2190,7 @@ export class RunnerRenderer3D {
    * (lights, halos and the cart's lamp beam left out), so things sit on the road instead of floating.
    */
   private addContactShadows() {
-    const pickups = new Set<string>([...RUN_POWERS.filter(kind => kind !== "fruit"), "chest", "clock", "lantern"]);
+    const pickups = new Set<string>([...RUN_POWERS.filter(kind => kind !== "fruit"), ...RUN_PICKUPS]);
     const standing = /^(block|beam|spikes|boulder|cart-block|crate|runaway-cart)/;
     // Darkest under the model and still dark at its edge, where the camera actually sees it, then fading out.
     const texture = new DynamicTexture("runner-contact-tex", { width: 128, height: 128 }, this.scene, false);
@@ -2239,8 +2242,30 @@ export class RunnerRenderer3D {
   }
 
   /** The model for each power-up and pickup, built round the origin. */
-  private pickupModel(kind: RunPowerKind | "chest" | "clock" | "lantern", r: TransformNode) {
+  private pickupModel(kind: RunPowerKind | RunPickupKind, r: TransformNode) {
     switch (kind) {
+      case "coin-bag": {
+        // A plump velvet pouch tied with gold cord, gold coins showing at its mouth.
+        const pouch = MeshBuilder.CreateSphere("pouch", { diameter: .7, segments: 18 }, this.scene); pouch.parent = r; pouch.scaling.set(1, .9, 1); pouch.position.y = -.08; pouch.material = this.mats.pouch;
+        this.cylinder("pouch-neck", r, { diameterTop: .36, diameterBottom: .24, height: .2, tessellation: 14 }, [0, .3, 0], "pouch");
+        const cord = MeshBuilder.CreateTorus("pouch-cord", { diameter: .27, thickness: .045, tessellation: 18 }, this.scene); cord.parent = r; cord.position.y = .22; cord.material = this.mats.gold;
+        for (const [x, z, tilt] of [[-.06, .02, .5], [.07, -.03, -.4], [0, .07, .2]] as const) {
+          const coin = this.cylinder("pouch-coin", r, { diameter: .2, height: .035, tessellation: 18 }, [x, .43, z], "gold");
+          coin.rotation.set(Math.PI / 2 - .35, 0, tilt);
+        }
+        return;
+      }
+      case "star": {
+        // A five-pointed star with bevelled faces: two fans of triangles meeting at a raised centre.
+        const positions: number[] = [0, 0, .13, 0, 0, -.13], indices: number[] = [];
+        for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, rad = i % 2 ? .19 : .46; positions.push(Math.cos(a) * rad, Math.sin(a) * rad, 0); }
+        for (let i = 0; i < 10; i++) { const a = 2 + i, b = 2 + (i + 1) % 10; indices.push(0, b, a, 1, a, b); }
+        const normals: number[] = []; VertexData.ComputeNormals(positions, indices, normals);
+        const data = new VertexData(); data.positions = positions; data.indices = indices; data.normals = normals;
+        const star = new Mesh("lucky-star", this.scene); data.applyToMesh(star); star.parent = r; star.material = this.mats["star-gold"];
+        const halo = MeshBuilder.CreatePlane("halo", { size: 1.7 }, this.scene); halo.parent = r; halo.material = this.mats["lamp-halo"]; halo.billboardMode = Mesh.BILLBOARDMODE_ALL;
+        return;
+      }
       case "magnet": {
         // A horseshoe magnet, poles down, with polished tips.
         const path: Vector3[] = [new Vector3(-.3, -.34, 0), new Vector3(-.3, -.05, 0)];
@@ -3773,7 +3798,7 @@ export class RunnerRenderer3D {
         if (item.pulled) prop.scaling.setAll(1.25);
       }
       else if (item.kind === "fruit") this.drawFruit(prop, item, world.distance, t);
-      else if (isRunPower(item.kind) || item.kind === "chest" || item.kind === "clock" || item.kind === "lantern") {
+      else if (isRunPower(item.kind) || isRunPickup(item.kind)) {
         // Bob the model (its ring and shadow stay on the road), and turn it round so its shape reads.
         const bob = Math.sin(t * 3 + item.id) * .15;
         const parts = this.partsOf(prop);
@@ -4222,7 +4247,7 @@ export class RunnerRenderer3D {
     const pace = shot || this.settings.reducedMotion ? 0 : Math.max(0, Math.min(1, (world.speed - 13) / 17)) * .07;
     // The menu's front view (intro 0) swings round to the running view (1) as a run starts.
     const intro = shot ? 1 : this.introProgress(world), swing = intro * intro * (3 - 2 * intro);
-    const fov = ((portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .14 : 0)) * (.84 + .16 * swing);
+    const fov = ((portrait ? 1.08 : .9) + pace + (world.boost > 0 && !shot ? .08 : 0)) * (.84 + .16 * swing);
     this.camera.fov += (fov - this.camera.fov) * k(4);
     const fx = Math.sin(this.camYaw), fz = Math.cos(this.camYaw);
     if (shot) {
@@ -4241,15 +4266,15 @@ export class RunnerRenderer3D {
     } else {
       this.captureCamera = undefined;
       // Follow most of the lane offset (smoothed) so the dog stays near the centre of the screen.
-      const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .8 : .6) * rideLateralScale(world.distance, world.ride);
+      const lateral = (world.position - 1) * LANE_WIDTH * (portrait ? .7 : .5) * rideLateralScale(world.distance, world.ride);
       this.camLateral += (lateral + (world.cycling && !this.settings.reducedMotion ? .68 : 0) - this.camLateral) * k(10);
       const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
       const bx = centre.x + rx * this.camLateral, bz = centre.z + rz * this.camLateral;
       // The camera rises with a jump a little, and goes right up with the balloons.
       this.camRise += ((world.flying ? 1 : 0) - this.camRise) * k(3);
-      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * (.25 + .67 * this.camRise);
+      const back = portrait ? 8.4 : 7.4, height = (portrait ? 4.6 : 4.1) + world.jumpHeight * (.14 + .78 * this.camRise);
       this.cameraPos.set(bx - fx * back, elevationAt(view - back) + height, bz - fz * back);
-      this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.jumpHeight * (.35 + .45 * this.camRise), bz + fz * 7);
+      this.cameraTarget.set(bx + fx * 7, elevationAt(view + 7) + 1.1 + world.jumpHeight * (.2 + .6 * this.camRise), bz + fz * 7);
       if (intro < 1) {
         // A low three-quarter view of the dog from in front, drifting a little while the menu is up.
         const drift = world.phase === "ready" ? Math.sin(this.idleClock * .23) * .2 : 0;
@@ -4263,24 +4288,24 @@ export class RunnerRenderer3D {
         this.cameraTarget.set(player.x + (this.cameraTarget.x - player.x) * swing, lookY + (this.cameraTarget.y - lookY) * swing, player.z + (this.cameraTarget.z - player.z) * swing);
       }
       const sinceHit = world.elapsed - world.hitAt;
-      if (!this.settings.reducedMotion && sinceHit < .35) {
+      if (!this.settings.reducedMotion && sinceHit < .28) {
         // Shake sideways to the view (not along world X, which is forward after a turn) and settle out.
-        const shake = Math.sin(t * 60) * .14 * (1 - sinceHit / .35);
+        const shake = Math.sin(t * 60) * .09 * (1 - sinceHit / .28);
         this.cameraPos.x += rx * shake; this.cameraPos.z += rz * shake;
       }
       if (!this.settings.reducedMotion) {
         // A small dip as the dog lands, and a rumble while a boulder or cart rolls close by.
         const land = Math.max(0, 1 - (world.elapsed - world.landedAt) / .2);
-        this.cameraPos.y -= land * land * .13; this.cameraTarget.y -= land * land * .05;
+        this.cameraPos.y -= land * land * .05; this.cameraTarget.y -= land * land * .02;
         if (this.rumble > 0) {
           const r = this.rumble * this.rumble;
-          this.cameraPos.x += rx * Math.sin(t * 41) * .07 * r; this.cameraPos.z += rz * Math.sin(t * 41) * .07 * r;
-          this.cameraPos.y += Math.sin(t * 53) * .05 * r;
+          this.cameraPos.x += rx * Math.sin(t * 41) * .035 * r; this.cameraPos.z += rz * Math.sin(t * 41) * .035 * r;
+          this.cameraPos.y += Math.sin(t * 53) * .025 * r;
         }
       }
     }
     // Bank a touch into lane changes and bends.
-    this.camBank += ((shot || this.settings.reducedMotion ? 0 : (world.position - world.lane) * .028 - Math.max(-.05, Math.min(.05, turning * .012))) - this.camBank) * k(8);
+    this.camBank += ((shot || this.settings.reducedMotion ? 0 : (world.position - world.lane) * .012 - Math.max(-.025, Math.min(.025, turning * .007))) - this.camBank) * k(6);
     const bank = this.camBank;
     const rx = Math.cos(this.camYaw), rz = -Math.sin(this.camYaw);
     this.camera.upVector.set(rx * Math.sin(bank), Math.cos(bank), rz * Math.sin(bank));

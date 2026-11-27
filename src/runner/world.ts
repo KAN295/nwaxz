@@ -23,7 +23,9 @@ export const RUN_POWERS = [...STANDARD_POWERS, "bike", "fruit", "balloon"] as co
 export type RunPowerKind = typeof RUN_POWERS[number];
 export const RUN_POWER_SECONDS: Record<RunPowerKind, number> = { magnet: 10, shield: 20, boost: 5, slow: 5, double: 8, spring: 10, bike: 9, fruit: 15, balloon: 7 };
 /** `chest` opens into a random reward; `clock` adds time in the coin rush; `lantern` drives the frog back in the dark. */
-export type RunPickupKind = "chest" | "clock" | "lantern";
+export type RunPickupKind = "chest" | "clock" | "lantern" | "coin-bag" | "star";
+export const RUN_PICKUPS: readonly RunPickupKind[] = ["chest", "clock", "lantern", "coin-bag", "star"];
+export const isRunPickup = (kind: string): kind is RunPickupKind => (RUN_PICKUPS as readonly string[]).includes(kind);
 export type RunItemKind = "coin" | RunObstacleKind | RunPowerKind | RunPickupKind;
 /** What a chest held. */
 export type ChestReward = { silver?: number; gold?: number; diamond?: number; power?: RunPowerKind };
@@ -164,7 +166,20 @@ const STEP = 1 / 120;
 const CLEARANCE: Record<RunObstacleKind, number> = { block: .85, gap: .05, "long-gap": .05, beam: Infinity, spikes: .5, boulder: 1.75, fire: .7, trap: .35, "cart-block": Infinity, "bridge-branch": .48, crate: .85, "runaway-cart": 1.45 };
 /** Half depth along the route. */
 const DEPTH: Record<Exclude<RunObstacleKind, "long-gap">, number> = { block: .6, gap: 2.4, beam: .35, spikes: .7, boulder: .7, fire: .6, trap: 1.75, "cart-block": .8, "bridge-branch": .49, crate: .5, "runaway-cart": .95 };
-const baseSpeedAt = (distance: number) => Math.min(MAX_SPEED, BASE_SPEED + distance / 110);
+/** Every 1000 m of a run is a new difficulty tier: 1 for the first 1000 m, then 2, 3 … up to TOP_TIER. */
+export const TIER_DISTANCE = 1000;
+export const TOP_TIER = 8;
+export const tierAt = (runDistance: number) => 1 + Math.min(TOP_TIER - 1, Math.floor(Math.max(0, runDistance) / TIER_DISTANCE));
+/** The pace climbs to 30 m/s by about 1900 m; from the third tier on, each tier lifts the top speed by .7 m/s. */
+const topSpeedAt = (distance: number) => MAX_SPEED + Math.max(0, tierAt(distance) - 2) * .7;
+const baseSpeedAt = (distance: number) => Math.min(topSpeedAt(distance), BASE_SPEED + distance / 110);
+/** Run distance (m) from which each power-up turns up in a long run; the short modes have them all from the start. */
+export const POWER_UNLOCK: Record<typeof STANDARD_POWERS[number], number> = { shield: 0, magnet: 0, double: 400, boost: 700, slow: 1000, spring: 1500 };
+/** The coin bag (gold at once) from 2000 m, the lucky star (one step up the combo) from 3000 m. */
+export const COIN_BAG_START = 2000;
+export const STAR_START = 3000;
+const COIN_BAG_CHANCE = .1;
+const STAR_CHANCE = .08;
 export function obstacleHalfDepth(kind: RunObstacleKind, distance: number) {
   // A single jump lasts about .63 s. This span requires about .78 s at the normal pace.
   return kind === "long-gap" ? baseSpeedAt(distance) * .39 : DEPTH[kind];
@@ -304,6 +319,12 @@ export class RunnerWorld {
   lastChest: ChestReward = {};
   revives = 0;
   clocks = 0;
+  coinBags = 0;
+  /** Power-ups and pickups laid so far this run (a new one is laid as soon as it unlocks). */
+  private introduced = new Set<string>();
+  /** Gold in the last coin bag picked up. */
+  lastBag = 0;
+  stars = 0;
   lanterns = 0;
   readonly mode: RunMode;
   /** Where the run starts on the course: 0 in endless mode, the snowfield in chase mode. */
@@ -363,6 +384,8 @@ export class RunnerWorld {
 
   /** Metres run so far in this run. */
   get runDistance() { return this.distance - this.origin; }
+  /** The difficulty tier the dog has reached (the short modes stay at the first). */
+  get tier() { return this.chase || this.rush ? 1 : tierAt(this.runDistance); }
   /** Pace follows the distance run; the chase starts at a brisk 16 m/s, the coin rush at 15. */
   private paceAt(distance: number) { return baseSpeedAt(distance - this.origin + (this.chase ? 330 : this.rush ? 220 : 0)); }
   private get courseSpeed() {
@@ -590,7 +613,7 @@ export class RunnerWorld {
       if (item.done || (item.feature && item.feature !== (bridge?.kind ?? this.mountedRide?.kind))) continue;
       if (item.kind === "coin") this.touchCoin(item, dt);
       else if (isRunPower(item.kind)) this.touchPower(item, item.kind);
-      else if (item.kind === "chest" || item.kind === "clock" || item.kind === "lantern") this.touchPickup(item, item.kind);
+      else if (isRunPickup(item.kind)) this.touchPickup(item, item.kind);
       else if (isRunObstacle(item.kind) && !this.touchObstacle(item, item.kind, landingVelocity)) return;
     }
     this.bestMultiplier = Math.max(this.bestMultiplier, this.multiplier);
@@ -720,6 +743,10 @@ export class RunnerWorld {
     item.done = true;
     if (kind === "clock") { this.clocks++; if (this.rush) this.rush.timeLeft += CLOCK_SECONDS; return; }
     if (kind === "lantern") { this.lanterns++; this.coinScore += 100; if (this.hunt) this.hunt.gap = Math.min(DARK_MAX_GAP, this.hunt.gap + LANTERN_GAP); return; }
+    // A coin bag: gold at once, more the further the run has gone.
+    if (kind === "coin-bag") { const bag = 2 + this.tier; this.gold += bag; this.coinBags++; this.lastBag = bag; this.coinScore += bag * 150; return; }
+    // A lucky star: the combo goes up a step at once and stays up as if a coin had just been caught.
+    if (kind === "star") { this.streak = Math.min(this.streak + 10, 49); this.streakTimer = 4; this.stars++; this.coinScore += 500; return; }
     // A chest: mostly silver, often gold, now and then a power-up, rarely a diamond. Rolled from the
     // chest itself, so opening one never changes the course that follows.
     const roll = forkRoll(this.weatherSeed ^ 0x5bd1e995, item.id * 13 + 7);
@@ -856,7 +883,8 @@ export class RunnerWorld {
    */
   private canRoll(z: number) {
     const end = z + ROLL_TRAVEL, scene = sceneAt(z);
-    if (this.chase || z - this.origin < ROLL_START || !ROLLING_SCENES.includes(scene) || sceneAt(end) !== scene || this.nearTurn(end) || end + 45 >= this.nextTurn) return false;
+    // The dog may speed up a little after it sets off, so it can be met a few metres short of the row: keep that clear too.
+    if (this.chase || z - this.origin < ROLL_START || !ROLLING_SCENES.includes(scene) || sceneAt(end) !== scene || this.nearTurn(end) || this.nearTurn(z - 3) || end + 45 >= this.nextTurn) return false;
     const section = sectionFeature(end);
     return !(section && end > section.start - 26 && end < section.end + 23);
   }
@@ -905,7 +933,9 @@ export class RunnerWorld {
       const landingSpace = longGap ? .42 : 0;
       // A rolling hazard waits further on than where it is met; keep the next row clear of it.
       const rollRoom = this.rolledRow ? 4 : 0; this.rolledRow = false;
-      this.nextRow += speed * (1.15 + early * .6 + landingSpace) + rollRoom + this.random() * 8;
+      // Each tier takes .04 s off the time between rows (at most .24 s).
+      const tight = this.chase || this.rush ? 0 : Math.min(.24, (tierAt(z - this.origin) - 1) * .04);
+      this.nextRow += speed * (1.15 - tight + early * .6 + landingSpace) + rollRoom + this.random() * 8;
     }
   }
 
@@ -939,6 +969,7 @@ export class RunnerWorld {
   private row(z: number) {
     const scene = sceneAt(z);
     const roll = this.random();
+    const tier = this.chase || this.rush ? 1 : tierAt(z - this.origin);
     const pattern = this.rows++;
     let free = Math.floor(this.random() * 3);
     let jumpArc = false;
@@ -947,13 +978,13 @@ export class RunnerWorld {
 
     if (longGap) {
       this.add(z, 1, "long-gap", { span: 3 });
-      this.nextLongGap = z + 165 + this.random() * 65;
+      this.nextLongGap = z + Math.max(115, 165 - (tier - 1) * 8) + this.random() * 65;
       free = 1;
     } else if (pattern < 2) {
       // Warm-up: an easy barrier in the middle lane, then one on a side.
       this.add(z, pattern === 0 ? 1 : this.pick([0, 2]), "beam");
       free = pattern === 0 ? this.pick([0, 2]) : 1;
-    } else if (roll < .16) {
+    } else if (roll < Math.max(.06, .16 - (tier - 1) * .02)) {
       const lane = Math.floor(this.random() * 3);
       this.add(z, lane, this.pick(["beam", "boulder"] as const));
       free = (lane + 1 + Math.floor(this.random() * 2)) % 3;
@@ -969,6 +1000,12 @@ export class RunnerWorld {
       const kind = this.pick(["block", "spikes", "fire", "trap"] as const);
       this.add(z, lane, kind, { span: 2 });
       free = lane === 0 ? 2 : 0;
+      // From the third tier, now and then a low gate across the whole road just after: change lanes, then slide.
+      const after = z + this.paceAt(z) * .62;
+      const section = sectionFeature(after);
+      // It lies past the row, where the next corner may not be laid yet: keep clear of that one too.
+      const clear = !this.nearTurn(after) && after + 45 < this.nextTurn && !(section && after > section.start - 26 && after < section.end + 23);
+      if (tier >= 3 && clear && this.random() < Math.min(.35, (tier - 2) * .07)) this.add(after, 1, "beam", { span: 3 });
     } else {
       // Whole-road obstacle: jump or slide, no lane avoids it.
       const kind = this.pick(WHOLE_ROAD[scene] ?? WHOLE_ROAD[0]);
@@ -991,14 +1028,24 @@ export class RunnerWorld {
 
     if (pattern >= 3 && pattern % 3 === 0) {
       const pickup = z + (longGap ? longGapDepth + 4 : 9);
-      const normal = STANDARD_POWERS[this.powerIndex++ % STANDARD_POWERS.length];
+      const run = pickup - this.origin;
+      const pool = isLongRun(this.mode) ? STANDARD_POWERS.filter(kind => run >= POWER_UNLOCK[kind]) : STANDARD_POWERS;
+      const normal = pool[this.powerIndex++ % pool.length];
       const roll = pickup >= FRUIT_START && this.powerIndex > 4 ? this.random() : 1;
       const fruitChance = sceneAt(pickup) === 2 ? 0 : FRUIT_CHANCE;
       const bike = fruitChance + BIKE_CHANCE, balloon = bike + BALLOON_CHANCE, chest = balloon + CHEST_CHANCE;
+      const bag = chest + COIN_BAG_CHANCE, star = bag + STAR_CHANCE, long = isLongRun(this.mode);
       const rare = roll < fruitChance ? "fruit" : pickup >= BIKE_START && roll < bike ? "bike"
         : pickup >= BALLOON_START && roll < balloon && !this.chase && this.clearAhead(pickup, 260) ? "balloon"
-          : pickup >= CHEST_START && roll >= balloon && roll < chest ? "chest" : normal;
-      this.add(pickup, free, rare);
+          : pickup >= CHEST_START && roll >= balloon && roll < chest ? "chest"
+            : long && run >= COIN_BAG_START && roll >= chest && roll < bag ? "coin-bag"
+              : long && run >= STAR_START && roll >= bag && roll < star ? "star" : normal;
+      // A newly unlocked one is laid at the first slot after it unlocks, so the player meets it straight away.
+      const unlocked = long ? [...pool, ...(run >= COIN_BAG_START ? ["coin-bag" as const] : []), ...(run >= STAR_START ? ["star" as const] : [])] : [];
+      const fresh = unlocked.find(kind => !this.introduced.has(kind));
+      const laid = fresh ?? rare;
+      this.introduced.add(laid);
+      this.add(pickup, free, laid);
     }
     return longGap;
   }
