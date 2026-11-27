@@ -261,14 +261,14 @@
 .runner-wallet .diamond i{border-radius:3px;transform:rotate(45deg) scale(.82);background:linear-gradient(135deg,#eaffff,#6bd6ff)}
 .runner-card .runner-gift{margin:0 0 8px;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,rgba(255,214,90,.2),rgba(255,214,90,.05));border:1px solid rgba(255,214,90,.35);color:var(--ink);font-size:12px;animation:runner-gift .6s ease-out}
 @keyframes runner-gift{from{opacity:0;transform:translateY(-6px)}}
-.runner-modes{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:8px 0 6px}
-.runner-mode-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;margin:0;min-height:54px;padding:6px 2px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);transition:background .2s,border-color .2s,transform .15s}
-.runner-mode-card:active{transform:scale(.96)}
-.runner-mode-card span{font-size:10px;font-weight:600;letter-spacing:.12em;opacity:.8}
-.runner-mode-card strong{font-size:12px;color:var(--ink);white-space:nowrap}
-.runner-mode-card.on{border-color:var(--gold);background:linear-gradient(180deg,rgba(246,211,107,.3),rgba(246,211,107,.08));box-shadow:inset 0 0 0 1px rgba(246,211,107,.4),0 6px 18px rgba(0,0,0,.25)}
-.runner-mode-card.on strong{color:var(--gold)}
-@media (max-width:420px){.runner-modes{grid-template-columns:repeat(3,1fr)}}
+
+
+
+
+
+
+
+
 
 /* Upgrades page. */
 .runner-upgrades{display:grid;gap:8px;margin:12px 0;max-height:52dvh;overflow:auto;text-align:left}
@@ -313,10 +313,10 @@
 @media (max-height:620px){.runner-missions li{padding:3px 8px}}
 
 /* The start screen as a game lobby: the 3D dog stays in view between a top bar and a bottom dock. */
-.runner-panel.lobby:not([hidden]){display:block;padding:0;background:linear-gradient(180deg,rgba(4,12,12,.66),rgba(4,12,12,0) 24%,rgba(4,12,12,0) 50%,rgba(4,12,12,.82));overflow:auto}
+.runner-panel.lobby:not([hidden]){display:block;padding:0;background:radial-gradient(ellipse 70% 60% at 50% 48%,rgba(4,10,10,0) 45%,rgba(4,10,10,.5)),linear-gradient(180deg,rgba(4,12,12,.6),rgba(4,12,12,0) 22%,rgba(4,12,12,0) 55%,rgba(4,12,12,.85));overflow:auto}
 .runner-lobby{box-sizing:border-box;min-height:100%;display:flex;flex-direction:column;gap:8px;padding:max(14px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));color:var(--ink);animation:runner-lobby-in .45s ease-out}
 @keyframes runner-lobby-in{from{opacity:0}}
-.runner-lobby-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+
 .runner-lobby .runner-title{margin:0;font-size:36px;letter-spacing:6px;line-height:1.1;color:var(--gold);text-shadow:0 3px 0 #6b4a10,0 10px 26px rgba(0,0,0,.5)}
 .runner-lobby .runner-record{margin:6px 0 0;font-size:12px;color:#e6eee8;text-shadow:0 1px 3px rgba(0,0,0,.8)}
 .runner-lobby .runner-record b{color:var(--gold)}
@@ -324,29 +324,29 @@
 .runner-lobby .runner-wallet span{display:inline-flex;align-items:center;gap:6px;padding:5px 11px 5px 5px;border-radius:999px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
 .runner-lobby .runner-wallet i{width:18px;height:18px}
 .runner-lobby .runner-gift{align-self:center;margin:0;padding:7px 16px;border-radius:999px;background:linear-gradient(90deg,rgba(255,214,90,.32),rgba(255,214,90,.12));border:1px solid rgba(255,214,90,.5);font-size:12px;box-shadow:0 8px 22px rgba(0,0,0,.3);animation:runner-gift .6s ease-out}
-.runner-lobby-missions{align-self:flex-start;width:min(310px,100%);border-radius:14px;background:rgba(6,16,16,.66);border:1px solid var(--line);backdrop-filter:blur(8px)}
-.runner-lobby-missions summary{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:8px 12px;cursor:pointer;list-style:none;font-size:12px;font-weight:800;letter-spacing:.2em;color:var(--gold)}
-.runner-lobby-missions summary::-webkit-details-marker{display:none}
-.runner-lobby-missions summary::after{content:"▾";letter-spacing:0;color:var(--muted)}
-.runner-lobby-missions[open] summary::after{content:"▴"}
-.runner-lobby-missions summary small{margin-left:auto;font-weight:500;letter-spacing:0;color:var(--muted)}
-.runner-lobby-missions .runner-missions{margin:0;padding:0 10px 10px;background:none}
-.runner-lobby-missions .runner-missions-title{display:none}
-.runner-lobby-skin{margin-top:auto;align-self:center;display:flex;align-items:center;gap:10px}
+
+
+
+
+
+
+
+
+
 .runner-lobby .runner-look-name{padding:5px 16px;border-radius:999px;background:rgba(0,0,0,.52);border:1px solid color-mix(in srgb,var(--skin) 55%,rgba(255,255,255,.2));font-size:13px;font-weight:800;text-shadow:0 1px 2px rgba(0,0,0,.6)}
 .runner-lobby .runner-skin-arrow{width:36px;height:36px;padding:0;border-radius:50%;border:1px solid var(--line);background:rgba(0,0,0,.5);color:var(--gold);font:700 22px/1 system-ui;cursor:pointer}
 .runner-lobby-dock{align-self:center;width:min(100%,580px);display:grid;gap:8px;text-align:center}
-.runner-lobby .runner-modes{margin:0}
-.runner-lobby .runner-mode-card{width:100%;font-family:inherit;cursor:pointer;background:rgba(6,16,16,.62);backdrop-filter:blur(6px)}
+
+
 .runner-lobby .runner-mode-note{margin:0;font-size:12px;line-height:1.6;color:#e2ebe5;text-shadow:0 1px 3px rgba(0,0,0,.85)}
 .runner-lobby .runner-play{min-height:60px;border:0;border-radius:18px;font:900 21px/1 inherit;letter-spacing:.32em;text-indent:.32em;color:#2a2410;background:linear-gradient(180deg,#fff0b0,#f6cc55 50%,#dda32b);box-shadow:0 5px 0 #8c6a1c,0 14px 32px rgba(0,0,0,.45);cursor:pointer;animation:runner-play 1.8s ease-in-out infinite}
 .runner-lobby .runner-play:active{transform:translateY(3px);box-shadow:0 2px 0 #8c6a1c;animation:none}
 @keyframes runner-play{50%{transform:scale(1.03)}}
-.runner-lobby-tools{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
-.runner-lobby-tools button{min-height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,.16);background:rgba(0,0,0,.46);color:var(--ink);font:600 12px/1 inherit;cursor:pointer;backdrop-filter:blur(6px)}
+
+
 .runner-lobby .runner-note{margin:0;font-size:12px;color:var(--muted)}
 @media (max-width:560px){.runner-lobby .runner-title{font-size:27px;letter-spacing:4px}.runner-lobby .runner-wallet{flex-direction:column;align-items:flex-end}.runner-lobby .runner-play{min-height:54px;font-size:19px}}
-@media (max-height:520px){.runner-lobby-missions,.runner-lobby .runner-mode-note{display:none}.runner-lobby .runner-title{font-size:24px}.runner-lobby .runner-play{min-height:46px}}
+@media (max-height:520px){.runner-lobby .runner-mode-note{display:none}.runner-lobby .runner-title{font-size:24px}.runner-lobby .runner-play{min-height:46px}}
 @media (prefers-reduced-motion:reduce){.runner-lobby,.runner-lobby .runner-play{animation:none}}
 
 /* Power-up timers: a ring round each icon empties as the power runs down, and blinks near the end. */
@@ -396,3 +396,25 @@
 .runner-career span{padding:10px 4px;border-radius:12px;background:rgba(0,0,0,.25);font-size:11px;color:var(--muted)}
 .runner-career b{display:block;margin-bottom:2px;font:800 18px/1.2 ui-rounded,system-ui;color:var(--ink)!important;font-variant-numeric:tabular-nums;white-space:nowrap}
 @media (max-width:420px){.runner-career{grid-template-columns:repeat(3,1fr)}.runner-career b{font-size:16px}}
+
+/* The simpler lobby: a back button, the title and wallet on top; a mode switcher, the start button and four icon buttons below. */
+.runner-lobby-top{display:grid;grid-template-columns:auto 1fr auto;align-items:start;gap:12px}
+.runner-lobby button{font-family:inherit;cursor:pointer}
+.runner-lobby svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.runner-lobby .runner-lobby-back{display:grid;place-items:center;width:42px;height:42px;padding:0;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.45);color:var(--ink);backdrop-filter:blur(6px)}
+.runner-lobby-dock{margin-top:auto}
+.runner-lobby .runner-lobby-skin{display:flex;align-items:center;justify-content:center;gap:10px}
+.runner-mode-picker{display:flex;align-items:center;justify-content:center;gap:14px}
+.runner-lobby .runner-mode-arrow{width:42px;height:42px;padding:0;border-radius:50%;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.45);color:var(--gold);font:700 24px/1 system-ui;backdrop-filter:blur(6px)}
+.runner-mode-current{display:grid;justify-items:center;min-width:150px;text-shadow:0 2px 6px rgba(0,0,0,.8)}
+.runner-mode-current small{font-size:11px;font-weight:700;letter-spacing:.3em;color:var(--gold)}
+.runner-mode-current strong{font-size:22px;letter-spacing:.08em;color:#fff}
+.runner-mode-dots{display:flex;gap:6px;margin-top:6px}
+.runner-mode-dots i{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.3)}
+.runner-mode-dots i.on{width:16px;border-radius:3px;background:var(--gold)}
+.runner-lobby-tools{display:flex;justify-content:center;gap:clamp(14px,4vw,30px);margin-top:4px}
+.runner-lobby .runner-lobby-tool{display:grid;justify-items:center;gap:5px;padding:0;border:0;background:none;color:var(--ink);font-size:12px;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.runner-lobby-tool svg{box-sizing:content-box;padding:12px;border-radius:50%;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.48);backdrop-filter:blur(6px);transition:transform .15s}
+.runner-lobby-tool:active svg{transform:scale(.92)}
+.runner-lobby-tool[data-run="more"] svg{fill:currentColor;stroke:none}
+.runner-missions-page .runner-missions-title{display:none}

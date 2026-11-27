@@ -191,6 +191,14 @@ export class RunnerRenderer3D {
   /** A ring of light that spreads from the dog's feet when it picks up a power or opens a chest. */
   private pickupRing!: Mesh;
   private pickupRingAge = 9;
+  /** The menu's showcase round the dog: two glowing outlines behind it, a lit disc and a pulsing ring under it, rising sparks. */
+  private heroGlow: Mesh[] = [];
+  private heroDisc!: Mesh;
+  private heroRing!: Mesh;
+  private heroSparkles!: ParticleSystem;
+  private heroSparkTime = 0;
+  /** Slowly turning rays of light fanning out behind the dog on the menu. */
+  private heroRays!: Mesh;
   private seenChests = 0;
   private rippleAge = 9;
   /** The dog's sway under a zipline or the balloons: angle and angular speed (a damped pendulum). */
@@ -325,6 +333,39 @@ export class RunnerRenderer3D {
     pickupMat.diffuseTexture = rippleTexture; pickupMat.useAlphaFromDiffuseTexture = true; pickupMat.disableLighting = true; pickupMat.emissiveColor = Color3.White();
     pickupMat.alphaMode = Engine.ALPHA_ADD; pickupMat.backFaceCulling = false; pickupMat.zOffset = -3;
     this.pickupRing.material = pickupMat; this.pickupRing.isPickable = false; this.pickupRing.setEnabled(false);
+    // The showcase outline is the dog's own drawing as a flat glowing shape, a little bigger and just behind it.
+    this.heroGlow = [[1.045, .36], [1.1, .2], [1.17, .11], [1.27, .055]].map(([scale, alpha], i) => {
+      const material = new StandardMaterial(`runner-hero-glow-${i}`, this.scene);
+      material.disableLighting = true; material.diffuseColor = Color3.Black(); material.specularColor = Color3.Black();
+      material.emissiveColor = Color3.FromHexString("#ffd36b"); material.alphaMode = Engine.ALPHA_ADD; material.backFaceCulling = false; material.alpha = alpha;
+      const plane = MeshBuilder.CreatePlane(`runner-hero-glow-${i}`, { size: DOG_SIZE }, this.scene);
+      plane.material = material; plane.isPickable = false; plane.billboardMode = Mesh.BILLBOARDMODE_Y; plane.setEnabled(false);
+      plane.metadata = { scale, alpha };
+      return plane;
+    });
+    const raysTexture = new DynamicTexture("runner-hero-rays-tex", { width: 256, height: 256 }, this.scene, false);
+    const raysCtx = raysTexture.getContext() as CanvasRenderingContext2D;
+    const fade = raysCtx.createRadialGradient(128, 128, 10, 128, 128, 128);
+    fade.addColorStop(0, "rgba(255,255,255,.95)"); fade.addColorStop(.45, "rgba(255,255,255,.45)"); fade.addColorStop(1, "rgba(255,255,255,0)");
+    raysCtx.fillStyle = fade;
+    for (let i = 0; i < 14; i++) {
+      const a = i / 14 * Math.PI * 2, w = Math.PI / 14 * .55;
+      raysCtx.beginPath(); raysCtx.moveTo(128, 128);
+      raysCtx.arc(128, 128, 128, a - w, a + w); raysCtx.closePath(); raysCtx.fill();
+    }
+    raysTexture.update(); raysTexture.hasAlpha = true;
+    const raysMat = new StandardMaterial("runner-hero-rays", this.scene);
+    raysMat.diffuseTexture = raysTexture; raysMat.useAlphaFromDiffuseTexture = true; raysMat.disableLighting = true;
+    raysMat.emissiveColor = Color3.FromHexString("#ffd36b"); raysMat.alphaMode = Engine.ALPHA_ADD; raysMat.backFaceCulling = false;
+    this.heroRays = MeshBuilder.CreatePlane("runner-hero-rays", { size: 1 }, this.scene);
+    this.heroRays.material = raysMat; this.heroRays.isPickable = false; this.heroRays.billboardMode = Mesh.BILLBOARDMODE_ALL; this.heroRays.setEnabled(false);
+    this.heroDisc = MeshBuilder.CreateGround("runner-hero-disc", { width: 1, height: 1 }, this.scene);
+    this.heroDisc.material = this.radialMaterial("hero-disc", "rgba(255,210,110,.6)", true); this.heroDisc.isPickable = false; this.heroDisc.setEnabled(false);
+    this.heroRing = MeshBuilder.CreateGround("runner-hero-ring", { width: 1, height: 1 }, this.scene);
+    const heroRingMat = new StandardMaterial("runner-hero-ring", this.scene);
+    heroRingMat.diffuseTexture = rippleTexture; heroRingMat.useAlphaFromDiffuseTexture = true; heroRingMat.disableLighting = true;
+    heroRingMat.emissiveColor = Color3.FromHexString("#ffd36b"); heroRingMat.alphaMode = Engine.ALPHA_ADD; heroRingMat.backFaceCulling = false; heroRingMat.zOffset = -3;
+    this.heroRing.material = heroRingMat; this.heroRing.isPickable = false; this.heroRing.setEnabled(false);
     this.shadow = MeshBuilder.CreateGround("runner-dog-shadow", { width: 1.8, height: 1.1 }, this.scene);
     this.shadow.material = this.radialMaterial("blob", "rgba(0,0,0,.55)", false);
 
@@ -345,6 +386,11 @@ export class RunnerRenderer3D {
     this.silverSparks = this.particles("silver-sparks", 240, "#ffffff", "#a8cfdf");
     this.diamondSparks = this.particles("diamond-sparks", 240, "#eaffff", "#6bd6ff");
     this.magic = this.particles("power-sparks", 300, "#ffffff", "#ffffff");
+    this.heroSparkles = this.particles("hero-sparkles", 140, "#fff7cf", "#ffc24a");
+    this.heroSparkles.gravity.set(0, .9, 0); this.heroSparkles.minSize = .04; this.heroSparkles.maxSize = .13;
+    this.heroSparkles.minLifeTime = .9; this.heroSparkles.maxLifeTime = 1.9; this.heroSparkles.minEmitPower = .1; this.heroSparkles.maxEmitPower = .45;
+    this.heroSparkles.direction1.set(-.3, .7, -.3); this.heroSparkles.direction2.set(.3, 1.3, .3);
+    this.heroSparkles.minEmitBox.set(-1.1, 0, -.7); this.heroSparkles.maxEmitBox.set(1.1, .35, .7);
     this.appleSparkles = this.particles("apple-sparkles", 260, "#fff2a0", "#c38bff");
     this.appleSparkles.gravity.set(0, .8, 0); this.appleSparkles.minEmitPower = .3; this.appleSparkles.maxEmitPower = 1.2;
     this.appleSparkles.minSize = .06; this.appleSparkles.maxSize = .2; this.appleSparkles.minLifeTime = .4; this.appleSparkles.maxLifeTime = .9;
@@ -2765,10 +2811,7 @@ export class RunnerRenderer3D {
     const turning = this.route.turnRate(view) * world.speed;
     this.turnLean += (Math.max(-.16, Math.min(.16, turning * .035)) - this.turnLean) * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
     const lean = motion ? (world.lane - position) * (world.ride || bike ? .13 : .07) + swing + this.turnLean : 0;
-    // A double jump throws in a barrel roll (the other way round in the right-hand lane).
-    const sinceSecond = world.elapsed - world.jumpedAt, rolling = motion && world.jumpCount === 2 && world.airborne && sinceSecond < .46;
-    const spin = rolling ? Math.PI * 2 * (k => k * k * (3 - 2 * k))(sinceSecond / .46) * (world.lane === 2 ? 1 : -1) : 0;
-    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean + spin);
+    this.dog.root.rotation.set(0, 0, roll * (lateral > 0 ? -1 : 1) + lean);
     this.dog.root.billboardMode = grab ? Mesh.BILLBOARDMODE_NONE : Mesh.BILLBOARDMODE_Y;
     this.dog.root.scaling.set(1 + land * .06 - takeoff * .05 - breathe * .5, 1 - land * .10 + takeoff * .09 + breathe, 1);
     this.dog.material.alpha = 1;
@@ -2788,6 +2831,7 @@ export class RunnerRenderer3D {
       }
     }
     this.dog.root.setEnabled(this.dog.material.alpha > 0);
+    this.drawShowcase(world, player, intro, dt);
     // Balloons overhead while flying, swaying; spring coils under the paws while the shoes last.
     const flying = world.flying && !capture;
     this.balloonBunch.setEnabled(flying);
@@ -2809,7 +2853,7 @@ export class RunnerRenderer3D {
       this.dogLantern.position.set(player.x + fx * .6, player.y + 1.1 + world.jumpHeight, player.z + fz * .6);
       this.dogLantern.scaling.setAll(1 + (motion ? Math.sin(t * 7) * .04 : 0));
     }
-    this.skinHalo.setEnabled((world.fruit > 0 || this.dogLook !== "original") && !capture && !world.ride);
+    this.skinHalo.setEnabled((world.fruit > 0 || this.dogLook !== "original") && !capture && !world.ride && world.phase !== "ready");
     if (this.skinHalo.isEnabled()) {
       const hue = Color3.FromHexString(world.fruit > 0 ? "#ffcf41" : getDogLook(this.dogLook).color);
       (this.skinHalo.material as StandardMaterial).emissiveColor.copyFrom(hue);
@@ -2853,14 +2897,16 @@ export class RunnerRenderer3D {
       // Straight behind the dog it keeps further back so it does not hide the dog from the camera.
       // While the camera swings round on the right at the start, the frog keeps to the left.
       const sideTarget = onBridge ? 0 : lurking || intro < 1 || world.position > 1.4 ? -1 : 1;
-      const target = lurking ? 8 : huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
+      const target = lurking ? 11 : huntBack ?? (onBridge ? 3.9 + (1 - close) * 3.2 : 2.4 + (1 - close) * 7);
       // Eased, so it closes in when the run starts (and after a stumble) and crosses lanes instead of jumping.
       const ease = (rate: number) => dt > 0 && !this.settings.reducedMotion ? 1 - Math.exp(-dt * rate) : 1;
       this.frogBack += (target - this.frogBack) * ease(intro < 1 ? 2.2 : 6);
       this.frogSide += (sideTarget - this.frogSide) * ease(5);
       const back = this.frogBack, side = this.frogSide;
       const stride = lurking || pose.sheet === "search" ? 0 : Math.abs(Math.sin(world.gait * Math.PI * 2)) * .14;
-      frog.root.position.set(base.x - fx * back + rx * side * 1.45, elevationAt(world.distance - back) + centreHeight + stride, base.z - fz * back + rz * side * 1.45);
+      const spread = lurking ? 2.2 : 1.45;
+      frog.root.position.set(base.x - fx * back + rx * side * spread, elevationAt(world.distance - back) + centreHeight + stride, base.z - fz * back + rz * side * spread);
+      frog.tint(lurking ? .62 : 1);
       frog.root.setEnabled(close > .02 && !world.ride && (!onBridge || world.danger > 0 || !!world.hunt));
       frog.material.alpha = Math.min(1, close * 1.5);
     } else if (grab) this.drawCapture(world, player, centre.heading, grab);
@@ -3768,6 +3814,54 @@ export class RunnerRenderer3D {
     this.shadow.scaling.setAll(Math.max(.4, 1 - (height + world.jumpHeight * (1 - reach)) * .35));
   }
 
+  /**
+   * The menu's showcase: the dog outlined in light (its own drawing, bigger and glowing, just behind it),
+   * standing on a lit disc with a ring of light pulsing outward and sparks drifting up. It fades as a run starts.
+   */
+  private drawShowcase(world: RunnerWorld, player: Vector3, intro: number, dt: number) {
+    const fade = world.phase === "ready" ? 1 : world.phase === "running" ? Math.max(0, 1 - intro * 3) : 0;
+    const on = fade > 0 && this.dog.root.isEnabled();
+    for (const plane of this.heroGlow) plane.setEnabled(on);
+    this.heroDisc.setEnabled(on); this.heroRing.setEnabled(on); this.heroRays.setEnabled(on);
+    if (!on) return;
+    const motion = this.settings.reducedMotion ? 0 : 1, clock = this.idleClock;
+    const colour = Color3.FromHexString(this.dogLook === "original" ? "#ffd36b" : getDogLook(this.dogLook).color);
+    const dog = this.dog.root, cam = this.camera.position;
+    // Just behind the dog as the camera sees it, so it draws under the drawing and shows round its edge.
+    const away = Math.hypot(dog.position.x - cam.x, dog.position.z - cam.z) || 1;
+    const bx = (dog.position.x - cam.x) / away * .06, bz = (dog.position.z - cam.z) / away * .06;
+    for (const plane of this.heroGlow) {
+      const material = plane.material as StandardMaterial, { scale, alpha } = plane.metadata as { scale: number; alpha: number };
+      material.opacityTexture = this.dog.material.diffuseTexture;
+      material.emissiveColor.copyFrom(colour);
+      material.alpha = alpha * fade * (1 + Math.sin(clock * 2.2) * .22 * motion);
+      plane.position.set(dog.position.x + bx * scale, dog.position.y, dog.position.z + bz * scale);
+      plane.rotation.z = dog.rotation.z;
+      plane.scaling.set(dog.scaling.x * scale, dog.scaling.y * scale, 1);
+    }
+    // The rays sit well behind the dog and turn slowly.
+    this.heroRays.position.set(dog.position.x + bx * 9, dog.position.y + .15, dog.position.z + bz * 9);
+    this.heroRays.scaling.setAll(5.2);
+    this.heroRays.rotation.z = motion ? clock * .12 : 0;
+    const raysMat = this.heroRays.material as StandardMaterial;
+    raysMat.alpha = .42 * fade * (1 + Math.sin(clock * 1.3) * .15 * motion); raysMat.emissiveColor.copyFrom(colour);
+    this.heroDisc.position.set(player.x, player.y + .03, player.z);
+    this.heroDisc.scaling.setAll(3.4 + Math.sin(clock * 1.6) * .15 * motion);
+    const discMat = this.heroDisc.material as StandardMaterial;
+    discMat.alpha = .9 * fade; discMat.emissiveColor.copyFrom(colour);
+    // A ring of light spreading out from under the dog every 1.8 seconds.
+    const k = motion ? (clock % 1.8) / 1.8 : .4;
+    this.heroRing.position.set(player.x, player.y + .05, player.z);
+    this.heroRing.scaling.setAll(1.4 + k * 3);
+    const ringMat = this.heroRing.material as StandardMaterial;
+    ringMat.alpha = (1 - k) * .9 * fade; ringMat.emissiveColor.copyFrom(colour);
+    if (motion && dt > 0 && world.phase === "ready") {
+      this.heroSparkTime += dt * 14;
+      const n = Math.floor(this.heroSparkTime);
+      if (n) { this.heroSparkTime -= n; this.burst(this.heroSparkles, new Vector3(player.x, player.y + .1, player.z), n); }
+    }
+  }
+
   /** 0 on the menu, rising to 1 as the camera finishes swinging round behind the dog at the start of a run. */
   private introProgress(world: RunnerWorld) {
     if (this.settings.reducedMotion || world.revives > 0) return 1;
@@ -3839,8 +3933,8 @@ export class RunnerRenderer3D {
         const front = this.dogLook === "original" && !this.schoolSheet;
         const angle = ((front ? Math.PI - .55 : .62) + drift) * (1 - swing);
         const ox = -fx * Math.cos(angle) + rx * Math.sin(angle), oz = -fz * Math.cos(angle) + rz * Math.sin(angle);
-        const reach = portrait ? 6 : 5.4, hx = player.x + ox * reach, hy = player.y + (portrait ? 1.6 : 1.4), hz = player.z + oz * reach;
-        const lookY = player.y + (portrait ? .3 : .66);
+        const reach = portrait ? 5.5 : 6, hx = player.x + ox * reach, hy = player.y + (portrait ? 1.3 : .95), hz = player.z + oz * reach;
+        const lookY = player.y + (portrait ? .28 : .5);
         this.cameraPos.set(hx + (this.cameraPos.x - hx) * swing, hy + (this.cameraPos.y - hy) * swing, hz + (this.cameraPos.z - hz) * swing);
         this.cameraTarget.set(player.x + (this.cameraTarget.x - player.x) * swing, lookY + (this.cameraTarget.y - lookY) * swing, player.z + (this.cameraTarget.z - player.z) * swing);
       }

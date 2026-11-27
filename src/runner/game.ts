@@ -57,6 +57,15 @@ const TIPS = [
   "暗夜逃亡里捡灯笼能把奶蛙逼退。",
   "连续收币会提高倍数，最高 5 倍。",
 ];
+/** Line icons for the lobby buttons (24 × 24, drawn in the button's text colour). */
+const ICONS = {
+  back: '<path d="M15 5l-7 7 7 7"/>',
+  shop: '<path d="M5 8h14l-1.2 12H6.2z"/><path d="M9 8V7a3 3 0 0 1 6 0v1"/>',
+  upgrade: '<path d="M12 4l6 6h-3.5v9h-5v-9H6z"/>',
+  missions: '<rect x="5" y="4" width="14" height="17" rx="2.5"/><path d="M9 9.5l1.6 1.6L14.5 7.5M9 15h6"/>',
+  more: '<circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/>',
+} as const;
+const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 /** How long the "one more go?" offer waits before the results come up, in milliseconds. */
 const OFFER_MS = 4500;
 const newSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
@@ -88,6 +97,8 @@ export class RunnerGame {
   private shopOpen = false;
   private upgradesOpen = false;
   private careerOpen = false;
+  private missionsOpen = false;
+  private moreOpen = false;
   /** Lifetime totals on this device; `counted` is what the current run has already added. */
   private career: Career = (() => { try { return readCareer(localStorage.getItem(CAREER_KEY)); } catch { return readCareer(null); } })();
   private counted?: { world: RunnerWorld; summary: RunSummary };
@@ -309,6 +320,11 @@ export class RunnerGame {
       case "upgrades": if (this.world.phase === "ready" || this.world.phase === "lost" || this.world.phase === "won") { this.upgradesOpen = true; this.showPanel(); } return;
       case "upgrades-back": this.upgradesOpen = false; this.showPanel(); return;
       case "career": this.careerOpen = true; this.showPanel(); return;
+      case "missions": this.missionsOpen = true; this.showPanel(); return;
+      case "missions-back": this.missionsOpen = false; this.showPanel(); return;
+      case "more": this.moreOpen = true; this.showPanel(); return;
+      case "more-back": this.moreOpen = false; this.showPanel(); return;
+      case "mode-prev": case "mode-next": this.switchMode(action === "mode-prev" ? -1 : 1); return;
       case "career-back": this.careerOpen = false; this.showPanel(); return;
       case "revive": this.revive(); return;
       case "offer-skip": this.endOffer(); return;
@@ -386,6 +402,10 @@ export class RunnerGame {
     }
     if (event.key === "Enter" && (phase === "ready" || phase === "lost" || phase === "won") && this.ready && !event.repeat) {
       event.preventDefault(); if (phase === "ready") this.begin(); else { this.newWorld(); this.begin(); }
+      return;
+    }
+    if (phase === "ready" && this.ready && this.el.panel.classList.contains("lobby") && (event.key === "ArrowLeft" || event.key === "ArrowRight") && !event.repeat) {
+      event.preventDefault(); this.switchMode(event.key === "ArrowLeft" ? -1 : 1);
       return;
     }
     const action = KEYS[event.key];
@@ -530,7 +550,15 @@ export class RunnerGame {
       this.audio.effect("win"); this.flash("record");
     }
   }
+  /** The lobby's mode switcher: the previous or next mode, round in a loop. */
+  private switchMode(step: number) {
+    const at = MODES.findIndex(m => m.id === this.mode);
+    this.mode = MODES[(at + step + MODES.length) % MODES.length].id;
+    this.newWorld(); this.loadRecord(); this.showPanel();
+  }
+
   private begin() {
+    this.missionsOpen = this.moreOpen = this.careerOpen = false;
     this.tilt.calibrate(); this.world.start(); this.last = 0;
     this.audio.setMode("normal"); this.audio.setPlaying(true);
     this.holdScreenOn(true);
@@ -988,6 +1016,10 @@ export class RunnerGame {
         }).join("")}</div>${status ? `<p class="runner-note" role="status">${status}</p>` : ""}${btn("shop-back", "返回", "ghost")}${note}`;
     } else if (this.careerOpen) {
       html = this.careerHtml(btn);
+    } else if (this.missionsOpen) {
+      html = `<h2>任务</h2><p>已完成 ${this.missions.completed} 个 · 每个任务都要在一局之内完成，奖励马上入账。</p><div class="runner-missions-page">${this.missionsHtml(false)}</div>${btn("missions-back", "返回", "ghost")}`;
+    } else if (this.moreOpen) {
+      html = `<h2>更多</h2>${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}<div class="runner-row">${gyroRow}</div>${gyroNote}${btn("more-back", "返回", "ghost")}`;
     } else if (this.upgradesOpen) {
       html = this.upgradesHtml(btn, note);
     } else if (w.phase === "ready") {
@@ -995,28 +1027,28 @@ export class RunnerGame {
       const lookName = look.id === ORIGINAL_LOOK.id ? "奶狗" : look.name;
       const chase = this.mode === "chase", info = modeInfo(this.mode);
       lobby = true;
-      const cards = MODES.map(m => `<button data-run="mode-${m.id}" class="runner-mode-card${m.id === this.mode ? " on" : ""}" aria-pressed="${m.id === this.mode}"><span>${m.tag}</span><strong>${m.name}</strong></button>`).join("");
+      const current = MODES.find(m => m.id === this.mode) ?? MODES[0];
       const today = new Date();
       const recordLine = this.mode === "rush" || chase ? `最高分 <b>${this.record.score}</b>` : `${this.mode === "daily" ? `${today.getMonth() + 1}月${today.getDate()}日 · 今日` : ""}最高分 <b>${this.record.score}</b> · 最远 <b>${this.record.distance}</b> 米`;
-      // Room beside the dog: the mission list starts open only on a big enough screen.
-      const roomy = window.matchMedia("(min-width: 760px) and (min-height: 600px)").matches;
+      const tool = (action: string, label: string, name: keyof typeof ICONS) => `<button data-run="${action}" class="runner-lobby-tool">${icon(name)}<span>${label}</span></button>`;
+      // Kept to the essentials: the dog takes the middle of the screen, everything else sits round it.
       html = `
         <header class="runner-lobby-top">
+          <button data-run="exit" class="runner-lobby-back" aria-label="返回">${icon("back")}</button>
           <div class="runner-lobby-brand"><h2 class="runner-title">${TITLE}</h2><p class="runner-record">${recordLine}</p></div>
           ${this.walletHtml()}
         </header>
         ${this.loginGift ? `<p class="runner-gift" role="status">${this.loginGift}</p>` : ""}
-        <details class="runner-lobby-missions"${roomy ? " open" : ""}><summary>任务<small>已完成 ${this.missions.completed} 个</small></summary>${this.missionsHtml(false)}</details>
-        <div class="runner-lobby-skin" style="--skin:${look.color}">
-          ${switcher ? btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`) : ""}
-          <span class="runner-look-name">${lookName}</span>
-          ${switcher ? btn("skin-next", "›", "runner-skin-arrow next", `aria-label="下一款皮肤"`) : ""}
-        </div>
         <footer class="runner-lobby-dock">
-          <div class="runner-modes" role="group" aria-label="选择模式">${cards}</div>
+          ${switcher ? `<div class="runner-lobby-skin" style="--skin:${look.color}">${btn("skin-prev", "‹", "runner-skin-arrow", `aria-label="上一款皮肤"`)}<span class="runner-look-name">${lookName}</span>${btn("skin-next", "›", "runner-skin-arrow", `aria-label="下一款皮肤"`)}</div>` : ""}
+          <div class="runner-mode-picker" role="group" aria-label="选择模式">
+            ${btn("mode-prev", "‹", "runner-mode-arrow", `aria-label="上一个模式"`)}
+            <div class="runner-mode-current"><small>${current.tag}</small><strong>${current.name}</strong><span class="runner-mode-dots" aria-hidden="true">${MODES.map(m => `<i class="${m.id === this.mode ? "on" : ""}"></i>`).join("")}</span></div>
+            ${btn("mode-next", "›", "runner-mode-arrow", `aria-label="下一个模式"`)}
+          </div>
           <p class="runner-mode-note">${info.note}</p>
           ${btn("start", info.start, "primary runner-play")}
-          <div class="runner-lobby-tools">${btn("shop", "皮肤商城", "ghost")}${btn("upgrades", "道具升级", "ghost")}${btn("career", "生涯数据", "ghost")}${btn("help", "玩法说明", "ghost")}${gyroRow}${btn("exit", "返回", "ghost")}</div>
+          <nav class="runner-lobby-tools">${tool("shop", "商城", "shop")}${tool("upgrades", "升级", "upgrade")}${tool("missions", "任务", "missions")}${tool("more", "更多", "more")}</nav>
           ${gyroNote}${note}
         </footer>`;
     } else if (this.offering) {
